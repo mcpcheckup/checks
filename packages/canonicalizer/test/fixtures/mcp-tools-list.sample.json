@@ -1,0 +1,42 @@
+{
+  "tools": [
+    {
+      "name": "search_notes",
+      "description": "Search the user's notes by keyword and return matching snippets.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "limit": { "type": "integer", "default": 10 }
+        },
+        "required": ["query"]
+      },
+      "annotations": { "readOnlyHint": true, "title": "Search Notes" }
+    },
+    {
+      "name": "create_note",
+      "description": "Create a new note with a title and body.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "body": { "type": "string" }
+        },
+        "required": ["title", "body"]
+      }
+    },
+    {
+      "name": "delete_note",
+      "description": "Permanently delete a note by id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" }
+        },
+        "required": ["id"]
+      },
+      "annotations": { "destructiveHint": true }
+    }
+  ],
+  "_meta": { "nextCursor": null }
+}

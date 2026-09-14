@@ -1,0 +1,30 @@
+export class SsrfGuardError extends Error {
+  code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = new.target.name
+    this.code = code
+  }
+}
+
+/**
+ * The target itself was rejected — its scheme, credentials, port, or a resolved IP
+ * failed policy. `detail` is always built from data we already control (the URL we were
+ * given, or an IP a trusted DoH resolver returned) — never from bytes the target sent
+ * back, so this is safe to surface in logs and error messages verbatim.
+ */
+export class SsrfBlocked extends SsrfGuardError {
+  detail: string
+
+  constructor(code: string, detail: string) {
+    super(code, `blocked (${code}): ${detail}`)
+    this.detail = detail
+  }
+}
+
+/** A probe-level resource limit (redirects, wall-clock time, response bytes, request count) was hit. */
+export class BudgetExceeded extends SsrfGuardError {}
+
+/** The caller-supplied rate-limit decision said no — or no valid decision was supplied at all, which fails closed to the same thing. */
+export class RateLimited extends SsrfGuardError {}

@@ -1,0 +1,5 @@
+export { canonicalize, canonicalBytes, CANONICALIZATION_PROFILE } from './canonicalize.ts'
+export { digest } from './digest.ts'
+export { CanonicalizationError } from './errors.ts'
+export type { CanonicalizationErrorCode } from './errors.ts'
+export { TOOLSET_PROJECTION_VERSION, projectToolset, projectSchemas } from './projections.ts'

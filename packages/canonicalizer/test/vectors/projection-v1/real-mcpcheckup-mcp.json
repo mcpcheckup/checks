@@ -1,0 +1,224 @@
+{
+  "description": "Real vector: our own https://mcpcheckup.com/mcp tools/list result, fetched once, stored verbatim.",
+  "source": "real",
+  "endpoint": "https://mcpcheckup.com/mcp",
+  "fetched_utc": "2026-09-14T09:23:00Z",
+  "protocol_version_used": "2025-06-18",
+  "input": {
+    "tools": [
+      {
+        "name": "check_mcps",
+        "description": "Look up the current monitored status of up to 50 already-tracked MCP servers on MCP Checkup, given as \"provider/name\" ref strings (e.g. \"acme/weather-mcp\"). Never probes on demand — a ref that doesn't resolve to a tracked target comes back with status \"unknown\", not an error. Each entry may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \"provider/name\" — the resolution method used is reported per target as resolution.method (\"ref\", \"endpoint\", \"host\", or \"name\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \"ambiguous\" with a short `candidates` list (each with a \"provider/name\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. Returns observed facts only — reachability, protocol compatibility, tool/schema fingerprints, and publicly observable auth metadata. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score. Items not verified are returned explicitly with reasons.",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "targets": {
+              "minItems": 1,
+              "maxItems": 50,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "description": "Up to 50 entries, each a \"provider/name\" ref, a full endpoint URL, a bare domain, or a bare provider/target name."
+            },
+            "detail": {
+              "type": "string",
+              "enum": [
+                "summary",
+                "full"
+              ]
+            },
+            "known_fingerprints": {
+              "description": "Optional, keyed by the exact same ref string used in `targets` (max 50 entries) — your own last-observed toolset_fingerprint per target (format \"sha256:<64 hex chars>\"), to get a fingerprint_match fact back.",
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          },
+          "required": [
+            "targets"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "openWorldHint": false
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "get_mcp_report",
+        "description": "Get the full observed report for one already-tracked MCP server on MCP Checkup, by provider/name — includes its full check breakdown and toolset. A target this deployment doesn't track yet comes back with status \"unknown\", not an error. target may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \"provider/name\" — the resolution method used is reported back as resolution.method (\"ref\", \"endpoint\", \"host\", or \"name\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \"ambiguous\" with a short `candidates` list (each with a \"provider/name\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "A tracked target as \"provider/name\", a full endpoint URL, a bare domain, or a bare provider/target name."
+            }
+          },
+          "required": [
+            "target"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "openWorldHint": false
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "get_mcp_history",
+        "description": "Get recent history for one already-tracked MCP server on MCP Checkup, by \"provider/name\" ref (e.g. \"acme/weather-mcp\"). Events include the toolset's most recent change boundary (not a full change-by-change history) plus any recorded baseline-drift events, newest first, up to `limit` results (default 20, max 50). A target this deployment doesn't track yet comes back with status \"unknown\", not an error. target may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \"provider/name\" — the resolution method used is reported back as resolution.method (\"ref\", \"endpoint\", \"host\", or \"name\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \"ambiguous\" with a short `candidates` list (each with a \"provider/name\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "A tracked target as \"provider/name\", a full endpoint URL, a bare domain, or a bare provider/target name."
+            },
+            "limit": {
+              "description": "Max events to return (default 20, max 50).",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 50
+            }
+          },
+          "required": [
+            "target"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "openWorldHint": false
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "get_attestation",
+        "description": "Get the full signed attestation envelope (DSSE, Ed25519) for one already-tracked MCP server's latest probe run, by \"provider/name\" ref — the raw envelope plus its issued-at time and declared protocol revision, so a caller can independently verify the signature rather than trust this tool's own summary of it. A target with no run yet, no signed envelope, or a disqualified one comes back with an explicit reason, not an error. target may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \"provider/name\" — the resolution method used is reported back as resolution.method (\"ref\", \"endpoint\", \"host\", or \"name\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \"ambiguous\" with a short `candidates` list (each with a \"provider/name\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "A tracked target as \"provider/name\", a full endpoint URL, a bare domain, or a bare provider/target name."
+            }
+          },
+          "required": [
+            "target"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "openWorldHint": false
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "search_mcps",
+        "description": "Search already-tracked MCP servers on MCP Checkup by tool name/description text (max 512 chars), with optional transport, protocol_revision, and auth_required filters, up to `limit` results (default 10, max 25). Ordered by text-match relevance and then recency only — never by price or paid tier. Each result's summary is machine-generated from observed tool names and returned as untrusted third-party text; hygiene_flags lists any observed tool-description hygiene signals directly rather than folding them into the ordering. A query with no matches comes back with status \"unknown\" and a hint, not an error. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Free-text search over tracked servers' observed tool names/descriptions (max 512 chars)."
+            },
+            "transport": {
+              "type": "string",
+              "enum": [
+                "remote",
+                "stdio"
+              ]
+            },
+            "protocol_revision": {
+              "description": "Exact match against a target's declared protocol revision, e.g. \"2026-07-28\" (max 512 chars).",
+              "type": "string",
+              "maxLength": 512
+            },
+            "auth_required": {
+              "description": "A target whose auth requirement can't be determined is excluded regardless of which value is passed here.",
+              "type": "boolean"
+            },
+            "limit": {
+              "description": "Max results to return (default 10, max 25).",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 25
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "openWorldHint": false
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      },
+      {
+        "name": "request_check",
+        "description": "Ask for a one-off public observation of the MCP server at a full endpoint URL — this is the only tool here that contacts a third-party server, and it contacts exactly the host you name. `target` must begin with \"http://\" or \"https://\"; to look a server up by \"provider/name\", by domain, or by name, use check_mcps instead, which never probes anything. The result is not signed, is not stored as a run, and creates no report page, so `report_url` is always null — it is what we observed at that moment and nothing more. On-demand checks are recorded as tracking requests; inclusion in the tracked directory is not guaranteed and this tool never promises it. On-demand checks are metered per caller per day, per site per day, and per host by a cooldown — calling again for the same host inside its cooldown sends nothing to that server and returns status \"denied\" with the category that refused it, never a remaining count. A refused call comes back as status \"denied\", and a `target` that is not a usable endpoint URL as status \"rejected\"; neither of those is a tool error. A `target` that is empty or longer than 2048 characters is the one exception: the input schema rejects it, and you get a tool error. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "A full endpoint URL beginning with \"http://\" or \"https://\" (max 2048 characters). Not a \"provider/name\" ref, a bare domain, or a bare name — use check_mcps for those."
+            }
+          },
+          "required": [
+            "target"
+          ]
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true
+        },
+        "execution": {
+          "taskSupport": "forbidden"
+        }
+      }
+    ]
+  },
+  "jcs": "{\"tools\":[{\"annotations\":{\"openWorldHint\":false,\"readOnlyHint\":true},\"description\":\"Look up the current monitored status of up to 50 already-tracked MCP servers on MCP Checkup, given as \\\"provider/name\\\" ref strings (e.g. \\\"acme/weather-mcp\\\"). Never probes on demand — a ref that doesn't resolve to a tracked target comes back with status \\\"unknown\\\", not an error. Each entry may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \\\"provider/name\\\" — the resolution method used is reported per target as resolution.method (\\\"ref\\\", \\\"endpoint\\\", \\\"host\\\", or \\\"name\\\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \\\"ambiguous\\\" with a short `candidates` list (each with a \\\"provider/name\\\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. Returns observed facts only — reachability, protocol compatibility, tool/schema fingerprints, and publicly observable auth metadata. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score. Items not verified are returned explicitly with reasons.\",\"execution\":{\"taskSupport\":\"forbidden\"},\"inputSchema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"properties\":{\"detail\":{\"enum\":[\"summary\",\"full\"],\"type\":\"string\"},\"known_fingerprints\":{\"additionalProperties\":{\"pattern\":\"^sha256:[0-9a-f]{64}$\",\"type\":\"string\"},\"description\":\"Optional, keyed by the exact same ref string used in `targets` (max 50 entries) — your own last-observed toolset_fingerprint per target (format \\\"sha256:<64 hex chars>\\\"), to get a fingerprint_match fact back.\",\"propertyNames\":{\"maxLength\":512,\"type\":\"string\"},\"type\":\"object\"},\"targets\":{\"description\":\"Up to 50 entries, each a \\\"provider/name\\\" ref, a full endpoint URL, a bare domain, or a bare provider/target name.\",\"items\":{\"maxLength\":512,\"minLength\":1,\"type\":\"string\"},\"maxItems\":50,\"minItems\":1,\"type\":\"array\"}},\"required\":[\"targets\"],\"type\":\"object\"},\"name\":\"check_mcps\"},{\"annotations\":{\"openWorldHint\":false,\"readOnlyHint\":true},\"description\":\"Get the full observed report for one already-tracked MCP server on MCP Checkup, by provider/name — includes its full check breakdown and toolset. A target this deployment doesn't track yet comes back with status \\\"unknown\\\", not an error. target may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \\\"provider/name\\\" — the resolution method used is reported back as resolution.method (\\\"ref\\\", \\\"endpoint\\\", \\\"host\\\", or \\\"name\\\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \\\"ambiguous\\\" with a short `candidates` list (each with a \\\"provider/name\\\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.\",\"execution\":{\"taskSupport\":\"forbidden\"},\"inputSchema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"properties\":{\"target\":{\"description\":\"A tracked target as \\\"provider/name\\\", a full endpoint URL, a bare domain, or a bare provider/target name.\",\"maxLength\":512,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"target\"],\"type\":\"object\"},\"name\":\"get_mcp_report\"},{\"annotations\":{\"openWorldHint\":false,\"readOnlyHint\":true},\"description\":\"Get recent history for one already-tracked MCP server on MCP Checkup, by \\\"provider/name\\\" ref (e.g. \\\"acme/weather-mcp\\\"). Events include the toolset's most recent change boundary (not a full change-by-change history) plus any recorded baseline-drift events, newest first, up to `limit` results (default 20, max 50). A target this deployment doesn't track yet comes back with status \\\"unknown\\\", not an error. target may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \\\"provider/name\\\" — the resolution method used is reported back as resolution.method (\\\"ref\\\", \\\"endpoint\\\", \\\"host\\\", or \\\"name\\\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \\\"ambiguous\\\" with a short `candidates` list (each with a \\\"provider/name\\\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.\",\"execution\":{\"taskSupport\":\"forbidden\"},\"inputSchema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"properties\":{\"limit\":{\"description\":\"Max events to return (default 20, max 50).\",\"exclusiveMinimum\":0,\"maximum\":50,\"type\":\"integer\"},\"target\":{\"description\":\"A tracked target as \\\"provider/name\\\", a full endpoint URL, a bare domain, or a bare provider/target name.\",\"maxLength\":512,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"target\"],\"type\":\"object\"},\"name\":\"get_mcp_history\"},{\"annotations\":{\"openWorldHint\":false,\"readOnlyHint\":true},\"description\":\"Get the full signed attestation envelope (DSSE, Ed25519) for one already-tracked MCP server's latest probe run, by \\\"provider/name\\\" ref — the raw envelope plus its issued-at time and declared protocol revision, so a caller can independently verify the signature rather than trust this tool's own summary of it. A target with no run yet, no signed envelope, or a disqualified one comes back with an explicit reason, not an error. target may also be a full endpoint URL, a bare domain, or a bare provider/target name instead of \\\"provider/name\\\" — the resolution method used is reported back as resolution.method (\\\"ref\\\", \\\"endpoint\\\", \\\"host\\\", or \\\"name\\\"). If an input matches more than one tracked target — or is a URL on a host we track that doesn't exactly match any of its endpoints — the response has status \\\"ambiguous\\\" with a short `candidates` list (each with a \\\"provider/name\\\" `ref` and its `report_url`, plus `candidate_total`, the full match count before the 5-entry cap) instead of guessing — call again with the exact ref you want. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.\",\"execution\":{\"taskSupport\":\"forbidden\"},\"inputSchema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"properties\":{\"target\":{\"description\":\"A tracked target as \\\"provider/name\\\", a full endpoint URL, a bare domain, or a bare provider/target name.\",\"maxLength\":512,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"target\"],\"type\":\"object\"},\"name\":\"get_attestation\"},{\"annotations\":{\"openWorldHint\":false,\"readOnlyHint\":true},\"description\":\"Search already-tracked MCP servers on MCP Checkup by tool name/description text (max 512 chars), with optional transport, protocol_revision, and auth_required filters, up to `limit` results (default 10, max 25). Ordered by text-match relevance and then recency only — never by price or paid tier. Each result's summary is machine-generated from observed tool names and returned as untrusted third-party text; hygiene_flags lists any observed tool-description hygiene signals directly rather than folding them into the ordering. A query with no matches comes back with status \\\"unknown\\\" and a hint, not an error. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.\",\"execution\":{\"taskSupport\":\"forbidden\"},\"inputSchema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"properties\":{\"auth_required\":{\"description\":\"A target whose auth requirement can't be determined is excluded regardless of which value is passed here.\",\"type\":\"boolean\"},\"limit\":{\"description\":\"Max results to return (default 10, max 25).\",\"exclusiveMinimum\":0,\"maximum\":25,\"type\":\"integer\"},\"protocol_revision\":{\"description\":\"Exact match against a target's declared protocol revision, e.g. \\\"2026-07-28\\\" (max 512 chars).\",\"maxLength\":512,\"type\":\"string\"},\"query\":{\"description\":\"Free-text search over tracked servers' observed tool names/descriptions (max 512 chars).\",\"maxLength\":512,\"minLength\":1,\"type\":\"string\"},\"transport\":{\"enum\":[\"remote\",\"stdio\"],\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"name\":\"search_mcps\"},{\"annotations\":{\"destructiveHint\":false,\"idempotentHint\":false,\"openWorldHint\":true,\"readOnlyHint\":false},\"description\":\"Ask for a one-off public observation of the MCP server at a full endpoint URL — this is the only tool here that contacts a third-party server, and it contacts exactly the host you name. `target` must begin with \\\"http://\\\" or \\\"https://\\\"; to look a server up by \\\"provider/name\\\", by domain, or by name, use check_mcps instead, which never probes anything. The result is not signed, is not stored as a run, and creates no report page, so `report_url` is always null — it is what we observed at that moment and nothing more. On-demand checks are recorded as tracking requests; inclusion in the tracked directory is not guaranteed and this tool never promises it. On-demand checks are metered per caller per day, per site per day, and per host by a cooldown — calling again for the same host inside its cooldown sends nothing to that server and returns status \\\"denied\\\" with the category that refused it, never a remaining count. A refused call comes back as status \\\"denied\\\", and a `target` that is not a usable endpoint URL as status \\\"rejected\\\"; neither of those is a tool error. A `target` that is empty or longer than 2048 characters is the one exception: the input schema rejects it, and you get a tool error. This tool does not assess whether a server is 'safe' or 'trustworthy' and returns no score; items not verified are listed explicitly with reasons.\",\"execution\":{\"taskSupport\":\"forbidden\"},\"inputSchema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"properties\":{\"target\":{\"description\":\"A full endpoint URL beginning with \\\"http://\\\" or \\\"https://\\\" (max 2048 characters). Not a \\\"provider/name\\\" ref, a bare domain, or a bare name — use check_mcps for those.\",\"maxLength\":2048,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"target\"],\"type\":\"object\"},\"name\":\"request_check\"}]}",
+  "toolset_fingerprint": "sha256:fb5c14f7ebb7dd16b25f1479ca715d7e6dca9d7923de4f59662e78de1266df81",
+  "schema_fingerprint": "sha256:2ef4b8725dcc5a8ea89d0fcc3a14dc3de1a904800375389a84b2cc4a856a5384"
+}

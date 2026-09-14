@@ -1,0 +1,21 @@
+{
+  "name": "@mcpcheckup/canonicalizer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "nfc-jcs/v1: strict NFC normalization followed by RFC 8785 (JCS), for computing stable SHA-256 fingerprints of MCP server responses.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "canonicalize": "^4.0.0",
+    "fast-check": "^4.9.0",
+    "typescript": "^5.7.2"
+  }
+}

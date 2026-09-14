@@ -1,0 +1,11 @@
+{
+  "name": "@mcpcheckup/verifier",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An independent, offline DSSE-envelope verifier for MCP Checkup attestations. Deliberately dependency-light and importable with plain `node`, no install: see verify-attestation.mjs's own header for the binding constraints (never imports @mcpcheckup/attestation-schema, reimplements DSSE's PAE from scratch).",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node verify-attestation.test.mjs"
+  }
+}

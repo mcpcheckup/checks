@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcpcheckup.com/schema/attestation-payload-v0.3.json",
+  "description": "The content that goes inside a DSSE envelope's `payload` field (base64-decoded, UTF-8-decoded, then parsed as JSON) for payloadType 'application/vnd.mcpcheckup.attestation+json;version=0.3'. Every property is required so that no field can be silently omitted; nullable fields use an explicit null rather than an absent key, so 'we recorded nothing here' and 'we forgot to ask' are never confused with each other.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "canonicalization",
+    "suite_id",
+    "suite_version",
+    "suite_digest",
+    "suite_commit",
+    "registry_version",
+    "toolset_projection_version",
+    "protocol_revision",
+    "launch_config_digest",
+    "target",
+    "observed_at",
+    "run",
+    "probe_region",
+    "probe_dns_answer_changed",
+    "assertions",
+    "toolset_fingerprint",
+    "schema_fingerprint"
+  ],
+  "properties": {
+    "canonicalization": {
+      "const": "nfc-jcs/v1",
+      "description": "Which canonicalization scheme produced toolset_fingerprint/schema_fingerprint. Currently the only value this package understands. See @mcpcheckup/canonicalizer's CANONICALIZATION_PROFILE and README for the exact three-step definition and why it is not called 'RFC 8785'."
+    },
+    "suite_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifies the check suite that produced these assertions, e.g. 'remote-baseline-v0.1'. Matches packages/checks/checks.json's own suite_id."
+    },
+    "suite_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+      "description": "The published version of the executable check-suite package that ran these checks (semver). Distinct from registry_version, which versions the static check *definitions*, not the code that executes them."
+    },
+    "suite_digest": {
+      "type": "string",
+      "pattern": "^sha512-[A-Za-z0-9+/]{86}==$",
+      "description": "A Subresource-Integrity-formatted sha512 digest identifying the exact check-suite source tree that produced these assertions. The recipe, exactly: sha512 (SRI base64) over the raw bytes of `git ls-tree -r -z --full-tree <commit> -- packages/checks`, where <commit> is this payload's own suite_commit. That command's output is the only input — no packaging step, no npm, no build — so the value is recomputable by anyone who can read the repository at that commit, with no build tooling and nothing published anywhere. Two things are needed before a third party can actually exercise that: the repository has to be public, and the deploy path has to compute and inject this value. The second is now met — scripts/deploy-probe.mjs computes this value from the commit being deployed and injects it with `wrangler deploy --var`, and apps/probe/wrangler.jsonc ships a deliberately invalid placeholder so a deploy that skipped that script refuses to probe rather than signing a stale value. The first is NOT: the repository is not public yet, so nobody outside the project can run the command above at all, and until that changes this field is reproducible in principle and unverifiable in practice by anyone else — see packages/checks/README.md and apps/probe/README.md for the current state. The `-z` flag is mandatory, not stylistic: without it git renders path names through core.quotePath, a per-user git config, so the moment any file under packages/checks has a non-ASCII name the same commit produces two different byte sequences — and therefore two different digests — depending only on whose config ran the command. With `-z` the paths are emitted raw and NUL-terminated and both configurations agree. Restricted to sha512 specifically: a SHA-512 digest is always exactly 64 bytes, which standard base64 always encodes as exactly 86 characters plus '==' padding — that length is arithmetic, not a guess, so it is enforced here and a truncated or hand-typo'd digest is rejected instead of silently accepted. This is NOT npm's `dist.integrity`: v0.1 and v0.2 defined this field that way, but packages/checks is `private: true` and has never been published, so that definition was unreachable by construction and no value produced under it is reproducible — see packages/checks/README.md for what those historical values do and do not identify."
+    },
+    "suite_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "The 40-hex-character git commit sha, on `main`, at which this payload's suite_digest was computed. It is what tells a verifier which commit to run suite_digest's own command against: without it the digest names no starting point, and a third party would have to guess which tree to check out before `git ls-tree` could produce anything to compare. Lowercase hex only and exactly 40 characters, matching git's own object-name output — an uppercase, truncated, or over-long value is rejected rather than silently accepted. A SHA-256 repository would make this 64 hex characters instead; this pattern deliberately does not accept that length, and supporting SHA-256 object names is explicitly out of scope for this payload version — a later payload version would widen the pattern rather than this one quietly accepting both."
+    },
+    "registry_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+      "description": "packages/checks/checks.json's own registry_version at the time these checks ran — which version of the check *definitions* (predicates, explanations, failure_status mapping) was in effect."
+    },
+    "toolset_projection_version": {
+      "type": "string",
+      "pattern": "^v[0-9]+$",
+      "description": "@mcpcheckup/canonicalizer's TOOLSET_PROJECTION_VERSION at the time toolset_fingerprint/schema_fingerprint were computed — which fields of a tools/list response were allowlisted into the fingerprint."
+    },
+    "protocol_revision": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "The MCP protocol revision the tested server was observed speaking, e.g. '2026-07-28'. One of the dates in packages/checks/checks.json's protocol_revision check's revision_matrix. format:\"date\" additionally rejects calendar-impossible values (month 13, day 40, Feb 30, ...) that the shape-only pattern alone would let through."
+    },
+    "launch_config_digest": {
+      "description": "sha256:<64 lowercase hex> digest of the stdio launch configuration (command, args, relevant env keys) used for this run. REQUIRED (non-null) when target.transport is 'stdio', because a stdio server's toolset can vary with its launch environment (PRD §12.1) — comparisons across runs are only meaningful for the same launch config. MUST be null for target.transport 'remote', which has no launch config to pin. (The precise cross-field rule — which value is legal for which transport — is enforced by the top-level `allOf` below, not by this subschema alone; a bare TypeScript consumer sees `string | null` here rather than a fully narrowed type, because that specific rule spans two different parts of the object and TypeScript has no clean way to express 'this sibling field's type depends on a nested field two levels away' as a plain type alias.)",
+      "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }]
+    },
+    "target": {
+      "description": "Identifies what was tested. Mirrors the providers/targets tables' own shape and slug pattern (supabase/migrations/0001_core.sql), but as a portable identifier — never a database UUID. Expressed as two complete, mutually exclusive shapes (rather than one shape plus an if/then patch) specifically so the generated TypeScript type is a real discriminated union on `transport`, not a loosened catch-all.",
+      "oneOf": [
+        { "$ref": "#/$defs/remoteTarget" },
+        { "$ref": "#/$defs/stdioTarget" }
+      ]
+    },
+    "observed_at": { "$ref": "#/$defs/timestamp" },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "finished_at"],
+      "properties": {
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "finished_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "probe_region": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Which probe region observed this run. A finding is only ever a claim about what was seen from this vantage point — see packages/checks/checks.json's cannot_zh notes."
+    },
+    "probe_dns_answer_changed": {
+      "description": "Whether this run's outbound requests observed the target hostname's DNS answer change mid-probe (re-resolved and compared after every request by @mcpcheckup/ssrf-guard's guardedFetch — its dnsAnswerChangedDuringProbe signal). This is a condition of THIS RUN, sitting alongside probe_region — not a judgment about the target, and deliberately not surfaced as any check_id in packages/checks/checks.json or folded into any assertion's assertion_status: many healthy production endpoints legitimately return different DNS answers across requests (round-robin load balancing, CDN edge selection, active failover), so treating this as a per-check verdict would misjudge routine DNS behavior as a target defect — exactly the kind of false positive this project's >3% kill criteria exists to prevent. It is, however, real evidence worth signing into the envelope: it is the source fact behind packages/checks' ProbeResult.disqualifiedFromPublication (see that package's README), kept as a separate field here so a consumer never has to infer this specific network condition from a field whose purpose may broaden later. REQUIRED (boolean, non-null) when target.transport is 'remote'. MUST be null for 'stdio', which launches a local process and performs no DNS resolution to observe.",
+      "oneOf": [{ "type": "null" }, { "type": "boolean" }]
+    },
+    "assertions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/assertion" }
+    },
+    "toolset_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "digest() of projectToolset(tools) from @mcpcheckup/canonicalizer, under the canonicalization scheme named in the `canonicalization` field."
+    },
+    "schema_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "digest() of projectSchemas(tools) from @mcpcheckup/canonicalizer, under the canonicalization scheme named in the `canonicalization` field."
+    }
+  },
+  "allOf": [
+    {
+      "description": "launch_config_digest and probe_dns_answer_changed both track target.transport, not just target's own internal fields: stdio requires launch_config_digest (a stdio server's toolset can vary with its launch environment, PRD §12.1) and forbids probe_dns_answer_changed (a local stdio launch does no DNS resolution to observe); remote is the mirror image — no launch config to pin, but DNS-answer-change observability applies.",
+      "if": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "object",
+            "properties": { "transport": { "const": "stdio" } },
+            "required": ["transport"]
+          }
+        },
+        "required": ["target"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "launch_config_digest": { "type": "string" },
+          "probe_dns_answer_changed": { "type": "null" }
+        }
+      },
+      "else": {
+        "type": "object",
+        "properties": {
+          "launch_config_digest": { "type": "null" },
+          "probe_dns_answer_changed": { "type": "boolean" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+      "description": "RFC 3339, always millisecond precision, always a literal 'Z' offset — exactly what Date.prototype.toISOString() produces, and nothing else. format:\"date-time\" alone would accept several other legal RFC 3339 spellings of the same or a nearby instant (no fractional seconds, six-digit fractional seconds, a numeric +00:00 offset instead of Z, a non-UTC offset) — every one of those is a different byte sequence and therefore canonicalizes to a different fingerprint even when it names the same moment, so exactly one spelling has to be the only legal one."
+    },
+    "remoteTarget": {
+      "title": "RemoteTarget",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "name", "transport", "endpoint_url", "package_ref"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/slug", "description": "Slug identifying who publishes this target, e.g. an npm scope, a GitHub org, or a hosting operator." },
+        "name": { "$ref": "#/$defs/slug", "description": "Slug identifying this target within its provider." },
+        "transport": { "const": "remote" },
+        "endpoint_url": { "type": "string", "format": "uri", "minLength": 1, "description": "The remote MCP endpoint URL." },
+        "package_ref": { "type": "null", "description": "Always null for a remote target — there is no stdio package to reference." }
+      }
+    },
+    "stdioTarget": {
+      "title": "StdioTarget",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "name", "transport", "endpoint_url", "package_ref"],
+      "properties": {
+        "provider": { "$ref": "#/$defs/slug", "description": "Slug identifying who publishes this target, e.g. an npm scope, a GitHub org, or a hosting operator." },
+        "name": { "$ref": "#/$defs/slug", "description": "Slug identifying this target within its provider." },
+        "transport": { "const": "stdio" },
+        "endpoint_url": { "type": "null", "description": "Always null for a stdio target — there is no network endpoint." },
+        "package_ref": { "type": "string", "minLength": 1, "description": "The stdio package identifier (e.g. an npm or PyPI package@version reference)." }
+      }
+    },
+    "assertionBase": {
+      "title": "AssertionBase",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "docs_version", "execution_status", "assertion_status", "evidence_provenance", "reason", "unverified_reason"],
+      "description": "One check's result. execution_status and assertion_status are deliberately separate fields — 'did the probe itself run to completion' and 'what did it conclude' are orthogonal and must never be collapsed into a single pass/fail boolean (CLAUDE.md 三条不可违反的产品原则 #3).",
+      "properties": {
+        "check_id": { "$ref": "#/$defs/checkId" },
+        "docs_version": { "$ref": "#/$defs/docsVersion" },
+        "execution_status": { "$ref": "#/$defs/executionStatus" },
+        "assertion_status": { "enum": ["VERIFIED", "FAILED", "OBSERVED_RISK", "UNVERIFIED"] },
+        "evidence_provenance": { "$ref": "#/$defs/evidenceProvenance" },
+        "reason": { "$ref": "#/$defs/reasonRef" },
+        "unverified_reason": { "$ref": "#/$defs/reasonRef" }
+      }
+    },
+    "assertion": {
+      "title": "Assertion",
+      "description": "AssertionBase plus one cross-field rule ajv enforces at runtime: when assertion_status is UNVERIFIED, at least one of reason/unverified_reason must be a non-null reasonRef. That single rule is layered on via allOf/if/then below instead of folded into AssertionBase's own properties, because reason and unverified_reason's *types* (ReasonRef | null) never change based on assertion_status — only whether a value is required to be non-null does — so there is nothing for a discriminated TypeScript union to usefully express here; AssertionBase alone is already the precise type.",
+      "allOf": [
+        { "$ref": "#/$defs/assertionBase" },
+        {
+          "if": {
+            "type": "object",
+            "properties": { "assertion_status": { "const": "UNVERIFIED" } },
+            "required": ["assertion_status"]
+          },
+          "then": {
+            "type": "object",
+            "description": "Mirrors the database's own `unverified_needs_reason` constraint (assertion_status <> 'UNVERIFIED' OR coalesce(unverified_reason, reason) IS NOT NULL). A reasonRef is either null or a {key, params?} object whose own `required: [\"key\"]` and key pattern already rule out an empty/blank reference (see $defs.reasonRef) — so ruling out `null` here (via `\"type\": \"object\"`, since reasonRef's base schema already constrains the field to `null | {key,...}`) is sufficient to mean 'is the non-null variant', with no separate minLength/pattern check needed the way the v0.1 bare-string shape required.",
+            "anyOf": [
+              { "properties": { "unverified_reason": { "type": "object" } }, "required": ["unverified_reason"] },
+              { "properties": { "reason": { "type": "object" } }, "required": ["reason"] }
+            ]
+          }
+        }
+      ]
+    },
+    "checkId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "References a check_id in packages/checks/checks.json."
+    },
+    "docsVersion": {
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Which version of that check's own docs_version (predicate/explain text) was in effect — pins down what the check even claimed to test, independent of registry_version."
+    },
+    "executionStatus": {
+      "enum": ["COMPLETED", "ERROR", "SKIPPED", "BLOCKED"],
+      "description": "Did the probe itself run to completion? Independent of what it concluded."
+    },
+    "evidenceProvenance": {
+      "enum": ["INDEPENDENTLY_OBSERVED", "SELF_ATTESTED", "STATICALLY_ANALYZED"],
+      "description": "How this evidence was obtained — a third, orthogonal dimension from execution_status/assertion_status."
+    },
+    "reasonRef": {
+      "description": "A stable, language-neutral reference to reader-facing copy: a catalog key plus optional structured parameters. Rendered into prose by locale at read time (apps/web's reason-messages.ts, or checks.json for the no_baseline_reason special case) — never baked into the signed bytes as prose. v0.1 payloads used a bare string here; v0.2's payloadType version distinguishes the two shapes, so a consumer must branch on payloadType before parsing this field.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key"],
+          "properties": {
+            "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "params": {
+              "type": "object",
+              "additionalProperties": { "oneOf": [{ "type": "string" }, { "type": "number" }] }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "description": "Synthetic vector: a tool name carrying a pre-NFC combining-mark sequence (\"e\" + COMBINING ACUTE ACCENT, U+0065 U+0301) that must NFC-compose to U+00E9; a description carrying a non-BMP character (U+10437, a real UTF-16 surrogate pair) that JCS must keep literal, two C0 control characters JCS must escape as \\u0001/\\u001f (neither is one of the short-escape characters), and a tab and newline JCS must instead render as the short escapes \\t/\\n.",
+  "source": "synthetic",
+  "endpoint": "https://example.com/mcp",
+  "input": {
+    "tools": [
+      {
+        "name": "café_tool",
+        "description": "Pre-NFC combining mark in the name above (composes to café_tool). Non-BMP: 𐐷. Controls: [\u0001][\u001f]. Short escapes: tab[\t]newline[\n].",
+        "inputSchema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "plain_ascii_tool",
+        "description": "A second, purely-ASCII tool — establishes the sort order for the pair.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  },
+  "jcs": "{\"tools\":[{\"description\":\"Pre-NFC combining mark in the name above (composes to café_tool). Non-BMP: 𐐷. Controls: [\\u0001][\\u001f]. Short escapes: tab[\\t]newline[\\n].\",\"inputSchema\":{\"type\":\"string\"},\"name\":\"café_tool\"},{\"description\":\"A second, purely-ASCII tool — establishes the sort order for the pair.\",\"inputSchema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"plain_ascii_tool\"}]}",
+  "toolset_fingerprint": "sha256:26592932e800f733654c174cd378a085264458405835f1aacdb524bb293b3cfb",
+  "schema_fingerprint": "sha256:c7e30b9a9f3002e63b466f19fb851655213b5329db5e3aef9a262c2aaa31ba09"
+}

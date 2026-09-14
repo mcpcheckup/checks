@@ -1,0 +1,23 @@
+{
+  "name": "@mcpcheckup/fixtures",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A deterministic corpus of simulated MCP servers, each declaring the exact detector assertions it must produce. The spec a detector is built to satisfy, not a set of examples to eyeball.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mcpcheckup/canonicalizer": "workspace:*",
+    "@mcpcheckup/checks": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

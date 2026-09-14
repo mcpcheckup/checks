@@ -1,0 +1,27 @@
+{
+  "description": "Synthetic vector: tools array listed in reverse-of-sorted order, and each tool object's own keys written in a different, non-alphabetical order. projectToolset/projectSchemas + canonicalize must produce the exact same jcs/fingerprints regardless of either ordering.",
+  "source": "synthetic",
+  "endpoint": "https://example.com/mcp",
+  "input": {
+    "tools": [
+      {
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "name": "zeta_tool",
+        "description": "Alphabetically last tool name, listed first in the array."
+      },
+      {
+        "description": "Alphabetically first tool name, listed second in the array.",
+        "name": "alpha_tool",
+        "inputSchema": {
+          "type": "string"
+        }
+      }
+    ]
+  },
+  "jcs": "{\"tools\":[{\"description\":\"Alphabetically last tool name, listed first in the array.\",\"inputSchema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"zeta_tool\"},{\"description\":\"Alphabetically first tool name, listed second in the array.\",\"inputSchema\":{\"type\":\"string\"},\"name\":\"alpha_tool\"}]}",
+  "toolset_fingerprint": "sha256:178c51875be1f6827d3c94363f1e68b187cf46a5b1f4de848d39132105fde2c0",
+  "schema_fingerprint": "sha256:d6017eda60996e80db3c03be860841857647650ba6f76e0c5f1f3404d8ffc4be"
+}

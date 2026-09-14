@@ -1,0 +1,27 @@
+{
+  "name": "@mcpcheckup/checks",
+  "version": "0.4.0",
+  "private": true,
+  "description": "The single source of truth for check definitions (checks.json) and the checks whose logic doesn't belong duplicated anywhere else, e.g. tool_description_hygiene.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./checks.json": "./checks.json",
+    "./reason-messages": "./src/reason-messages.ts"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mcpcheckup/canonicalizer": "workspace:*",
+    "@mcpcheckup/attestation-schema": "workspace:*",
+    "@mcpcheckup/ssrf-guard": "workspace:*"
+  },
+  "devDependencies": {
+    "@mcpcheckup/fixtures": "workspace:*",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@mcpcheckup/ssrf-guard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The only line of defense against an unauthenticated caller making MCP Checkup fetch an arbitrary URL. Re-resolves and re-validates on every redirect hop; see README for what is and is not covered.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

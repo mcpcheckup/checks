@@ -1,0 +1,70 @@
+{
+  "description": "Synthetic vector: inputSchema uses $ref (including a $ref back into its own $defs, i.e. recursive) and anyOf, nested two levels deep, to exercise projectSchemas + canonicalize against schema shapes a real allowlist-style projection must pass through unchanged.",
+  "source": "synthetic",
+  "endpoint": "https://example.com/mcp",
+  "input": {
+    "tools": [
+      {
+        "name": "advanced_query",
+        "description": "A tool whose inputSchema uses $ref and anyOf.",
+        "inputSchema": {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "type": "object",
+          "properties": {
+            "filter": {
+              "$ref": "#/$defs/filter"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "fast",
+                    "thorough"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "filter"
+          ],
+          "$defs": {
+            "filter": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string"
+                },
+                "nested": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/filter"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "simple_ping",
+        "description": "A second, unrelated tool with a trivial flat inputSchema — establishes sort order against the nested one above.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    ]
+  },
+  "jcs": "{\"tools\":[{\"description\":\"A tool whose inputSchema uses $ref and anyOf.\",\"inputSchema\":{\"$defs\":{\"filter\":{\"properties\":{\"nested\":{\"anyOf\":[{\"$ref\":\"#/$defs/filter\"},{\"type\":\"null\"}]},\"query\":{\"type\":\"string\"}},\"type\":\"object\"}},\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"properties\":{\"filter\":{\"$ref\":\"#/$defs/filter\"},\"mode\":{\"anyOf\":[{\"enum\":[\"fast\",\"thorough\"],\"type\":\"string\"},{\"type\":\"null\"}]}},\"required\":[\"filter\"],\"type\":\"object\"},\"name\":\"advanced_query\"},{\"description\":\"A second, unrelated tool with a trivial flat inputSchema — establishes sort order against the nested one above.\",\"inputSchema\":{\"properties\":{},\"type\":\"object\"},\"name\":\"simple_ping\"}]}",
+  "toolset_fingerprint": "sha256:f48227584bf9dee38653b4e66859943d84b8f75ddc1c1e0829e13d366db11286",
+  "schema_fingerprint": "sha256:2098960313a96175a2793aeda2ef0c0d90a312c73e9768790bfbe97097c9cf68"
+}
