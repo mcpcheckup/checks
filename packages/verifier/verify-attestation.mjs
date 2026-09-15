@@ -64,10 +64,10 @@ function printUsageAndExit(code) {
   --pubkey     an Ed25519 public key, SPKI-encoded, base64 — either given
                directly as a string, or a path to a file containing it
 
-Requires Node.js >= 22.18 or >= 24 — this script imports
-@mcpcheckup/canonicalizer's .ts source directly and relies on Node's
-unflagged native TypeScript type-stripping support to run it, with no build
-step of its own.
+Requires Node.js 22.18 or later on the 22 line, or Node.js 24 or later.
+This script imports @mcpcheckup/canonicalizer's .ts source directly and
+relies on Node's unflagged native TypeScript type-stripping support to run
+it, with no build step of its own.
 
 Exit code 0 only if at least one signature verifies AND the payload bytes are
 exactly @mcpcheckup/canonicalizer's canonical (nfc-jcs/v1) encoding of their
