@@ -46,7 +46,11 @@ it. The signing public key is not published yet.
 
 ## License
 
+Copyright 2026 Clear Data Decisions, LLC.
+
 Apache License 2.0. See [LICENSE](LICENSE).
+
+The RFC 8785 test fixtures under `packages/canonicalizer/test/fixtures/rfc8785/` are copied unchanged from `cyberphone/json-canonicalization`, Copyright 2018 Anders Rundgren, Apache License 2.0; see the `UPSTREAM_README.md` in that directory.
 
 ## Issues
 
