@@ -5,6 +5,30 @@ import { digest } from './digest.ts'
 import { CanonicalizationError } from './errors.ts'
 import { projectToolset, projectSchemas } from './projections.ts'
 
+// FC_SEED 使随机失败可复现：设置后，本文件里之后每个 fc.assert 都用这个种子
+// 而不是一个全新的随机种子，这样这里的一次失败可以用同样的生成输入重跑。
+const FC_SEED_RAW = process.env.FC_SEED
+if (FC_SEED_RAW !== undefined) {
+  const seed = Number(FC_SEED_RAW)
+  if (!Number.isSafeInteger(seed) || !/^-?\d+$/.test(FC_SEED_RAW)) {
+    throw new Error(`FC_SEED must be a safe integer, got: ${JSON.stringify(FC_SEED_RAW)}`)
+  }
+  fc.configureGlobal({ seed })
+}
+
+// 内部自检，仅供 property-seed.test.ts 以子进程方式调用：验证 FC_SEED 真的传给
+// 了 fast-check，而不只是被读取——一个内联的、故意必败的性质，失败报告打到
+// stdout 后立即退出，不进入本文件正常的 pass/fail 统计。
+if (process.env.FC_SEED_SELFTEST === '1') {
+  try {
+    fc.assert(fc.property(fc.integer(), () => false))
+    console.log('FC_SEED_SELFTEST: property unexpectedly passed')
+  } catch (e) {
+    console.log('FC_SEED_SELFTEST failure report:\n' + (e as Error).message)
+  }
+  process.exit(0)
+}
+
 let pass = 0, fail = 0
 async function t(name: string, fn: () => void | Promise<void>) {
   try { await fn(); pass++; console.log('  ok   ' + name) }

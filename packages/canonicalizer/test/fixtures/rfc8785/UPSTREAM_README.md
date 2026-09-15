@@ -1,3 +1,5 @@
+The files in input/ and output/ and the text below are copied unchanged from github.com/cyberphone/json-canonicalization (testdata/), Copyright 2018 Anders Rundgren, Apache License 2.0.
+
 ## Test Data
 
 The [input](input) directory contains files with non-canonicalized data which is
