@@ -1,5 +1,25 @@
 # mcpcheckup/checks
 
+[![MCP Checkup](https://mcpcheckup.com/badge/mcpcheckup/mcp.svg)](https://mcpcheckup.com/check/mcpcheckup/mcp)
+
+## Use MCP Checkup from your agent
+
+MCP Checkup watches public MCP servers and publishes what it observed: reachability, protocol revision, tool and schema fingerprints, publicly observable auth metadata, and tool-description hygiene signals. Every check is reported as VERIFIED, FAILED, OBSERVED_RISK or UNVERIFIED; results are never combined into one number or a verdict.
+
+The directory is at [mcpcheckup.com/servers](https://mcpcheckup.com/servers). Agents can query the same data over MCP, with no authentication:
+
+```json
+{ "mcpServers": { "mcpcheckup": { "type": "http", "url": "https://mcpcheckup.com/mcp" } } }
+```
+
+Listed in the official MCP Registry as `com.mcpcheckup/mcp`.
+
+Tools: `check_mcps`, `get_mcp_report`, `get_mcp_history`, `get_attestation`, `search_mcps`, and `request_check` (the only one that contacts a third-party server). The endpoint is rate limited; a 429 response carries Retry-After.
+
+Maintainers: your server may already have a report page. See [mcpcheckup.com/maintainers](https://mcpcheckup.com/maintainers) for what claiming changes, and [mcpcheckup.com/probe](https://mcpcheckup.com/probe) for our user agent, request budget, and how to opt out.
+
+The rest of this README is about checking our work: recomputing `suite_digest` and verifying a signed attestation offline.
+
 The check suite behind [mcpcheckup.com](https://mcpcheckup.com): the
 protocol-contract checks MCP Checkup runs against MCP servers, the
 canonicalizer and schema its signed attestations use, and an offline verifier
