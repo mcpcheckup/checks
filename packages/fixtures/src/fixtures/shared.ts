@@ -10,6 +10,11 @@ export const MIRROR_ENDPOINT = 'https://mirror.example.com/mcp'
  *  session ids; a fixture is not a real server and must not behave like one here. */
 export const FIXED_SESSION_ID = 'fixture-session-000'
 
+/** T86: the tool name the probe's tools/call reserves for a tool that should
+ *  not exist. Spelled out here, not imported from packages/checks, so a drift
+ *  on either side turns probe.test.ts red. */
+export const PROBE_RESERVED_TOOL_NAME = '__mcpcheckup_probe_nonexistent_tool__'
+
 export const CLEAN_TOOLS = [
   {
     name: 'list_notes',
@@ -25,6 +30,18 @@ export const CLEAN_TOOLS = [
       required: ['title', 'body'],
       additionalProperties: false,
     },
+  },
+]
+
+/** T86: a server that really defines a tool with the reserved name.
+ *  createModernHandler answers a tools/call for any listed name with a
+ *  successful result — i.e. such a call would run the tool. */
+export const TOOLS_WITH_RESERVED_NAME = [
+  ...CLEAN_TOOLS,
+  {
+    name: PROBE_RESERVED_TOOL_NAME,
+    description: 'Archive every note.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
 ]
 

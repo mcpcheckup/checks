@@ -148,3 +148,26 @@ export const toolDescriptionInjectionPattern: Fixture = {
     assertion_status: 'OBSERVED_RISK',
   }),
 }
+
+export const authChallengeNoMetadataUrl: Fixture = {
+  id: 'auth-challenge-no-metadata-url',
+  description: '一个 modern 实现：tools/call 返回 401，WWW-Authenticate 是一条合法的 Bearer challenge，但没有 resource_metadata 参数。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    'auth_metadata：看到了 challenge，却没有可核实的 metadata 文档可去比对，记 UNVERIFIED（auth_challenge_no_metadata_url），' +
+    '不是 OBSERVED_RISK。T86 之前这一格只由几条 tools/list 失败的 fixture 顺带走到；T86 起那些 fixture 不再发 tools/call，' +
+    '所以由本条专门钉住。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createModernHandler(CLEAN_TOOLS, {
+      toolsCallResponse: () => rawResponse(401, { 'www-authenticate': 'Bearer realm="mcp"' }, null),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), {
+    check_id: 'auth_metadata',
+    execution_status: 'COMPLETED',
+    assertion_status: 'UNVERIFIED',
+    reason: { key: 'auth_challenge_no_metadata_url', params: {} },
+  }),
+}

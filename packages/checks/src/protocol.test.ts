@@ -189,6 +189,64 @@ await t('tools-list-illegal-structure：result.tools 不是数组 → ok=false',
   assert.equal(r.tools, null)
 })
 
+console.log('\nT86 performToolsList.hasNextCursor：只在 ok 的清单上出现（值恒为 true）；nextCursor 只要存在且不是 null / undefined 就算——空串与非字符串都算')
+
+/** A modern server whose discover succeeds and whose tools/list answers with
+ *  `result` (any JSON value), optionally as a 401 + valid challenge. */
+function toolsListServer(result: unknown, challenged = false): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
+  return async (_input, init) => {
+    const call = JSON.parse(String(init?.body)) as { id: unknown; method: string }
+    const body = (r: unknown) => JSON.stringify({ jsonrpc: '2.0', id: call.id, result: r })
+    if (call.method === 'server/discover') return new Response(body({ supportedVersions: ['2026-07-28'] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    const headers: Record<string, string> = { 'content-type': 'application/json', ...(challenged ? { 'www-authenticate': 'Bearer realm="mcp"' } : {}) }
+    return new Response(body(result), { status: challenged ? 401 : 200, headers })
+  }
+}
+
+async function toolsListFor(result: unknown, challenged = false) {
+  const fetchImpl = toolsListServer(result, challenged)
+  const ctx = createProbeContext(Date.now())
+  const handshake = await performHandshake({ fetchImpl, endpoint: 'https://notes-mcp.example.com/mcp', budget: BUDGET, ctx, newId })
+  assert.equal(handshake.handshakeOk, true)
+  return performToolsList({ fetchImpl, budget: BUDGET, ctx, newId, handshake })
+}
+
+const TOOL = { name: 'list_notes', inputSchema: { type: 'object' } }
+
+await t('nextCursor 为 "page-2" / "" / 0 / false / {} / [] ⇒ hasNextCursor === true，其余字段与不带 nextCursor 时逐字段相同', async () => {
+  const plain = await toolsListFor({ tools: [TOOL] })
+  assert.equal('hasNextCursor' in plain, false)
+  for (const cursor of ['page-2', '', 0, false, {}, []]) {
+    const r = await toolsListFor({ tools: [TOOL], nextCursor: cursor })
+    assert.equal(r.hasNextCursor, true, `nextCursor=${JSON.stringify(cursor)}`)
+    const { hasNextCursor: _dropped, ...rest } = r
+    assert.deepStrictEqual(rest, plain, `nextCursor=${JSON.stringify(cursor)}: 其余字段不应改变`)
+  }
+})
+
+await t('nextCursor 为 null 或缺席 ⇒ 没有 hasNextCursor 字段（不是 false）', async () => {
+  for (const result of [{ tools: [TOOL], nextCursor: null }, { tools: [TOOL] }]) {
+    const r = await toolsListFor(result)
+    assert.equal(r.ok, true)
+    assert.equal('hasNextCursor' in r, false, JSON.stringify(result))
+  }
+})
+
+await t('清单不 ok 时（没有 tools 数组 / 401 + challenge 否决）即使带 nextCursor 也没有 hasNextCursor 字段', async () => {
+  const noTools = await toolsListFor({ nextCursor: 'page-2' })
+  assert.equal(noTools.ok, false)
+  assert.equal('hasNextCursor' in noTools, false)
+  const vetoed = await toolsListFor({ tools: [TOOL], nextCursor: 'page-2' }, true)
+  assert.equal(vetoed.ok, false)
+  assert.equal('hasNextCursor' in vetoed, false)
+})
+
+await t('只看 result 自身的 nextCursor：嵌在某个工具对象里的 nextCursor 不算', async () => {
+  const r = await toolsListFor({ tools: [{ ...TOOL, nextCursor: 'x' }] })
+  assert.equal(r.ok, true)
+  assert.equal('hasNextCursor' in r, false)
+})
+
 console.log('\nperformUnknownToolCall：针对真实 fixture handler')
 
 await t('modern-baseline-clean：调用不存在的工具，拿到合法 JSON-RPC 错误响应（HTTP 200）', async () => {

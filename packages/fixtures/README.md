@@ -120,7 +120,7 @@ these numbers — which is how both of them came to be wrong for several rounds.
 row here yet; `src/index.ts`'s `FIXTURE_CORPUS` is the authoritative list, and the counts
 in the two headings come from it rather than from these rows.
 
-### Positive (3 required, 13 provided)
+### Positive (3 required, 15 provided)
 
 | id | revision | guards against |
 |---|---|---|
@@ -128,7 +128,7 @@ in the two headings come from it rather than from these rows.
 | `legacy-baseline-clean` | `2025-06-18` | That a correct legacy implementation is judged fairly — the detector must probe modern first, recognize the resulting 400 as *not* a modern error, and fall back to `initialize`, per the 2026-07-28 spec's own backward-compatibility algorithm. |
 | `large-toolset-nested-schemas` | `2026-07-28` | That deeply nested `inputSchema` (object-in-object, arrays of objects, `enum`) doesn't destabilize `nfc-jcs/v1` canonicalization or the `projectSchemas` field-allowlist projection. |
 
-### Negative (9 required, 50 provided)
+### Negative (9 required, 57 provided)
 
 | id | assertion_status | guards against |
 |---|---|---|

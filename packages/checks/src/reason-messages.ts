@@ -289,6 +289,17 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     zh: (p) =>
       `此检查需要凭据才能完成——服务端返回 401 并附带 "${requireParam(p, 'scheme')}" 认证 challenge。我们从不发送任何凭据，因此无法验证背后的行为；这看起来是有意的访问控制选择，不是实现故障。`,
   },
+  // T86: why error_taxonomy and auth_metadata did not run — probe.ts withheld
+  // the tools/call carrying its reserved tool name. Shared by both rows; no
+  // params.
+  probe_tool_name_collision: {
+    en: () => 'Your server lists a tool with the exact name our probe reserves for a tool that should not exist, so we did not send that call, and nothing that depends on it was observed.',
+    zh: () => '服务器的工具列表里有一个与我们探测用的「不应存在的工具」同名的工具，因此我们没有发送这次调用，依赖它的观测都没有进行。',
+  },
+  probe_tool_name_unverifiable: {
+    en: () => "We could not see your server's full tool list, so we could not rule out that it has a tool with the name our probe reserves, and did not send that call; nothing that depends on it was observed.",
+    zh: () => '我们没能看到完整的工具列表，无法排除其中有与探测保留名同名的工具，因此没有发送这次调用，依赖它的观测都没有进行。',
+  },
   disqualified_no_protocol_revision: {
     en: () => 'No protocol_revision was ever observed, so a schema-valid attestation payload could not be assembled.',
     zh: () => '未观察到 protocol_revision，无法组装符合 schema 的 attestation payload',

@@ -2,6 +2,8 @@ import type { Fixture, ExpectedAssertion, FetchHandler } from '../types.ts'
 import { jsonRpcResult, rawResponse } from '../helpers.ts'
 import {
   CLEAN_TOOLS,
+  PROBE_RESERVED_TOOL_NAME,
+  TOOLS_WITH_RESERVED_NAME,
   LARGE_NESTED_TOOLSET,
   ENDPOINT,
   createModernHandler,
@@ -217,7 +219,7 @@ function createCredentialGatedEverywhereHandler(): FetchHandler {
   }
 }
 
-function credentialGatedCascadeAssertions(gatedCheckIds: string[]): ExpectedAssertion[] {
+export function credentialGatedCascadeAssertions(gatedCheckIds: string[]): ExpectedAssertion[] {
   const reason = { key: 'credential_required', params: { scheme: 'bearer' } }
   const base = cleanBaselineAssertions()
     .filter((a) => !TOOLS_DERIVED_CHECK_IDS.includes(a.check_id))
@@ -416,4 +418,64 @@ export const legacyToolsCallCredentialGated: Fixture = {
   },
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: cleanBaselineAssertions(),
+}
+
+// ---- T86: when the probe still sends its reserved tool name ----
+
+/** Names close to the reserved one but not it, plus a description that
+ *  mentions it: only an exact `name` match withholds the call. */
+const TOOLS_NEAR_MISS_NAMES = [
+  ...CLEAN_TOOLS,
+  { name: `${PROBE_RESERVED_TOOL_NAME}x`, description: 'Suffix variant.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: PROBE_RESERVED_TOOL_NAME.toUpperCase(), description: 'Case variant.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'mention_only', description: `Not named ${PROBE_RESERVED_TOOL_NAME}.`, inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+]
+
+export const probeToolNameNearMissStillSent: Fixture = {
+  id: 'probe-tool-name-near-miss-still-sent',
+  description:
+    '一个 modern 服务器：tools/list 完整（无 nextCursor），其中有与探测保留名相近但不相同的工具名（多一个后缀、大小写不同），' +
+    '另有一个工具只在描述里提到这个名字。',
+  protocolRevision: '2026-07-28',
+  kind: 'positive',
+  guardsAgainst:
+    'T86 的反向：只有 name 与保留名逐字相等才不发 tools/call——不做大小写折叠、不去空白、不按前缀或子串匹配，也不看描述。' +
+    '相近的名字不是同一个工具，这里 tools/call 照发，服务器照常以「未知工具」作答，整轮与干净基线一致。',
+  tools: TOOLS_NEAR_MISS_NAMES,
+  createHandler: () => createModernHandler(TOOLS_NEAR_MISS_NAMES),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: cleanBaselineAssertions(),
+}
+
+export const probeToolNameGatedToolsListStillSent: Fixture = {
+  id: 'probe-tool-name-gated-tools-list-still-sent',
+  description:
+    '一个 modern 服务器：握手正常；tools/list 返回 401 + 合法 WWW-Authenticate: Bearer challenge，401 的 body 里带着一份含保留名的工具数组；' +
+    'tools/call 同样是 401 + challenge，resource_metadata 文档正常提供。',
+  protocolRevision: '2026-07-28',
+  kind: 'positive',
+  guardsAgainst:
+    'T86 的凭据门控一支：tools/list 被 401 + challenge 挡住时 tools/call 照发，与 0.6.0 一致——auth_metadata 要靠这次' +
+    '无凭据调用的 401 来观察，而未认证的调用在门控服务器上执行不到任何工具。401 的 body 是服务端自己不认的响应，' +
+    '里面的工具名不构成「首页同名」（与 credential-gated-tools-list-with-tools-body 同一条原则）。',
+  createHandler: () =>
+    createModernHandler(CLEAN_TOOLS, {
+      toolsListResponse: (id) =>
+        rawResponse(
+          401,
+          { 'www-authenticate': CREDENTIAL_GATE_CHALLENGE, 'content-type': 'application/json' },
+          JSON.stringify({ jsonrpc: '2.0', id, result: { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools: TOOLS_WITH_RESERVED_NAME } }),
+        ),
+      toolsCallResponse: () => rawResponse(401, { 'www-authenticate': CREDENTIAL_GATE_CHALLENGE }, null),
+      onOtherPath: (call) =>
+        call.url.pathname === CREDENTIAL_GATE_METADATA_PATH
+          ? rawResponse(
+              200,
+              { 'content-type': 'application/json' },
+              JSON.stringify({ resource: new URL(ENDPOINT).origin, authorization_servers: [`${new URL(ENDPOINT).origin}/oauth`] }),
+            )
+          : undefined,
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: credentialGatedCascadeAssertions(['tools_list']),
 }

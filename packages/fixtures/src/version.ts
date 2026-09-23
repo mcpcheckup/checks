@@ -6,7 +6,7 @@ import type { Fixture } from './types.ts'
  * what a correct detector must produce for it — not for prose-only edits (description,
  * guardsAgainst) that don't change the spec itself. See README.
  */
-export const FIXTURE_CORPUS_VERSION = 'v18'
+export const FIXTURE_CORPUS_VERSION = 'v19'
 
 function toHex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('')

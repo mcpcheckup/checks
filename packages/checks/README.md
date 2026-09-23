@@ -60,7 +60,7 @@ handful of wire calls, and several checks read from the same call:
    the registry, not retyped). A baseline that doesn't match → `FAILED`, and a
    `DriftEvent` is recorded. This is the *only* path that can produce `FAILED` here —
    see "Baselines and drift" below.
-5. **`tools/call`** with a name no real tool would ever have
+5. **`tools/call`** with the name we reserve for a tool that should not exist
    (`__mcpcheckup_probe_nonexistent_tool__`) — the protocol-level, non-destructive way
    to trigger an error scenario, matching exactly what the fixture corpus models. This
    single response feeds both `error_taxonomy` (is the error shape protocol-conformant)
@@ -68,7 +68,12 @@ handful of wire calls, and several checks read from the same call:
    declared `scope` actually match its own linked resource-metadata document's
    `scopes_supported`). A bare 401/403 counts as a legitimate auth rejection for
    `error_taxonomy`'s purposes (not a taxonomy violation) but is exactly what
-   `auth_metadata` reads.
+   `auth_metadata` reads. The name is reserved for a tool that should not exist, but a
+   server can define it, so the call is withheld when the first `tools/list` page names
+   it, when the list carries a `nextCursor`, or when `tools/list` failed; both checks
+   are then `SKIPPED`/`UNVERIFIED`. The one exception is a credential gate that left
+   no list to read: there the call is still sent, because `auth_metadata` needs that
+   unauthenticated 401.
 6. **`redirect_policy`** is judged last, from whether *any* wire call in the whole run
    crossed hosts on a redirect (tracked once, centrally, in `wire.ts`'s
    `ProbeContext` — not recomputed per call site). Every wire call this package makes
@@ -424,7 +429,7 @@ made — the guard can only observe the DNS mismatch after the fact, not prevent
   no fixture in the current corpus exercises it. It's untested against a real handler,
   only against the spec's written description of the behavior.
 - **`error_taxonomy`'s "protocol-level safe error scenario"** is implemented
-  specifically as "call `tools/call` with a tool name that can't exist," matching what
+  specifically as "call `tools/call` with the name we reserve for a tool that should not exist," matching what
   the fixture corpus itself models (and what `@mcpcheckup/fixtures`' shared handler
   engine implements on the server side) — not, e.g., an unrecognized top-level JSON-RPC
   method name. Both are defensible readings of "触发一个安全的错误场景"; this package
@@ -432,10 +437,12 @@ made — the guard can only observe the DNS mismatch after the fact, not prevent
 
 ## Security boundaries this package holds to
 
-- Never calls a business tool — the only `tools/call` this package ever makes uses a
-  name (`__mcpcheckup_probe_nonexistent_tool__`) that cannot collide with a real tool,
-  and that call is exactly what `checks.json`'s `forbidden` list requires (a safe,
-  protocol-level error trigger, not a real operation).
+- Never calls a business tool — the only `tools/call` this package ever makes uses the
+  name we reserve for a tool that should not exist
+  (`__mcpcheckup_probe_nonexistent_tool__`), withheld whenever the server's tool list
+  names it or could not be read in full, unless a credential gate left no list to read
+  (step 5 above); that call is exactly what `checks.json`'s `forbidden` list requires
+  (a protocol-level error trigger, not a real operation).
 - Never writes, never sends credentials, never does anything destructive.
 - Never puts a target's raw response body or headers into an `Assertion`'s `reason` —
   every `reason` string in this package is authored by this package's own code (status

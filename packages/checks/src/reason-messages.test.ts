@@ -30,6 +30,7 @@ const EXPECTED_KEYS = [
   'handshake_ack_http_error', 'protocol_revision_missing', 'protocol_revision_unknown',
   'tools_list_challenge_after_failed_handshake', 'tools_list_not_jsonrpc', 'tools_list_jsonrpc_error', 'tools_list_not_array',
   'fingerprint_tool_missing_name', 'fingerprint_canonicalize_failed',
+  'probe_tool_name_collision', 'probe_tool_name_unverifiable',
 ]
 
 async function main() {
@@ -322,6 +323,33 @@ async function main() {
         })
         REASON_MESSAGES[key]![locale](spy)
         assert.deepEqual([...touched].sort(), want, `${key}/${locale} read ${JSON.stringify([...touched])}`)
+      }
+    }
+  })
+
+  // ---- T86: the signed en/zh sentences, verbatim. No params. ----
+  const PROBE_TOOL_NAME_COPY: Record<string, { en: string; zh: string }> = {
+    probe_tool_name_collision: {
+      en: 'Your server lists a tool with the exact name our probe reserves for a tool that should not exist, so we did not send that call, and nothing that depends on it was observed.',
+      zh: '服务器的工具列表里有一个与我们探测用的「不应存在的工具」同名的工具，因此我们没有发送这次调用，依赖它的观测都没有进行。',
+    },
+    probe_tool_name_unverifiable: {
+      en: "We could not see your server's full tool list, so we could not rule out that it has a tool with the name our probe reserves, and did not send that call; nothing that depends on it was observed.",
+      zh: '我们没能看到完整的工具列表，无法排除其中有与探测保留名同名的工具，因此没有发送这次调用，依赖它的观测都没有进行。',
+    },
+  }
+
+  await t('T86: the two probe_tool_name_* keys render exactly the approved en/zh sentences and read no params at all', () => {
+    for (const [key, copy] of Object.entries(PROBE_TOOL_NAME_COPY)) {
+      for (const locale of ['en', 'zh'] as const) {
+        const touched = new Set<string>()
+        const spy = new Proxy({} as Record<string, string | number>, {
+          has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+          get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 0 },
+        })
+        assert.equal(REASON_MESSAGES[key]![locale](spy), copy[locale], `${key}/${locale}`)
+        assert.equal(REASON_MESSAGES[key]![locale](), copy[locale], `${key}/${locale} (no params)`)
+        assert.deepEqual([...touched], [], `${key}/${locale} read ${JSON.stringify([...touched])}`)
       }
     }
   })

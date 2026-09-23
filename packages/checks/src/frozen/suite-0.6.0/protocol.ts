@@ -1,7 +1,11 @@
-import { sendRequest } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
-import type { FetchLike, ProbeBudget } from './types.ts'
-import { classifyCredentialChallenge } from './auth.ts'
+// FROZEN: packages/checks/src/protocol.ts at suite 0.6.0 (a05097e), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for probe-tool-name-differential.test.ts, which checks
+// FROZEN: its git blob id. DO NOT edit or "update" it; it is the 0.6.0 behaviour.
+import { sendRequest } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
+import type { FetchLike, ProbeBudget } from '../../types.ts'
+import { classifyCredentialChallenge } from '../../auth.ts'
 
 const CLIENT_INFO = { name: 'mcp-checkup-prober', version: '0.1.0' }
 const MODERN_PROBE_VERSION = '2026-07-28'
@@ -420,12 +424,6 @@ export interface ToolsListResult {
    *  UNVERIFIED — so on every cell it judges tools_list FAILED (and, unused,
    *  when the handshake itself was credential-gated). See toolsListFailure. */
   failure?: FailureReason<ToolsListFailureKey>
-  /** T86: present, as `true`, only on an `ok` list whose result carries a
-   *  `nextCursor` that is neither null nor undefined ("" and non-strings
-   *  count): `tools` may then be only the first page. We never fetch the
-   *  next one; probe.ts reads this to decide whether its reserved tool name
-   *  could be one of the server's tools. */
-  hasNextCursor?: true
 }
 
 /** Order: a challenge first — it vetoes `ok` whatever the body says (the body
@@ -505,15 +503,12 @@ export async function performToolsList(opts: {
   const result = parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
   const tools = result?.tools
   const ok = Array.isArray(tools) && challenge === null
-  // T86: `ok` implies `result` is the object `tools` was read from.
-  const hasNextCursor = ok && Object.hasOwn(result!, 'nextCursor') && result!.nextCursor !== null && result!.nextCursor !== undefined
   return {
     ok,
     tools: ok ? (tools as unknown[]) : null,
     currentEndpoint: res.finalUrl,
     ...(challenge ? { credentialChallenge: challenge } : {}),
     ...toolsListFailure(ok, challenge, handshake.handshakeOk, res.status, parsed),
-    ...(hasNextCursor ? { hasNextCursor: true as const } : {}),
   }
 }
 
@@ -524,12 +519,9 @@ export interface ProbeCallResult {
   currentEndpoint: string
 }
 
-/** Calls the name reserved for a tool that should not exist, the protocol-level
- *  way of triggering an error scenario (checks.json's error_taxonomy /
- *  auth_metadata both read this same response — never a business tool). A
- *  server can still define that name, so runProbe withholds this call when the
- *  tool list names it or could not be read in full, except on the
- *  credential-gated branches that left no list to read (T86). */
+/** Calls a tool name that must not exist on any real server, the protocol-level
+ *  way of triggering a safe error scenario (checks.json's error_taxonomy /
+ *  auth_metadata both read this same response — never a business tool). */
 export async function performUnknownToolCall(opts: {
   fetchImpl: FetchLike
   budget: ProbeBudget

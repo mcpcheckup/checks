@@ -2,6 +2,7 @@ import type { Fixture, ExpectedAssertion, FetchHandler } from '../types.ts'
 import { jsonRpcResult, jsonRpcError, rawResponse } from '../helpers.ts'
 import {
   CLEAN_TOOLS,
+  TOOLS_WITH_RESERVED_NAME,
   ENDPOINT,
   MIRROR_ENDPOINT,
   createModernHandler,
@@ -15,6 +16,7 @@ import {
   unclaimedDriftAssertions,
   type ModernHandlerOptions,
 } from './shared.ts'
+import { credentialGatedCascadeAssertions } from './positive.ts'
 
 export const staleProtocolVersion: Fixture = {
   id: 'stale-protocol-version',
@@ -45,7 +47,7 @@ export const toolsListIllegalStructure: Fixture = {
       toolsListResponse: (id) => jsonRpcResult(id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools: 'not-an-array' }),
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: withOverride(
+  expectedAssertions: withOverrides(
     cleanBaselineAssertions()
       .filter((a) => !['toolset_fingerprint', 'schema_fingerprint', 'tool_description_hygiene'].includes(a.check_id))
       .concat(
@@ -58,7 +60,7 @@ export const toolsListIllegalStructure: Fixture = {
           }),
         ),
       ),
-    failedWith('tools_list', 'tools_list_not_array', { status: 200 }),
+    [failedWith('tools_list', 'tools_list_not_array', { status: 200 }), ...probeCallWithheld('probe_tool_name_unverifiable')],
   ),
 }
 
@@ -100,7 +102,7 @@ export const legacyEverythingRequiresAuthStillFails: Fixture = {
       failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
       revisionMissing(),
       failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
-      { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_401_no_challenge', params: {} } },
+      ...probeCallWithheld('probe_tool_name_unverifiable'),
     ],
   ),
 }
@@ -256,14 +258,27 @@ export const redirectCrossHost: Fixture = {
 
 const CREDENTIAL_GATE_CASCADE_UNVERIFIED_CHECK_IDS = ['toolset_fingerprint', 'schema_fingerprint', 'tool_description_hygiene', 'toolset_unchanged_vs_approved', 'schema_unchanged_vs_approved']
 
+/** T86: every caller is a tools/list that FAILED, so the probe also withholds
+ *  its tools/call (it never saw the tool list) — see probeCallWithheld. */
 function toolsListInvalidStructureCascade(base: ExpectedAssertion[]): ExpectedAssertion[] {
-  return base
+  const cascade = base
     .filter((a) => !CREDENTIAL_GATE_CASCADE_UNVERIFIED_CHECK_IDS.includes(a.check_id))
     .concat(
       CREDENTIAL_GATE_CASCADE_UNVERIFIED_CHECK_IDS.map(
         (check_id): ExpectedAssertion => ({ check_id, execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: { key: 'tools_list_invalid_structure', params: {} } }),
       ),
     )
+  return withOverrides(cascade, probeCallWithheld('probe_tool_name_unverifiable'))
+}
+
+/** T86: the probe's tools/call uses a tool name it reserves for a tool that
+ *  should not exist. When the server's tool list names it (collision), or we
+ *  could not see the whole list (unverifiable), the call is not sent, and the
+ *  two checks that read its one response are SKIPPED with that reason. Keys
+ *  spelled out here, not imported from packages/checks, so a drift on either
+ *  side turns probe.test.ts red. */
+function probeCallWithheld(key: 'probe_tool_name_collision' | 'probe_tool_name_unverifiable'): ExpectedAssertion[] {
+  return ['error_taxonomy', 'auth_metadata'].map((check_id): ExpectedAssertion => ({ check_id, execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: { key, params: {} } }))
 }
 
 export const forbidden403NotCredentialGated: Fixture = {
@@ -304,7 +319,6 @@ export const credentialChallengeEmptyHeaderNotExempted: Fixture = {
     failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
     revisionMissing(),
     failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
-    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_401_no_challenge', params: {} } },
   ]),
 }
 
@@ -323,7 +337,6 @@ export const credentialChallengeMalformedHeaderNotExempted: Fixture = {
     failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
     revisionMissing(),
     failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
-    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
 
@@ -354,7 +367,6 @@ export const credentialChallengeHtabSeparatorNotExempted: Fixture = {
     failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
     revisionMissing(),
     failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
-    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
 
@@ -385,7 +397,6 @@ export const credentialChallengeQdtextControlCharNotExempted: Fixture = {
     failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
     revisionMissing(),
     failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
-    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
 
@@ -412,7 +423,6 @@ export const credentialChallengeMalformedRemainderNotExempted: Fixture = {
     failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
     revisionMissing(),
     failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
-    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
 
@@ -483,19 +493,12 @@ export const recognizedModernErrorCodeAt401NotExempted: Fixture = {
       toolsCallResponse: recognizedModernErrorResponseChallenged,
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  // auth_metadata is judged from this same tools/call(unknown tool) response
-  // (judgeAuthMetadata reads it off callResult, not off discover/tools-list) —
-  // a real 401 + WWW-Authenticate with no resource_metadata param is exactly
-  // the malformed-but-present-challenge shape judgeAuthMetadata already
-  // handles, unrelated to the credential-gated/recognized-modern-error
-  // distinction this fixture exists to test. Overridden here rather than
-  // silently left at the baseline's VERIFIED so this fixture's real
-  // observed behavior stays pinned.
+  // T86: tools/list FAILED here, so the tools/call that auth_metadata and
+  // error_taxonomy read is never sent (toolsListInvalidStructureCascade).
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
     failedWith('discovery_handshake', 'handshake_discover_rejected', { status: 401, jsonrpc_error_code: -32020 }),
     revisionMissing(),
     failedWith('tools_list', 'tools_list_challenge_after_failed_handshake'),
-    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
 
@@ -609,8 +612,8 @@ export const serviceUnavailable503NoRetryAfterNotRateLimited: Fixture = {
     '把 503 的裁定实现反的唯一可证伪输入。规则是「503 只在带 Retry-After 时按 429 处理；不带 ' +
     'Retry-After 的 503 维持现状」——理由是 Service Unavailable 不带 Retry-After 时通常只是瞬时故障，' +
     '不是限流意图。所以这条 fixture 必须**跑完整轮**：reachability 是 COMPLETED/VERIFIED（本轮没有被中止），' +
-    '判定照旧落在 discovery_handshake / protocol_revision / tools_list 的 FAILED 上，error_taxonomy 照旧是 ' +
-    'OBSERVED_RISK（503 既不是 401 也不是 403，body 也不是 JSON-RPC 错误形状）。一旦有人把退避判据写成' +
+    '判定照旧落在 discovery_handshake / protocol_revision / tools_list 的 FAILED 上（T86 起 tools/list 失败即不发 ' +
+    'tools/call，error_taxonomy / auth_metadata 记 SKIPPED）。一旦有人把退避判据写成' +
     '「429 或 503」，这条立刻变红：reachability 会变成 ERROR/UNVERIFIED。' +
     '这条同时守住调度侧：维持现状意味着 next_run_at 照常按档位推进，不被 Retry-After 顺延。',
   createHandler: (): FetchHandler => async () => rawResponse(503, {}, null),
@@ -619,8 +622,6 @@ export const serviceUnavailable503NoRetryAfterNotRateLimited: Fixture = {
     failedWith('discovery_handshake', 'handshake_discover_http_error', { status: 503 }),
     revisionMissing(),
     failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 503 }),
-    // T73: no body and no Content-Type at all ⇒ empty_body / media_type none.
-    errorTaxonomyRisk('empty_body', 503, 'none'),
   ]),
 }
 
@@ -759,6 +760,24 @@ export const errorTaxonomyEventStreamNoData: Fixture = {
     }),
   sampleRun: (handler) => modernSampleRun(handler),
   expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('event_stream_no_data', 200, 'text/event-stream')),
+}
+
+export const errorTaxonomyEmptyBody: Fixture = {
+  id: 'error-taxonomy-empty-body',
+  description: '一个 modern 实现，握手与 tools/list 正常；调用不存在的工具时返回裸 HTTP 503，没有 body，也没有 Content-Type。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    ERROR_TAXONOMY_GUARD_SHARED +
+    '本条钉住 empty_body 一类。此前由 service-unavailable-503-no-retry-after-not-rate-limited 顺带钉住；' +
+    'T86 起那条的 tools/list 失败、tools/call 不再发送，所以这一类改由本条专门钉住。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createModernHandler(CLEAN_TOOLS, {
+      toolsCallResponse: () => rawResponse(503, {}, null),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('empty_body', 503, 'none')),
 }
 
 // ---- T73b: every FAILED protocol / fingerprint assertion records WHY ----
@@ -1052,4 +1071,105 @@ export const fingerprintCanonicalizeFailed: Fixture = {
     failedWith('schema_fingerprint', 'fingerprint_canonicalize_failed'),
     { check_id: 'schema_unchanged_vs_approved', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: COMPARISON_UNAVAILABLE },
   ]),
+}
+
+// ---- T86: the probe never sends its reserved tool name to a server that may define it ----
+
+const PROBE_TOOL_NAME_GUARD_SHARED =
+  'T86：探测用的 tools/call 带一个保留名（本应不存在的工具）。这个名字是公开的，服务器可以真的定义它；' +
+  '那样这次调用就会真的执行对方的一个工具，违背「我们从不调用你的工具」。所以只有能排除同名时才发；' +
+  '不发时 error_taxonomy / auth_metadata（两者都只读这一次响应）记 SKIPPED/UNVERIFIED 并带原因，其余检查不变。'
+
+export const probeToolNameCollision: Fixture = {
+  id: 'probe-tool-name-collision',
+  description: '一个 modern 服务器：握手与 tools/list 正常，tools/list 的第一页里就有一个与探测保留名逐字相同的工具，调用它会真的执行。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    PROBE_TOOL_NAME_GUARD_SHARED +
+    '本条钉住「首页精确同名」一支（原因 probe_tool_name_collision）：请求序列里不得出现 tools/call；' +
+    'tools_list、指纹与 hygiene 照常基于这份清单判定。',
+  tools: TOOLS_WITH_RESERVED_NAME,
+  createHandler: () => createModernHandler(TOOLS_WITH_RESERVED_NAME),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverrides(cleanBaselineAssertions(), probeCallWithheld('probe_tool_name_collision')),
+}
+
+export const probeToolNameUnverifiableNextCursor: Fixture = {
+  id: 'probe-tool-name-unverifiable-next-cursor',
+  description:
+    '一个 modern 服务器：tools/list 的第一页只列出两个普通工具，并带 nextCursor；保留名的那个工具在后面的页里，调用它会真的执行。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    PROBE_TOOL_NAME_GUARD_SHARED +
+    '本条钉住「清单不完整」一支（原因 probe_tool_name_unverifiable）：第一页没有同名不能证明整份清单没有，' +
+    '而我们不翻页（每轮请求数有公开上限）。第一页本身照常判定。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createModernHandler(TOOLS_WITH_RESERVED_NAME, {
+      toolsListResponse: (id) => jsonRpcResult(id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools: CLEAN_TOOLS, nextCursor: 'page-2' }),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverrides(cleanBaselineAssertions(), probeCallWithheld('probe_tool_name_unverifiable')),
+}
+
+export const probeToolNameUnverifiableToolsListFailed: Fixture = {
+  id: 'probe-tool-name-unverifiable-tools-list-failed',
+  description:
+    '一个 modern 服务器：握手正常，tools/list 返回 HTTP 500 + 一张 text/html 页面；它其实定义了保留名的那个工具，调用它会真的执行。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    PROBE_TOOL_NAME_GUARD_SHARED +
+    '本条钉住「tools/list 失败」一支（原因 probe_tool_name_unverifiable）：没有看到清单就排除不了同名。' +
+    'tools_list 照旧 FAILED 并带 T73b 的原因；凭据门控的两支不在此列（见 credential-gated-* 正例）。',
+  createHandler: () =>
+    createModernHandler(TOOLS_WITH_RESERVED_NAME, {
+      toolsListResponse: () => rawResponse(500, { 'content-type': 'text/html' }, '<html><body><h1>Internal Server Error</h1></body></html>'),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 500 })]),
+}
+
+/** T86 R2: a legacy server whose handshake is credential-gated (initialize is
+ *  401 + a valid Bearer challenge) but whose tools/list still answers without
+ *  credentials. The list is readable, so the gate no longer vouches that an
+ *  unauthenticated tools/call reaches no tool. */
+function gatedHandshakeReadableList(opts: { toolsListResponse?: (id: unknown) => Response } = {}): FetchHandler {
+  return createLegacyHandler(TOOLS_WITH_RESERVED_NAME, {
+    omitSessionId: true,
+    initializeResponse: () => rawResponse(401, { 'www-authenticate': 'Bearer realm="mcp"' }, null),
+    ...opts,
+  })
+}
+
+const GATED_HANDSHAKE_READABLE_LIST_GUARD =
+  '握手被凭据门控（initialize 401 + 合法 challenge），tools/list 却无凭据就返回了可读的清单（T86 R2）：' +
+  '「门控服务器上未认证调用执行不到工具」这一前提已破，所以照样按清单判 a / b，不发 tools/call。' +
+  '握手层门控本身的判定不变：discovery_handshake / protocol_revision / tools_list 记 UNVERIFIED/credential_required，不算指纹。'
+
+export const probeToolNameCollisionGatedHandshake: Fixture = {
+  id: 'probe-tool-name-collision-gated-handshake',
+  description: '一个 legacy 服务器：initialize 返回 401 + Bearer challenge；tools/list 无凭据可读，其中有与探测保留名逐字相同的工具，调用它会真的执行。',
+  protocolRevision: null,
+  kind: 'negative',
+  guardsAgainst: PROBE_TOOL_NAME_GUARD_SHARED + GATED_HANDSHAKE_READABLE_LIST_GUARD + '本条钉住门控握手下的「首页精确同名」（probe_tool_name_collision）。',
+  createHandler: () => gatedHandshakeReadableList(),
+  sampleRun: (handler) => legacySampleRun(handler),
+  expectedAssertions: withOverrides(credentialGatedCascadeAssertions(['discovery_handshake', 'protocol_revision', 'tools_list']), probeCallWithheld('probe_tool_name_collision')),
+}
+
+export const probeToolNameUnverifiableGatedHandshake: Fixture = {
+  id: 'probe-tool-name-unverifiable-gated-handshake',
+  description: '一个 legacy 服务器：initialize 返回 401 + Bearer challenge；tools/list 无凭据可读，第一页只有两个普通工具并带 nextCursor，保留名的那个工具在后面的页里。',
+  protocolRevision: null,
+  kind: 'negative',
+  guardsAgainst: PROBE_TOOL_NAME_GUARD_SHARED + GATED_HANDSHAKE_READABLE_LIST_GUARD + '本条钉住门控握手下的「清单不完整」（probe_tool_name_unverifiable）。',
+  createHandler: () =>
+    gatedHandshakeReadableList({
+      toolsListResponse: (id) => jsonRpcResult(id, { tools: CLEAN_TOOLS, nextCursor: 'page-2' }),
+    }),
+  sampleRun: (handler) => legacySampleRun(handler),
+  expectedAssertions: withOverrides(credentialGatedCascadeAssertions(['discovery_handshake', 'protocol_revision', 'tools_list']), probeCallWithheld('probe_tool_name_unverifiable')),
 }

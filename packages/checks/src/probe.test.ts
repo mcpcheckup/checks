@@ -1,5 +1,6 @@
 import assert from 'node:assert'
 import { runProbe } from './probe.ts'
+import { runProbe as frozenRunProbe } from './frozen/suite-0.6.0/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import { ProbeAborted } from './wire.ts'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
@@ -775,6 +776,148 @@ for (const maxRequests of [4, 5]) {
     }
   })
 }
+
+console.log('\nT86：保留名的 tools/call 只在能排除「服务器真有这个工具」时才发。不发时 error_taxonomy / auth_metadata 记 SKIPPED/UNVERIFIED + 无 params 的 key，其余一切与 0.6.0（src/frozen/suite-0.6.0）逐字段相同；发的时候整份 ProbeResult 与 0.6.0 相同')
+
+const T86_KEYS = ['probe_tool_name_collision', 'probe_tool_name_unverifiable']
+const T86_ROWS = ['error_taxonomy', 'auth_metadata']
+
+/** One label per outbound request: the JSON-RPC method of a POST body, else
+ *  `METHOD /path` (the auth_metadata document fetch is a GET). */
+function requestLabel(input: RequestInfo | URL, init: RequestInit | undefined): string {
+  if (typeof init?.body === 'string') {
+    try {
+      const method = (JSON.parse(init.body) as { method?: unknown }).method
+      if (typeof method === 'string') return method
+    } catch { /* not JSON: fall through to the URL */ }
+  }
+  const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+  return `${init?.method ?? 'GET'} ${url.pathname}`
+}
+
+/** Runs one fixture through the implementation or through the frozen 0.6.0
+ *  copy, recording the outbound request sequence. */
+async function runRecorded(fixtureId: string, probe: typeof runProbe): Promise<{ result: ProbeResult; calls: string[] }> {
+  const fixture = FIXTURE_CORPUS.find((f) => f.id === fixtureId)
+  assert.ok(fixture, `fixture ${fixtureId} 不在语料里`)
+  const handler = fixture.createHandler()
+  const calls: string[] = []
+  const recording: ProbeInput['fetchImpl'] = async (input, init) => {
+    calls.push(requestLabel(input, init))
+    return handler(input, init)
+  }
+  return { result: await probe(makeInput(recording)), calls }
+}
+
+const withoutT86Rows = (r: ProbeResult) => ({ ...r, assertions: r.assertions.filter((a) => !T86_ROWS.includes(a.check_id)) })
+
+/** The red proof for one withheld fixture: no tools/call on the wire, both
+ *  rows SKIPPED/UNVERIFIED carrying exactly `{ key }` (no params member at
+ *  all), and everything else — every other row, the request sequence up to
+ *  the withheld call, and every other ProbeResult field — equal to 0.6.0's. */
+async function assertWithheld(fixtureId: string, key: string): Promise<void> {
+  const now = await runRecorded(fixtureId, runProbe)
+  const then = await runRecorded(fixtureId, frozenRunProbe)
+  assert.ok(!now.calls.includes('tools/call'), `${fixtureId}: 请求序列里出现了 tools/call：${JSON.stringify(now.calls)}`)
+  assert.ok(then.calls.includes('tools/call'), `${fixtureId}: 0.6.0 本该发 tools/call（否则这条对照没有区分力）`)
+  assert.deepStrictEqual(now.calls, then.calls.slice(0, then.calls.indexOf('tools/call')), `${fixtureId}: tools/call 之前的请求序列应与 0.6.0 相同，之后一个都不发`)
+  for (const check_id of T86_ROWS) {
+    const a = now.result.assertions.find((x) => x.check_id === check_id)!
+    assert.equal(a.execution_status, 'SKIPPED', `${fixtureId}/${check_id}: execution_status`)
+    assert.equal(a.assertion_status, 'UNVERIFIED', `${fixtureId}/${check_id}: assertion_status`)
+    assert.deepStrictEqual(a.reason, { key }, `${fixtureId}/${check_id}: reason 必须恰好是 { key }，没有 params`)
+    assert.deepStrictEqual(a.unverified_reason, { key }, `${fixtureId}/${check_id}: unverified_reason`)
+  }
+  assert.deepStrictEqual(withoutT86Rows(now.result), withoutT86Rows(then.result), `${fixtureId}: 两行之外应与 0.6.0 逐字段相同`)
+}
+
+await t('T86 红证 a（probe-tool-name-collision）：第一页有逐字同名的工具 ⇒ 不发 tools/call，两行 SKIPPED/UNVERIFIED/probe_tool_name_collision，无 params', async () => {
+  await assertWithheld('probe-tool-name-collision', 'probe_tool_name_collision')
+})
+
+await t('T86 红证 b（probe-tool-name-unverifiable-next-cursor）：第一页无同名但带 nextCursor ⇒ 不翻页、不发 tools/call，两行 probe_tool_name_unverifiable，无 params', async () => {
+  await assertWithheld('probe-tool-name-unverifiable-next-cursor', 'probe_tool_name_unverifiable')
+})
+
+await t('T86 红证 c2（probe-tool-name-unverifiable-tools-list-failed / tools-list-not-jsonrpc / tools-list-illegal-structure）：tools/list 失败 ⇒ 不发 tools/call，两行 probe_tool_name_unverifiable，无 params', async () => {
+  for (const id of ['probe-tool-name-unverifiable-tools-list-failed', 'tools-list-not-jsonrpc', 'tools-list-illegal-structure']) {
+    await assertWithheld(id, 'probe_tool_name_unverifiable')
+  }
+})
+
+await t('T86 R2 红证（probe-tool-name-collision-gated-handshake）：握手被凭据门控，但 tools/list 无凭据可读且列着保留名 ⇒ 不发 tools/call，两行 probe_tool_name_collision，无 params', async () => {
+  await assertWithheld('probe-tool-name-collision-gated-handshake', 'probe_tool_name_collision')
+})
+
+await t('T86 R2 红证（probe-tool-name-unverifiable-gated-handshake）：握手被凭据门控，但 tools/list 无凭据可读且带 nextCursor ⇒ 不发 tools/call，两行 probe_tool_name_unverifiable，无 params', async () => {
+  await assertWithheld('probe-tool-name-unverifiable-gated-handshake', 'probe_tool_name_unverifiable')
+})
+
+for (const [label, fixtureId] of [
+  ['c1 反向（tools/list 401 + challenge，401 的 body 里甚至列着保留名）', 'probe-tool-name-gated-tools-list-still-sent'],
+  ['c1 反向（握手层凭据门控，tools/list 也被挡，无可读列表）', 'credential-gated-handshake'],
+  ['c1 反向（tools/list 层凭据门控）', 'credential-gated-tools-list'],
+  ['近似名反向（后缀 / 大小写 / 只在描述里出现）', 'probe-tool-name-near-miss-still-sent'],
+] as const) {
+  await t(`T86 ${label}（${fixtureId}）：tools/call 照发，请求序列与整份 ProbeResult 都与 0.6.0 逐字段相同`, async () => {
+    const now = await runRecorded(fixtureId, runProbe)
+    const then = await runRecorded(fixtureId, frozenRunProbe)
+    assert.ok(now.calls.includes('tools/call'), `${fixtureId}: 没有发 tools/call：${JSON.stringify(now.calls)}`)
+    assert.deepStrictEqual(now.calls, then.calls)
+    assert.deepStrictEqual(now.result, then.result)
+    for (const check_id of T86_ROWS) {
+      const a = now.result.assertions.find((x) => x.check_id === check_id)!
+      assert.equal(a.execution_status, 'COMPLETED', `${fixtureId}/${check_id}: 照发时这两行照常判定`)
+    }
+  })
+}
+
+await t('T86 c1 反向不是空对空：probe-tool-name-gated-tools-list-still-sent 的 auth_metadata 真的从 tools/call 的 401 抓了 resource_metadata 文档并判为 VERIFIED', async () => {
+  const { result, calls } = await runRecorded('probe-tool-name-gated-tools-list-still-sent', runProbe)
+  assert.deepStrictEqual(calls, ['server/discover', 'tools/list', 'tools/call', 'GET /.well-known/oauth-protected-resource'])
+  assert.equal(result.assertions.find((a) => a.check_id === 'auth_metadata')!.assertion_status, 'VERIFIED')
+})
+
+// Deny-by-default, same as the T73 / T73b sections: the corpus loop above only
+// compares the two statuses, so every fixture whose run carries a T86 key must
+// declare exactly that reason, and the set of such fixtures must equal the set
+// of fixtures whose 0.6.0 run differs from this one's.
+const t86Cells: string[] = []
+for (const fixture of FIXTURE_CORPUS) {
+  const expectations = fixture.expectedAssertions.filter((a) => T86_ROWS.includes(a.check_id) && a.reason !== undefined && T86_KEYS.includes(a.reason.key))
+  if (expectations.length === 0) continue
+  for (const e of expectations) t86Cells.push(`${fixture.id}/${e.check_id}`)
+  await t(`${fixture.id}：T86 的 reason 与 fixture 期望完全相等（${expectations.map((e) => `${e.check_id}=${e.reason!.key}`).join(' / ')}）`, async () => {
+    const result = await runProbe(makeInput(fixture.createHandler()))
+    for (const e of expectations) {
+      const actual = result.assertions.find((a) => a.check_id === e.check_id)!
+      assert.deepStrictEqual(e.reason!.params, {}, `${fixture.id}/${e.check_id}: T86 的 key 不带 params`)
+      assert.deepStrictEqual(actual.reason, { key: e.reason!.key }, `${fixture.id}/${e.check_id}`)
+    }
+  })
+}
+
+await t('T86 没有漏网：语料里实际带 T86 key 的每一格都在上面那组里（反之亦然），且恰好是那些与 0.6.0 结果不同的 fixture；其余每条 fixture 的 ProbeResult 与 0.6.0 逐字段相同', async () => {
+  assert.equal(corpusResults.length, FIXTURE_CORPUS.length, 'corpus-conformance 循环没有为每条 fixture 留下结果')
+  const observed: string[] = []
+  const differs: string[] = []
+  for (const [i, fixture] of FIXTURE_CORPUS.entries()) {
+    const now = corpusResults[i]!
+    for (const a of now.assertions) {
+      if (a.reason && T86_KEYS.includes(a.reason.key)) observed.push(`${fixture.id}/${a.check_id}`)
+    }
+    const then = await frozenRunProbe(makeInput(fixture.createHandler()))
+    try {
+      assert.deepStrictEqual(now, then)
+    } catch {
+      differs.push(fixture.id)
+      assert.deepStrictEqual(withoutT86Rows(now), withoutT86Rows(then), `${fixture.id}: 与 0.6.0 的差别超出了 error_taxonomy / auth_metadata 两行`)
+    }
+  }
+  assert.deepStrictEqual([...t86Cells].sort(), observed.sort())
+  assert.deepStrictEqual([...new Set(t86Cells.map((c) => c.split('/')[0]!))].sort(), differs.sort())
+  assert.ok(differs.length >= 3, `只有 ${differs.length} 条 fixture 走到不发的分支`)
+})
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

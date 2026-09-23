@@ -1,23 +1,25 @@
+// FROZEN: packages/checks/src/probe.ts at suite 0.6.0 (a05097e), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for probe-tool-name-differential.test.ts, which checks
+// FROZEN: its git blob id. DO NOT edit or "update" it; it is the 0.6.0 behaviour.
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import type { Assertion } from '@mcpcheckup/attestation-schema'
 
 type ExecutionStatus = Assertion['execution_status']
-import { runHygieneCheck } from './hygiene.ts'
-import { createProbeContext, ProbeAborted } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
+import { runHygieneCheck } from '../../hygiene.ts'
+import { createProbeContext, ProbeAborted } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
 import { performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
-import { judgeAuthMetadata } from './auth.ts'
+import { judgeAuthMetadata } from '../../auth.ts'
 import { judgeErrorTaxonomy } from './error-taxonomy.ts'
-import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from './fingerprint.ts'
-import type { FingerprintVerdict } from './fingerprint.ts'
-import type { CheckDefinition, ChecksRegistry } from './registry.ts'
-import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from './types.ts'
+import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from '../../fingerprint.ts'
+import type { FingerprintVerdict } from '../../fingerprint.ts'
+import type { CheckDefinition, ChecksRegistry } from '../../registry.ts'
+import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from '../../types.ts'
 
 /** A name no real business tool would ever use — the protocol-level, non-destructive
  *  way error_taxonomy and auth_metadata trigger a safe error scenario. Never a
- *  business tool call (CLAUDE.md / checks.json's own `forbidden` list).
- *  T86: the name is published, so a server can define it; runProbe withholds
- *  the call unless it can rule that out (see probeCallWithheld). */
+ *  business tool call (CLAUDE.md / checks.json's own `forbidden` list). */
 const PROBE_TOOL_NAME = '__mcpcheckup_probe_nonexistent_tool__'
 
 type Reason = { key: string; params?: Record<string, string | number> } | null
@@ -242,19 +244,6 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     // tools_list assertion itself gets judged.
     const toolsList = await performToolsList({ fetchImpl, budget, ctx, newId, handshake })
 
-    // T86: set when the tools/call probe must not be sent, because the server
-    // may really define PROBE_TOOL_NAME. Any readable list is judged, on every
-    // branch below (T86 R2): its first page names that exact tool (collision;
-    // exact string equality, no case folding, trimming or prefix match), or it
-    // carries a nextCursor (unverifiable). The final else adds the failed
-    // tools/list. Only a credential gate with no readable list still sends:
-    // auth_metadata needs that unauthenticated call's 401.
-    let probeCallWithheld: Reason =
-      !toolsList.ok ? null
-      : toolsList.tools!.some((tool) => typeof tool === 'object' && tool !== null && (tool as { name?: unknown }).name === PROBE_TOOL_NAME) ? { key: 'probe_tool_name_collision' }
-      : toolsList.hasNextCursor ? { key: 'probe_tool_name_unverifiable' }
-      : null
-
     if (handshakeCredentialGated) {
       // Handshake-layer credential-gate rule, continued:
       // tools_list and everything derived from it cascade to UNVERIFIED/
@@ -308,30 +297,22 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     } else {
       A('tools_list', 'COMPLETED', 'FAILED', classified(toolsList.failure, 'tools_list'))
       skipToolsDerivedChecks({ key: 'tools_list_invalid_structure' })
-      probeCallWithheld = { key: 'probe_tool_name_unverifiable' }
     }
 
-    if (probeCallWithheld) {
-      // T86: both rows read that one call's response, so neither ran. Written
-      // here, so the catch below never becomes their second writer.
-      A('error_taxonomy', 'SKIPPED', 'UNVERIFIED', probeCallWithheld)
-      A('auth_metadata', 'SKIPPED', 'UNVERIFIED', probeCallWithheld)
-    } else {
-      const callResult = await performUnknownToolCall({
-        fetchImpl,
-        budget,
-        ctx,
-        newId,
-        handshake: { ...handshake, currentEndpoint: toolsList.currentEndpoint },
-        toolName: PROBE_TOOL_NAME,
-      })
+    const callResult = await performUnknownToolCall({
+      fetchImpl,
+      budget,
+      ctx,
+      newId,
+      handshake: { ...handshake, currentEndpoint: toolsList.currentEndpoint },
+      toolName: PROBE_TOOL_NAME,
+    })
 
-      const taxonomy = judgeErrorTaxonomy(callResult)
-      A('error_taxonomy', 'COMPLETED', taxonomy.status, taxonomy.status === 'OBSERVED_RISK' ? taxonomy.reason : null)
+    const taxonomy = judgeErrorTaxonomy(callResult)
+    A('error_taxonomy', 'COMPLETED', taxonomy.status, taxonomy.status === 'OBSERVED_RISK' ? taxonomy.reason : null)
 
-      const authVerdict = await judgeAuthMetadata({ fetchImpl, budget, ctx, callResult })
-      A('auth_metadata', 'COMPLETED', authVerdict.status, authVerdict.status !== 'VERIFIED' ? authVerdict.reason : null)
-    }
+    const authVerdict = await judgeAuthMetadata({ fetchImpl, budget, ctx, callResult })
+    A('auth_metadata', 'COMPLETED', authVerdict.status, authVerdict.status !== 'VERIFIED' ? authVerdict.reason : null)
 
     // DNS-answer-change is judged independently of redirect_policy: a changed DNS
     // answer is not a redirect, and folding it into redirect_policy would show
