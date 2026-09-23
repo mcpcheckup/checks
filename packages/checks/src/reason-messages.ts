@@ -130,9 +130,55 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     en: (p) => `No hidden characters or injection patterns were observed across ${requireParam(p, 'totalCount')} tools' names and descriptions.`,
     zh: (p) => `${requireParam(p, 'totalCount')} 个工具的名称与描述未观察到隐藏字符或注入模式`,
   },
+  // No longer emitted since T73 (the seven error_taxonomy_* keys below replaced
+  // it); kept because historical rows and signed envelopes still carry it.
   error_taxonomy_risk: {
     en: () => 'The triggered safety error scenario did not return a protocol-shaped JSON-RPC error.',
     zh: () => '触发的安全错误场景没有返回协议定义形状的 JSON-RPC 错误',
+  },
+  // T73: the bounded classification of the unknown-tool response
+  // (packages/checks/src/error-taxonomy.ts classifyUnknownToolResponse). Every
+  // one of these reasons carries scenario / status / media_type (and, for
+  // jsonrpc_malformed only, sometimes jsonrpc_error_code) as signed evidence;
+  // like probe_rate_limited above, the renderers deliberately read only what
+  // the approved sentence names — `status` for five keys, nothing for the two
+  // result_* keys. The other params are for the signed record, not the reader.
+  error_taxonomy_result_is_error: {
+    en: () => 'We called tools/call with a tool name that does not exist. The server answered with an ordinary result marked isError instead of a JSON-RPC error object.',
+    zh: () => '我们用一个不存在的工具名调用了 tools/call。服务器返回的是带 isError 标记的普通 result，而不是 JSON-RPC error 对象。',
+  },
+  error_taxonomy_result_ok: {
+    en: () => 'We called tools/call with a tool name that does not exist. The server answered with a successful result.',
+    zh: () => '我们用一个不存在的工具名调用了 tools/call。服务器返回了一个成功的 result。',
+  },
+  error_taxonomy_jsonrpc_malformed: {
+    en: (p) => `We called tools/call with a tool name that does not exist. The server answered HTTP ${requireParam(p, 'status')} with a JSON-RPC message that has neither a result nor a well-formed error object.`,
+    zh: (p) => `我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP ${requireParam(p, 'status')}，消息自称 JSON-RPC，但既没有 result，也没有格式正确的 error 对象。`,
+  },
+  error_taxonomy_not_jsonrpc: {
+    en: (p) => `We called tools/call with a tool name that does not exist. The server answered HTTP ${requireParam(p, 'status')} with JSON that is not a JSON-RPC message.`,
+    zh: (p) => `我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP ${requireParam(p, 'status')}，内容是 JSON，但不是 JSON-RPC 消息。`,
+  },
+  error_taxonomy_not_json: {
+    en: (p) => `We called tools/call with a tool name that does not exist. The server answered HTTP ${requireParam(p, 'status')} with a body that is not JSON.`,
+    zh: (p) => `我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP ${requireParam(p, 'status')}，响应体不是 JSON。`,
+  },
+  error_taxonomy_empty_body: {
+    en: (p) => `We called tools/call with a tool name that does not exist. The server answered HTTP ${requireParam(p, 'status')} with an empty body.`,
+    zh: (p) => `我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP ${requireParam(p, 'status')}，响应体为空。`,
+  },
+  // Phrased as "we found no data events", not "it carried none": protocol.ts's
+  // extractSseDataPayloads splits lines only on \r?\n, so a stream framed with
+  // lone CR (legal in WHATWG SSE) can carry data we do not see. Fixing the
+  // extractor would change verdicts, so the sentence states only our finding;
+  // and it says the Content-Type "names" an event stream because detection is
+  // isSseContentType, a substring match (e.g. `application/json;
+  // profile=text/event-stream` also qualifies); and it says "non-empty" data
+  // events because extractSseDataPayloads drops zero-length payloads, while
+  // WHATWG still dispatches an event whose data is empty (e.g. `data:\n\n`).
+  error_taxonomy_event_stream_no_data: {
+    en: (p) => `We called tools/call with a tool name that does not exist. The server answered HTTP ${requireParam(p, 'status')} with a response whose Content-Type names an event stream, in which we found no non-empty data events.`,
+    zh: (p) => `我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP ${requireParam(p, 'status')}，响应的 Content-Type 声明为事件流，但我们在其中没有找到任何非空的 data 事件。`,
   },
   auth_401_no_challenge: {
     en: () => 'A 401 was received with no credentials, but no WWW-Authenticate challenge was observable.',

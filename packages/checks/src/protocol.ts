@@ -14,7 +14,9 @@ export interface ParsedJsonRpc {
   error?: { code: number; message: string; data?: unknown }
 }
 
-function isSseContentType(contentType?: string | null): boolean {
+/** Exported for error-taxonomy.ts, which must classify over exactly the
+ *  candidates the verdict saw (see jsonRpcCandidates below). */
+export function isSseContentType(contentType?: string | null): boolean {
   return (contentType ?? '').toLowerCase().includes('text/event-stream')
 }
 
@@ -62,14 +64,23 @@ function parseJsonRpcText(bodyText: string): ParsedJsonRpc {
   return { isJsonRpc: false }
 }
 
+/** The texts parseJsonRpcBody tries, in order: an SSE-framed body's `data:`
+ *  payloads (possibly none at all), otherwise the whole body as one candidate.
+ *  Exported so error-taxonomy.ts classifies over exactly these candidates and
+ *  no others (T73): one definition, so a verdict and its recorded
+ *  classification can never be computed over two different readings of the
+ *  same response. */
+export function jsonRpcCandidates(bodyText: string, contentType?: string | null): string[] {
+  return isSseContentType(contentType) ? extractSseDataPayloads(bodyText) : [bodyText]
+}
+
 /** Never throws — an unparseable or non-JSON-RPC body is data (isJsonRpc: false), not
  *  an exception, exactly like fixtures' own parseJsonRpcCall on the server side.
  *  contentType is optional for callers that only ever see application/json (and for
  *  the direct unit tests below); pass it whenever it's available so an SSE-framed body
  *  (see extractSseDataPayloads) gets unwrapped before the JSON-RPC parse. */
 export function parseJsonRpcBody(bodyText: string, contentType?: string | null): ParsedJsonRpc {
-  const candidates = isSseContentType(contentType) ? extractSseDataPayloads(bodyText) : [bodyText]
-  for (const candidate of candidates) {
+  for (const candidate of jsonRpcCandidates(bodyText, contentType)) {
     const parsed = parseJsonRpcText(candidate)
     if (parsed.isJsonRpc) return parsed
   }

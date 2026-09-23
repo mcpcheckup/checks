@@ -230,6 +230,28 @@ await t('every key probe.ts can emit exists in REASON_MESSAGES (or is no_baselin
   }
 })
 
+console.log('\nT73：error_taxonomy 的 reason 是签名证据 —— 凡是实际产出 OBSERVED_RISK 的 fixture，其期望必须声明 reason，且与 probe 产出逐字段相等（未声明 = 红，不是跳过）。与下面 N3 同一做法：单独钉 error_taxonomy，不加宽共享循环')
+
+const errorTaxonomyReasonFixtures: string[] = []
+for (const fixture of FIXTURE_CORPUS) {
+  const expected = fixture.expectedAssertions.find((a) => a.check_id === 'error_taxonomy')
+  if (expected?.assertion_status !== 'OBSERVED_RISK') continue
+  errorTaxonomyReasonFixtures.push(fixture.id)
+  await t(`${fixture.id}：error_taxonomy 的 reason 与 fixture 期望完全相等`, async () => {
+    const result = await runProbe(makeInput(fixture.createHandler()))
+    const actual = result.assertions.find((a) => a.check_id === 'error_taxonomy')!
+    assert.ok(expected!.reason, `${fixture.id}: error_taxonomy 期望是 OBSERVED_RISK，但没有声明 reason —— 签名进记录的分类必须被 fixture 钉住`)
+    assert.deepStrictEqual(actual.reason, expected!.reason)
+  })
+}
+
+await t('没有漏网：每条实际产出 error_taxonomy OBSERVED_RISK 的 fixture 都在上面那组里，且至少 8 条（2 条既有 + 6 条 T73 新增）', () => {
+  const observed = FIXTURE_CORPUS.filter((f, i) => corpusResults[i]?.assertions.find((a) => a.check_id === 'error_taxonomy')?.assertion_status === 'OBSERVED_RISK').map((f) => f.id)
+  assert.equal(corpusResults.length, FIXTURE_CORPUS.length, 'corpus-conformance 循环没有为每条 fixture 留下结果')
+  assert.deepEqual([...errorTaxonomyReasonFixtures].sort(), [...observed].sort())
+  assert.ok(errorTaxonomyReasonFixtures.length >= 8, `只有 ${errorTaxonomyReasonFixtures.length} 条`)
+})
+
 console.log('\nLead finding N3（round 2）：corpus-conformance 循环（第 40 行起）只比对 execution_status / assertion_status，不比对 reason —— 不在这里加宽那个共享循环（会重新评判已有的每一条 fixture），改为单独钉住两条新增 credential-gated 正例的 reason.key 与 params.scheme')
 
 await t('credential-gated-handshake：discovery_handshake / protocol_revision / tools_list 的 reason 精确等于 { key: \'credential_required\', params: { scheme: \'bearer\' } }', async () => {

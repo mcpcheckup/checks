@@ -122,11 +122,9 @@ export const errorResponseNonconformantShape: Fixture = {
       toolsCallResponse: () => rawResponse(500, { 'content-type': 'text/plain' }, 'Internal Server Error'),
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: withOverride(cleanBaselineAssertions(), {
-    check_id: 'error_taxonomy',
-    execution_status: 'COMPLETED',
-    assertion_status: 'OBSERVED_RISK',
-  }),
+  // T73: the signed reason records the class (not_json), the status and the
+  // bounded media type — never the body text itself.
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('not_json', 500, 'text/plain')),
 }
 
 export const noCredentialsUnverifiableAuth: Fixture = {
@@ -624,6 +622,144 @@ export const serviceUnavailable503NoRetryAfterNotRateLimited: Fixture = {
     { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
     { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
     { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'error_taxonomy', execution_status: 'COMPLETED', assertion_status: 'OBSERVED_RISK' },
+    // T73: no body and no Content-Type at all ⇒ empty_body / media_type none.
+    errorTaxonomyRisk('empty_body', 503, 'none'),
   ]),
+}
+
+// ---- T73: error_taxonomy records WHAT the unknown-tool response was ----
+
+/** The expected error_taxonomy OBSERVED_RISK assertion with its signed reason
+ *  ref. Spelled out here from the rule table (packages/checks/src/
+ *  error-taxonomy.ts classifyUnknownToolResponse), not imported from
+ *  packages/checks, so a drift on either side turns probe.test.ts red. */
+function errorTaxonomyRisk(cls: string, status: number, mediaType: string, jsonrpcErrorCode?: number): ExpectedAssertion {
+  return {
+    check_id: 'error_taxonomy',
+    execution_status: 'COMPLETED',
+    assertion_status: 'OBSERVED_RISK',
+    reason: {
+      key: `error_taxonomy_${cls}`,
+      params: {
+        scenario: 'tools_call_unknown_tool',
+        status,
+        media_type: mediaType,
+        ...(jsonrpcErrorCode === undefined ? {} : { jsonrpc_error_code: jsonrpcErrorCode }),
+      },
+    },
+  }
+}
+
+const UNKNOWN_TOOL_IS_ERROR_RESULT = { content: [{ type: 'text', text: 'Unknown tool' }], isError: true }
+
+const ERROR_TAXONOMY_GUARD_SHARED =
+  'error_taxonomy 的判定不变（仍是 OBSERVED_RISK，不是 FAILED），变的是签名记录里多了一个有界分类：' +
+  '同一个 OBSERVED_RISK 背后是哪一种响应，今后能从记录本身读出来，而不必重新探测。分类只取常量' +
+  '（类名、HTTP 状态码、六选一的 media_type、可选的整数 error code），任何第三方原文都不进记录。'
+
+export const errorTaxonomyResultIsErrorJson: Fixture = {
+  id: 'error-taxonomy-result-is-error-json',
+  description: '一个 modern 实现，调用不存在的工具时以 HTTP 200 + application/json 返回一个普通 result，其中 isError: true。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    ERROR_TAXONOMY_GUARD_SHARED +
+    '本条钉住最常见的一类混淆：把「未知工具」当成工具执行错误（result.isError），而规范把它列为协议错误' +
+    '（JSON-RPC error）。分类必须是 result_is_error，而不是 result_ok——isError 只认严格布尔 true。',
+  tools: CLEAN_TOOLS,
+  createHandler: () => createModernHandler(CLEAN_TOOLS, { toolsCallResponse: (id) => jsonRpcResult(id, UNKNOWN_TOOL_IS_ERROR_RESULT) }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('result_is_error', 200, 'application/json')),
+}
+
+export const errorTaxonomyResultIsErrorSse: Fixture = {
+  id: 'error-taxonomy-result-is-error-sse',
+  description: '同上，但响应以 text/event-stream 分帧：一个 event: message 事件，data 里是 isError: true 的 result。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    ERROR_TAXONOMY_GUARD_SHARED +
+    '本条钉住分类与判定读的是同一组候选：SSE 分帧的 body 要先拆出 data 载荷再分类。若分类器对整个 body 做 ' +
+    'JSON.parse，这里会被误记成 not_json；若它不看 isError，会被误记成 result_ok。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createModernHandler(CLEAN_TOOLS, {
+      toolsCallResponse: (id) =>
+        rawResponse(
+          200,
+          { 'content-type': 'text/event-stream' },
+          `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id, result: UNKNOWN_TOOL_IS_ERROR_RESULT })}\n\n`,
+        ),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('result_is_error', 200, 'text/event-stream')),
+}
+
+export const errorTaxonomyResultOk: Fixture = {
+  id: 'error-taxonomy-result-ok',
+  description: '一个 modern 实现，对不存在的工具名返回 HTTP 200 + 一个没有 isError 的成功 result。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    ERROR_TAXONOMY_GUARD_SHARED +
+    '本条与 error-taxonomy-result-is-error-json 配对：只有其中一条时，把 result_is_error 与 result_ok 合并成一类' +
+    '（或把 isError 的判据写成「存在即可」）都能全绿。',
+  tools: CLEAN_TOOLS,
+  createHandler: () => createModernHandler(CLEAN_TOOLS, { toolsCallResponse: (id) => jsonRpcResult(id, { content: [] }) }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('result_ok', 200, 'application/json')),
+}
+
+export const errorTaxonomyNotJsonrpc: Fixture = {
+  id: 'error-taxonomy-not-jsonrpc',
+  description: '一个 modern 实现，对不存在的工具名返回 HTTP 400 + application/json，body 是一个不含 jsonrpc 字段的普通 JSON 对象。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    ERROR_TAXONOMY_GUARD_SHARED +
+    '本条钉住 not_jsonrpc 与 not_json 的分界：body 是合法 JSON，只是不是 JSON-RPC 消息。若分类器把' +
+    '「解析器不接受」直接等同于「不是 JSON」，这里会被误记成 not_json。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createModernHandler(CLEAN_TOOLS, {
+      toolsCallResponse: () => rawResponse(400, { 'content-type': 'application/json' }, JSON.stringify({ error: 'unknown tool' })),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('not_jsonrpc', 400, 'application/json')),
+}
+
+export const errorTaxonomyJsonrpcMalformed: Fixture = {
+  id: 'error-taxonomy-jsonrpc-malformed',
+  description: '一个 modern 实现，对不存在的工具名返回 jsonrpc "2.0" 的 error 对象，code 是整数 -32602，但缺少必需的 message。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    ERROR_TAXONOMY_GUARD_SHARED +
+    '本条钉住 jsonrpc_malformed 及其唯一的可选证据 jsonrpc_error_code：缺 message 的 error 不是格式正确的 ' +
+    'JSON-RPC error（判定仍是 OBSERVED_RISK），而它的 code 是安全整数，所以要被记下。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createModernHandler(CLEAN_TOOLS, {
+      toolsCallResponse: (id) => rawResponse(200, { 'content-type': 'application/json' }, JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32602 } })),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('jsonrpc_malformed', 200, 'application/json', -32602)),
+}
+
+export const errorTaxonomyEventStreamNoData: Fixture = {
+  id: 'error-taxonomy-event-stream-no-data',
+  description: '一个 modern 实现，对不存在的工具名返回 HTTP 200 + text/event-stream，body 只有一行 ": ping" 注释，没有任何 data 事件。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    ERROR_TAXONOMY_GUARD_SHARED +
+    '本条钉住 event_stream_no_data：body 不为空（所以不是 empty_body），但按判定自己的 SSE 规则拆不出任何 data ' +
+    '载荷。若分类器在 SSE 下退回去解析整个 body，这里会被误记成 not_json。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createModernHandler(CLEAN_TOOLS, {
+      toolsCallResponse: () => rawResponse(200, { 'content-type': 'text/event-stream' }, ': ping\n\n'),
+    }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('event_stream_no_data', 200, 'text/event-stream')),
 }

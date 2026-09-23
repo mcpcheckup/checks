@@ -21,6 +21,9 @@ const EXPECTED_KEYS = [
   'auth_metadata_invalid_json', 'auth_metadata_not_json_object', 'auth_scope_contradiction',
   'credential_required',
   'disqualified_no_protocol_revision', 'disqualified_no_fingerprint', 'disqualified_signer_call_failed',
+  'error_taxonomy_result_is_error', 'error_taxonomy_result_ok', 'error_taxonomy_jsonrpc_malformed',
+  'error_taxonomy_not_jsonrpc', 'error_taxonomy_not_json', 'error_taxonomy_empty_body',
+  'error_taxonomy_event_stream_no_data',
 ]
 
 async function main() {
@@ -38,11 +41,11 @@ async function main() {
     }
   })
 
-  // Ten keys require params (requireParam throws if omitted — that's the
+  // Sixteen keys require params (requireParam throws if omitted — that's the
   // load-bearing safety net catching a future emitter bug that forgets to
   // pass one; see reason-messages.ts). This test isn't the place to exercise
   // that throw — it's a smoke test that every entry renders non-empty text —
-  // so it feeds each of those ten a minimal representative params object and
+  // so it feeds each of those sixteen a minimal representative params object and
   // leaves every param-free key on a genuine zero-arg call.
   const MINIMAL_PARAMS: Partial<Record<string, Record<string, string | number>>> = {
     probe_aborted: { message: 'x' },
@@ -56,9 +59,22 @@ async function main() {
     auth_metadata_http_error: { status: 404 },
     credential_required: { scheme: 'bearer' },
     disqualified_signer_call_failed: { message: 'x' },
+    error_taxonomy_jsonrpc_malformed: { status: 200 },
+    error_taxonomy_not_jsonrpc: { status: 400 },
+    error_taxonomy_not_json: { status: 500 },
+    error_taxonomy_empty_body: { status: 503 },
+    error_taxonomy_event_stream_no_data: { status: 200 },
   }
 
-  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the six that require them)', () => {
+  await t('MINIMAL_PARAMS lists exactly the keys whose renderer throws with no params (derived from the table, not hand-kept)', () => {
+    const needsParams = Object.keys(REASON_MESSAGES).filter((key) => {
+      try { REASON_MESSAGES[key]!.en(); return false } catch { return true }
+    })
+    assert.deepEqual(needsParams.sort(), Object.keys(MINIMAL_PARAMS).sort())
+    assert.equal(needsParams.length, 16)
+  })
+
+  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the sixteen that require them)', () => {
     for (const key of Object.keys(REASON_MESSAGES)) {
       const params = MINIMAL_PARAMS[key]
       assert.ok(REASON_MESSAGES[key]!.en(params).length > 0, `${key}: en() is empty`)
@@ -66,7 +82,7 @@ async function main() {
     }
   })
 
-  await t('SECURITY: the eleven param-taking keys throw (not silently render blank) when required params are omitted', () => {
+  await t('SECURITY: the sixteen param-taking keys throw (not silently render blank) when required params are omitted', () => {
     for (const key of Object.keys(MINIMAL_PARAMS)) {
       assert.throws(() => REASON_MESSAGES[key]!.en(), /missing required param/, `${key}: en() should throw with no params`)
       assert.throws(() => REASON_MESSAGES[key]!.zh(), /missing required param/, `${key}: zh() should throw with no params`)
@@ -125,6 +141,71 @@ async function main() {
     // Negative check: the renderer itself must never contain html-construction
     // helpers — a static source scan, not a runtime behavior we can assert
     // from here. See Step 4 below for the dedicated source-scan test.
+  })
+
+  // ---- T73: the seven error_taxonomy_* keys. The approved sentences are pinned
+  // verbatim (with {status} = 503 substituted), so a reword cannot land without
+  // this file changing too. ----
+  const ERROR_TAXONOMY_COPY: Record<string, { en: string; zh: string }> = {
+    error_taxonomy_result_is_error: {
+      en: 'We called tools/call with a tool name that does not exist. The server answered with an ordinary result marked isError instead of a JSON-RPC error object.',
+      zh: '我们用一个不存在的工具名调用了 tools/call。服务器返回的是带 isError 标记的普通 result，而不是 JSON-RPC error 对象。',
+    },
+    error_taxonomy_result_ok: {
+      en: 'We called tools/call with a tool name that does not exist. The server answered with a successful result.',
+      zh: '我们用一个不存在的工具名调用了 tools/call。服务器返回了一个成功的 result。',
+    },
+    error_taxonomy_jsonrpc_malformed: {
+      en: 'We called tools/call with a tool name that does not exist. The server answered HTTP 503 with a JSON-RPC message that has neither a result nor a well-formed error object.',
+      zh: '我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP 503，消息自称 JSON-RPC，但既没有 result，也没有格式正确的 error 对象。',
+    },
+    error_taxonomy_not_jsonrpc: {
+      en: 'We called tools/call with a tool name that does not exist. The server answered HTTP 503 with JSON that is not a JSON-RPC message.',
+      zh: '我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP 503，内容是 JSON，但不是 JSON-RPC 消息。',
+    },
+    error_taxonomy_not_json: {
+      en: 'We called tools/call with a tool name that does not exist. The server answered HTTP 503 with a body that is not JSON.',
+      zh: '我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP 503，响应体不是 JSON。',
+    },
+    error_taxonomy_empty_body: {
+      en: 'We called tools/call with a tool name that does not exist. The server answered HTTP 503 with an empty body.',
+      zh: '我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP 503，响应体为空。',
+    },
+    error_taxonomy_event_stream_no_data: {
+      en: 'We called tools/call with a tool name that does not exist. The server answered HTTP 503 with a response whose Content-Type names an event stream, in which we found no non-empty data events.',
+      zh: '我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP 503，响应的 Content-Type 声明为事件流，但我们在其中没有找到任何非空的 data 事件。',
+    },
+  }
+  const FULL_ERROR_TAXONOMY_PARAMS = { scenario: 'tools_call_unknown_tool', status: 503, media_type: 'application/json', jsonrpc_error_code: -32000 }
+
+  await t('T73: the seven error_taxonomy_* keys render exactly the approved en/zh sentences, whatever else the signed params carry', () => {
+    for (const [key, copy] of Object.entries(ERROR_TAXONOMY_COPY)) {
+      assert.equal(REASON_MESSAGES[key]!.en(FULL_ERROR_TAXONOMY_PARAMS), copy.en, `${key}/en`)
+      assert.equal(REASON_MESSAGES[key]!.zh(FULL_ERROR_TAXONOMY_PARAMS), copy.zh, `${key}/zh`)
+    }
+  })
+
+  await t('T73: renderers read exactly the params the sentence names: status for five keys, none for result_is_error / result_ok (scenario, media_type, jsonrpc_error_code are signed evidence only)', () => {
+    const READS: Record<string, string[]> = {
+      error_taxonomy_result_is_error: [],
+      error_taxonomy_result_ok: [],
+      error_taxonomy_jsonrpc_malformed: ['status'],
+      error_taxonomy_not_jsonrpc: ['status'],
+      error_taxonomy_not_json: ['status'],
+      error_taxonomy_empty_body: ['status'],
+      error_taxonomy_event_stream_no_data: ['status'],
+    }
+    for (const [key, want] of Object.entries(READS)) {
+      for (const locale of ['en', 'zh'] as const) {
+        const touched = new Set<string>()
+        const spy = new Proxy({} as Record<string, string | number>, {
+          has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+          get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 0 },
+        })
+        REASON_MESSAGES[key]![locale](spy)
+        assert.deepEqual([...touched].sort(), want, `${key}/${locale} read ${JSON.stringify([...touched])}`)
+      }
+    }
   })
 
   console.log(`\n${pass} passed, ${fail} failed`)
