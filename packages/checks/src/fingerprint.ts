@@ -1,7 +1,19 @@
 import { digest, projectToolset, projectSchemas } from '@mcpcheckup/canonicalizer'
 import type { ToolSnapshot, ToolSnapshotEntry } from './types.ts'
 
-export type FingerprintVerdict = { status: 'VERIFIED'; fingerprint: string } | { status: 'FAILED'; reason: string }
+type FingerprintFailureKey = 'fingerprint_tool_missing_name' | 'fingerprint_canonicalize_failed'
+
+export type FingerprintVerdict = { status: 'VERIFIED'; fingerprint: string } | { status: 'FAILED'; reason: { key: FingerprintFailureKey } }
+
+/** T73b: classified by the thrown error's class alone; its message is never
+ *  kept (a CanonicalizationError's embeds third-party key text). A TypeError
+ *  can only be projections.ts's requireToolName here — its other one,
+ *  assertToolArray, is unreachable because probe.ts only fingerprints an
+ *  array. Anything else (a CanonicalizationError, or a RangeError from very
+ *  deep nesting) means the data has no canonical JSON form. No params. */
+function failed(e: unknown): FingerprintVerdict {
+  return { status: 'FAILED', reason: { key: e instanceof TypeError ? 'fingerprint_tool_missing_name' : 'fingerprint_canonicalize_failed' } }
+}
 
 /** toolset_fingerprint / schema_fingerprint only judge "can we compute a
  *  canonical fingerprint at all" (checks.json: "算得出就是 VERIFIED") — a thrown
@@ -12,7 +24,7 @@ export async function computeToolsetFingerprint(tools: unknown[]): Promise<Finge
   try {
     return { status: 'VERIFIED', fingerprint: await digest(projectToolset(tools)) }
   } catch (e) {
-    return { status: 'FAILED', reason: e instanceof Error ? e.message : String(e) }
+    return failed(e)
   }
 }
 
@@ -20,7 +32,7 @@ export async function computeSchemaFingerprint(tools: unknown[]): Promise<Finger
   try {
     return { status: 'VERIFIED', fingerprint: await digest(projectSchemas(tools)) }
   } catch (e) {
-    return { status: 'FAILED', reason: e instanceof Error ? e.message : String(e) }
+    return failed(e)
   }
 }
 

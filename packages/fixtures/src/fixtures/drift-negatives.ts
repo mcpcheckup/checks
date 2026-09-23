@@ -28,10 +28,14 @@ export const crossLayerHashMismatch: Fixture = {
         jsonRpcResult(id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools: TOOLS_MISSING_ONE_SCHEMA }),
     }),
   sampleRun: (handler) => modernSampleRun(handler),
+  // T73b: inputSchema missing ⇒ canonicalize() throws UNSUPPORTED_TYPE ⇒ the
+  // signed reason says "no canonical JSON form", never the canonicalizer's
+  // own message.
   expectedAssertions: withOverride(cleanBaselineAssertions(), {
     check_id: 'schema_fingerprint',
     execution_status: 'COMPLETED',
     assertion_status: 'FAILED',
+    reason: { key: 'fingerprint_canonicalize_failed', params: {} },
   }),
 }
 

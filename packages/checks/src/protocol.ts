@@ -153,9 +153,57 @@ async function sendModern(
   )
 }
 
+/** T73b: why a handshake or tools/list attempt failed, as a bounded reason ref
+ *  that probe.ts forwards unchanged into the signed FAILED assertion. Derived
+ *  at each failing return from the same `parsed` the verdict used, never from
+ *  a second parse. PARAMS ARE EVIDENCE AND GO INTO THE SIGNED RECORD: only
+ *  `status` (the HTTP status integer) and `jsonrpc_error_code` (a safe
+ *  integer, on the three *_jsonrpc_error keys and discover_rejected only) —
+ *  never response text. */
+export type FailureReason<K extends string> = { key: K; params?: Record<string, number> }
+
+type HandshakeFailureKey =
+  | `handshake_discover_${'not_jsonrpc' | 'jsonrpc_error' | 'no_supported_versions' | 'rejected' | 'http_error'}`
+  | `handshake_initialize_${'http_error' | 'not_jsonrpc' | 'jsonrpc_error' | 'no_protocol_version'}`
+  | 'handshake_ack_http_error'
+
+type ToolsListFailureKey = `tools_list_${'challenge_after_failed_handshake' | 'not_jsonrpc' | 'jsonrpc_error' | 'not_array'}`
+
+/** Omits params entirely when there are none, like every other param-free
+ *  reason ref (e.g. probe.ts's { key: 'fingerprint_baseline_mismatch' }). */
+function failure<K extends string>(key: K, params: Record<string, number> = {}): FailureReason<K> {
+  return Object.keys(params).length > 0 ? { key, params } : { key }
+}
+
+/** Only a safe integer is recorded. `code === 0 ? 0 : code` folds -0 into 0:
+ *  the canonicalizer already signs -0 as "0", so the in-memory value must say
+ *  the same thing (same rule as error-taxonomy.ts). */
+function jsonRpcErrorCode(parsed: ParsedJsonRpc): Record<string, number> {
+  const code = parsed.error?.code
+  return Number.isSafeInteger(code) ? { jsonrpc_error_code: code === 0 ? 0 : (code as number) } : {}
+}
+
+/** A 200 discover answer without a usable supportedVersions, split by what
+ *  the parsed message actually was. */
+function discoverFailure(parsed: ParsedJsonRpc): FailureReason<HandshakeFailureKey> {
+  if (!parsed.isJsonRpc) return failure('handshake_discover_not_jsonrpc')
+  if (parsed.error) return failure('handshake_discover_jsonrpc_error', jsonRpcErrorCode(parsed))
+  return failure('handshake_discover_no_supported_versions')
+}
+
+function initializeFailure(status: number, parsed: ParsedJsonRpc): FailureReason<HandshakeFailureKey> {
+  if (status !== 200) return failure('handshake_initialize_http_error', { status })
+  if (!parsed.isJsonRpc) return failure('handshake_initialize_not_jsonrpc')
+  if (parsed.error) return failure('handshake_initialize_jsonrpc_error', jsonRpcErrorCode(parsed))
+  return failure('handshake_initialize_no_protocol_version')
+}
+
 export interface HandshakeResult {
   mode: 'modern' | 'legacy'
   handshakeOk: boolean
+  /** T73b: set on every handshakeOk:false return (including the 401 ones
+   *  probe.ts turns into credential_required, where it goes unused). */
+  failure?: FailureReason<HandshakeFailureKey>
   /** null when we never got a structurally usable version string at all. */
   protocolVersionDeclared: string | null
   /** legacy mode only. */
@@ -238,6 +286,7 @@ export async function performHandshake(opts: {
       handshakeOk: !!ok,
       protocolVersionDeclared: ok ? (supportedVersions as string[])[0]! : null,
       currentEndpoint: discover.finalUrl,
+      ...(ok ? {} : { failure: discoverFailure(parsed) }),
     }
   }
 
@@ -251,7 +300,13 @@ export async function performHandshake(opts: {
       // valid WWW-Authenticate — a recognized modern error identifies a real
       // client/server mismatch, not a credential gate (the handshake-layer
       // credential-gate rule: "走既有 modern 分支，不变" — no exemption).
-      return { mode: 'modern', handshakeOk: false, protocolVersionDeclared: null, currentEndpoint: discover.finalUrl }
+      return {
+        mode: 'modern',
+        handshakeOk: false,
+        protocolVersionDeclared: null,
+        currentEndpoint: discover.finalUrl,
+        failure: failure('handshake_discover_rejected', { status: discover.status, jsonrpc_error_code: parsed.error.code }),
+      }
     }
     return performLegacyHandshake(fetchImpl, discover.finalUrl, budget, ctx, newId)
   }
@@ -267,7 +322,16 @@ export async function performHandshake(opts: {
   // status===401 requirement either, so a credentialChallengeFrom(...) call
   // here would, like the 200 branch's, always evaluate to no-op {} — dead
   // code, not a live check (Lead finding B2, round 2).
-  return { mode: 'modern', handshakeOk: false, protocolVersionDeclared: null, currentEndpoint: discover.finalUrl }
+  //
+  // T73b: a 2xx other than 200 (e.g. 202, 204) lands here too — it is neither
+  // the 200 a discovery result needs nor a 4xx.
+  return {
+    mode: 'modern',
+    handshakeOk: false,
+    protocolVersionDeclared: null,
+    currentEndpoint: discover.finalUrl,
+    failure: failure('handshake_discover_http_error', { status: discover.status }),
+  }
 }
 
 async function performLegacyHandshake(
@@ -310,6 +374,7 @@ async function performLegacyHandshake(
       handshakeOk: false,
       protocolVersionDeclared: null,
       currentEndpoint: initRes.finalUrl,
+      failure: initializeFailure(initRes.status, parsed),
       ...credentialChallengeFrom(initRes.status, initRes.headers),
     }
   }
@@ -332,6 +397,7 @@ async function performLegacyHandshake(
       protocolVersionDeclared: protocolVersion,
       ...(sessionId ? { sessionId } : {}),
       currentEndpoint: ackRes.finalUrl,
+      failure: failure('handshake_ack_http_error', { status: ackRes.status }),
       ...credentialChallengeFrom(ackRes.status, ackRes.headers),
     }
   }
@@ -349,6 +415,28 @@ export interface ToolsListResult {
    *  present when `ok` is false, but the causality is now the other way
    *  round: a challenge here FORCES `ok` false. See performToolsList. */
   credentialChallenge?: { scheme: string }
+  /** T73b: set whenever `ok` is false, except the handshakeOk + challenge
+   *  cell probe.ts's tools-list-layer credential-gate rule records as
+   *  UNVERIFIED — so on every cell it judges tools_list FAILED (and, unused,
+   *  when the handshake itself was credential-gated). See toolsListFailure. */
+  failure?: FailureReason<ToolsListFailureKey>
+}
+
+/** Order: a challenge first — it vetoes `ok` whatever the body says (the body
+ *  can even be a valid tools array), and it only reaches FAILED when the
+ *  handshake failed (finding B6) — then what the parsed body was. */
+function toolsListFailure(
+  ok: boolean,
+  challenge: { scheme: string } | null,
+  handshakeOk: boolean,
+  status: number,
+  parsed: ParsedJsonRpc,
+): { failure: FailureReason<ToolsListFailureKey> } | Record<string, never> {
+  if (ok || (challenge && handshakeOk)) return {}
+  if (challenge) return { failure: failure('tools_list_challenge_after_failed_handshake') }
+  if (!parsed.isJsonRpc) return { failure: failure('tools_list_not_jsonrpc', { status }) }
+  if (parsed.error) return { failure: failure('tools_list_jsonrpc_error', { status, ...jsonRpcErrorCode(parsed) }) }
+  return { failure: failure('tools_list_not_array', { status }) }
 }
 
 export async function performToolsList(opts: {
@@ -416,6 +504,7 @@ export async function performToolsList(opts: {
     tools: ok ? (tools as unknown[]) : null,
     currentEndpoint: res.finalUrl,
     ...(challenge ? { credentialChallenge: challenge } : {}),
+    ...toolsListFailure(ok, challenge, handshake.handshakeOk, res.status, parsed),
   }
 }
 

@@ -9,6 +9,7 @@ import { performHandshake, performToolsList, performUnknownToolCall } from './pr
 import { judgeAuthMetadata } from './auth.ts'
 import { judgeErrorTaxonomy } from './error-taxonomy.ts'
 import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from './fingerprint.ts'
+import type { FingerprintVerdict } from './fingerprint.ts'
 import type { CheckDefinition, ChecksRegistry } from './registry.ts'
 import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from './types.ts'
 
@@ -26,6 +27,17 @@ type AssertionBuilder = (
   reason?: Reason,
 ) => void
 
+/** T73b: a FAILED discovery_handshake / tools_list forwards the reason
+ *  protocol.ts classified at the failing return — never re-derived here.
+ *  Reaching FAILED without one would be a classification gap in protocol.ts,
+ *  never data, so it throws: the catch in runProbe then records the check
+ *  UNVERIFIED, never FAILED-without-a-reason. failed-reasons-differential.test.ts
+ *  shows the gap unreachable. */
+function classified(failure: Reason | undefined, checkId: string): NonNullable<Reason> {
+  if (!failure) throw new Error(`${checkId} is FAILED but protocol.ts classified no reason`)
+  return failure
+}
+
 function docsVersionFor(registry: ChecksRegistry, checkId: string): string {
   return registry.checks.find((c) => c.check_id === checkId)?.docs_version ?? 'unknown'
 }
@@ -40,7 +52,7 @@ function checkDef(registry: ChecksRegistry, checkId: string): CheckDefinition | 
  *  the one case that can be FAILED, and a mismatch also becomes a DriftEvent. */
 function judgeBaselineCheck(
   checkId: 'toolset_unchanged_vs_approved' | 'schema_unchanged_vs_approved',
-  fp: { status: 'VERIFIED'; fingerprint: string } | { status: 'FAILED'; reason: string },
+  fp: FingerprintVerdict,
   baselineValue: string | undefined,
   now: () => string,
   registry: ChecksRegistry,
@@ -203,13 +215,19 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       // claim as "this server completed the handshake speaking version X."
       A('protocol_revision', 'COMPLETED', 'UNVERIFIED', reason)
     } else {
-      A('discovery_handshake', 'COMPLETED', handshake.handshakeOk ? 'VERIFIED' : 'FAILED')
+      if (handshake.handshakeOk) {
+        A('discovery_handshake', 'COMPLETED', 'VERIFIED')
+      } else {
+        A('discovery_handshake', 'COMPLETED', 'FAILED', classified(handshake.failure, 'discovery_handshake'))
+      }
 
       const revisionMatrix = checkDef(registry, 'protocol_revision')?.revision_matrix ?? []
       if (handshake.protocolVersionDeclared && revisionMatrix.includes(handshake.protocolVersionDeclared)) {
         A('protocol_revision', 'COMPLETED', 'VERIFIED')
       } else {
-        A('protocol_revision', 'COMPLETED', 'FAILED')
+        // T73b: which half of the condition above failed. Never the declared
+        // value itself (third-party text) nor its length.
+        A('protocol_revision', 'COMPLETED', 'FAILED', { key: handshake.protocolVersionDeclared ? 'protocol_revision_unknown' : 'protocol_revision_missing' })
       }
     }
 
@@ -259,14 +277,13 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       toolSnapshot = await buildToolSnapshot(tools, now())
 
       const toolsetFp = await computeToolsetFingerprint(tools)
-      // toolsetFp.reason (when FAILED) is fingerprint.ts's own internal-only
-      // diagnostic string (a raw canonicalizer error message) — it was never a
-      // stable catalog key and is not surfaced as a probe-level reason; FAILED
-      // (unlike UNVERIFIED) never requires a reason, so this simply omits one.
-      A('toolset_fingerprint', 'COMPLETED', toolsetFp.status)
+      // T73b: a FAILED verdict carries fingerprint.ts's bounded catalog key
+      // (classified by error class; the raw canonicalizer message is never
+      // kept), forwarded as the probe-level reason.
+      A('toolset_fingerprint', 'COMPLETED', toolsetFp.status, toolsetFp.status === 'FAILED' ? toolsetFp.reason : null)
 
       const schemaFp = await computeSchemaFingerprint(tools)
-      A('schema_fingerprint', 'COMPLETED', schemaFp.status)
+      A('schema_fingerprint', 'COMPLETED', schemaFp.status, schemaFp.status === 'FAILED' ? schemaFp.reason : null)
 
       const hygiene = runHygieneCheck(tools as { name: string; description?: string }[])
       A('tool_description_hygiene', 'COMPLETED', hygiene.assertion_status, hygiene.assertion_status === 'OBSERVED_RISK' ? hygiene.reason : null)
@@ -274,7 +291,7 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       judgeBaselineCheck('toolset_unchanged_vs_approved', toolsetFp, approvedBaseline?.toolset_fingerprint, now, registry, A, driftEvents)
       judgeBaselineCheck('schema_unchanged_vs_approved', schemaFp, approvedBaseline?.schema_fingerprint, now, registry, A, driftEvents)
     } else {
-      A('tools_list', 'COMPLETED', 'FAILED')
+      A('tools_list', 'COMPLETED', 'FAILED', classified(toolsList.failure, 'tools_list'))
       skipToolsDerivedChecks({ key: 'tools_list_invalid_structure' })
     }
 

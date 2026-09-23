@@ -24,6 +24,12 @@ const EXPECTED_KEYS = [
   'error_taxonomy_result_is_error', 'error_taxonomy_result_ok', 'error_taxonomy_jsonrpc_malformed',
   'error_taxonomy_not_jsonrpc', 'error_taxonomy_not_json', 'error_taxonomy_empty_body',
   'error_taxonomy_event_stream_no_data',
+  'handshake_discover_not_jsonrpc', 'handshake_discover_jsonrpc_error', 'handshake_discover_no_supported_versions',
+  'handshake_discover_rejected', 'handshake_discover_http_error', 'handshake_initialize_http_error',
+  'handshake_initialize_not_jsonrpc', 'handshake_initialize_jsonrpc_error', 'handshake_initialize_no_protocol_version',
+  'handshake_ack_http_error', 'protocol_revision_missing', 'protocol_revision_unknown',
+  'tools_list_challenge_after_failed_handshake', 'tools_list_not_jsonrpc', 'tools_list_jsonrpc_error', 'tools_list_not_array',
+  'fingerprint_tool_missing_name', 'fingerprint_canonicalize_failed',
 ]
 
 async function main() {
@@ -41,11 +47,11 @@ async function main() {
     }
   })
 
-  // Sixteen keys require params (requireParam throws if omitted — that's the
+  // Twenty-three keys require params (requireParam throws if omitted — that's the
   // load-bearing safety net catching a future emitter bug that forgets to
   // pass one; see reason-messages.ts). This test isn't the place to exercise
   // that throw — it's a smoke test that every entry renders non-empty text —
-  // so it feeds each of those sixteen a minimal representative params object and
+  // so it feeds each of those twenty-three a minimal representative params object and
   // leaves every param-free key on a genuine zero-arg call.
   const MINIMAL_PARAMS: Partial<Record<string, Record<string, string | number>>> = {
     probe_aborted: { message: 'x' },
@@ -64,6 +70,13 @@ async function main() {
     error_taxonomy_not_json: { status: 500 },
     error_taxonomy_empty_body: { status: 503 },
     error_taxonomy_event_stream_no_data: { status: 200 },
+    handshake_discover_rejected: { status: 400 },
+    handshake_discover_http_error: { status: 502 },
+    handshake_initialize_http_error: { status: 500 },
+    handshake_ack_http_error: { status: 400 },
+    tools_list_not_jsonrpc: { status: 502 },
+    tools_list_jsonrpc_error: { status: 200 },
+    tools_list_not_array: { status: 200 },
   }
 
   await t('MINIMAL_PARAMS lists exactly the keys whose renderer throws with no params (derived from the table, not hand-kept)', () => {
@@ -71,10 +84,10 @@ async function main() {
       try { REASON_MESSAGES[key]!.en(); return false } catch { return true }
     })
     assert.deepEqual(needsParams.sort(), Object.keys(MINIMAL_PARAMS).sort())
-    assert.equal(needsParams.length, 16)
+    assert.equal(needsParams.length, 23)
   })
 
-  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the sixteen that require them)', () => {
+  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the twenty-three that require them)', () => {
     for (const key of Object.keys(REASON_MESSAGES)) {
       const params = MINIMAL_PARAMS[key]
       assert.ok(REASON_MESSAGES[key]!.en(params).length > 0, `${key}: en() is empty`)
@@ -82,7 +95,7 @@ async function main() {
     }
   })
 
-  await t('SECURITY: the sixteen param-taking keys throw (not silently render blank) when required params are omitted', () => {
+  await t('SECURITY: the twenty-three param-taking keys throw (not silently render blank) when required params are omitted', () => {
     for (const key of Object.keys(MINIMAL_PARAMS)) {
       assert.throws(() => REASON_MESSAGES[key]!.en(), /missing required param/, `${key}: en() should throw with no params`)
       assert.throws(() => REASON_MESSAGES[key]!.zh(), /missing required param/, `${key}: zh() should throw with no params`)
@@ -196,6 +209,111 @@ async function main() {
       error_taxonomy_event_stream_no_data: ['status'],
     }
     for (const [key, want] of Object.entries(READS)) {
+      for (const locale of ['en', 'zh'] as const) {
+        const touched = new Set<string>()
+        const spy = new Proxy({} as Record<string, string | number>, {
+          has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+          get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 0 },
+        })
+        REASON_MESSAGES[key]![locale](spy)
+        assert.deepEqual([...touched].sort(), want, `${key}/${locale} read ${JSON.stringify([...touched])}`)
+      }
+    }
+  })
+
+  // ---- T73b: the eighteen FAILED-reason keys. Pinned verbatim like T73 (with
+  // {status} = 503 substituted where the sentence renders it). ----
+  const FAILED_REASON_COPY: Record<string, { en: string; zh: string }> = {
+    handshake_discover_not_jsonrpc: {
+      en: 'We sent a server/discover request. The server answered HTTP 200 with a body we could not read as a JSON-RPC message.',
+      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 200，但响应体无法按 JSON-RPC 消息读取。',
+    },
+    handshake_discover_jsonrpc_error: {
+      en: 'We sent a server/discover request. The server answered HTTP 200 with a JSON-RPC error instead of a discovery result. We only try the older initialize handshake after a 4xx answer, so it was not tried.',
+      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 200，内容是 JSON-RPC error，而不是 discover 结果。我们只在收到 4xx 时才改用旧版 initialize 握手，所以没有改用。',
+    },
+    handshake_discover_no_supported_versions: {
+      en: 'We sent a server/discover request. The server answered HTTP 200 with a JSON-RPC result, but its supportedVersions field is missing, is not an array, or does not start with a version string.',
+      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 200 和 JSON-RPC result，但其中的 supportedVersions 缺失、不是数组，或第一项不是版本字符串。',
+    },
+    handshake_discover_rejected: {
+      en: 'We sent a server/discover request. The server answered HTTP 503 with a protocol error defined by the current MCP specification, rejecting this request, so we did not fall back to the older initialize handshake.',
+      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 503，附带当前 MCP 规范定义的协议错误，拒绝了这次请求；因此我们没有改用旧版 initialize 握手。',
+    },
+    handshake_discover_http_error: {
+      en: 'We sent a server/discover request. The server answered HTTP 503 — neither the 200 a discovery result needs nor a 4xx that could lead us to try the older initialize handshake.',
+      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 503——既不是 discover 结果所需的 200，也不是可能让我们改用旧版 initialize 握手的 4xx。',
+    },
+    handshake_initialize_http_error: {
+      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 503 instead of 200.',
+      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 503，而不是 200。',
+    },
+    handshake_initialize_not_jsonrpc: {
+      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200, but with a body we could not read as a JSON-RPC message.',
+      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，但响应体无法按 JSON-RPC 消息读取。',
+    },
+    handshake_initialize_jsonrpc_error: {
+      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC error instead of an initialize result.',
+      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，内容是 JSON-RPC error，而不是 initialize 结果。',
+    },
+    handshake_initialize_no_protocol_version: {
+      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC result that has no protocolVersion string.',
+      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200 和 JSON-RPC result，但其中没有字符串类型的 protocolVersion。',
+    },
+    handshake_ack_http_error: {
+      en: 'The server accepted our initialize request (older handshake), but answered the notifications/initialized message that completes the handshake with HTTP 503 instead of a 2xx.',
+      zh: '服务器接受了我们的 initialize 请求（旧版握手），但对完成握手所需的 notifications/initialized 通知返回 HTTP 503，而不是 2xx。',
+    },
+    protocol_revision_missing: {
+      en: 'The handshake did not yield a usable protocol version, so there is nothing to compare against the protocol revisions this check recognizes.',
+      zh: '握手没有得到可用的协议版本，因此没有可与本检查认可的协议修订版本比对的值。',
+    },
+    protocol_revision_unknown: {
+      en: 'The server declared a protocol version that is not one of the protocol revisions this check recognizes. This can also mean the server speaks a newer revision than this check knows about.',
+      zh: '服务器声明的协议版本不在本检查认可的协议修订版本之列。这也可能意味着服务器使用的是比本检查所知更新的修订版本。',
+    },
+    tools_list_challenge_after_failed_handshake: {
+      en: 'tools/list was answered with a 401 and an authentication challenge. Because the handshake itself had already failed, this is recorded as a failure rather than as a credential gate.',
+      zh: 'tools/list 收到 401 和认证 challenge。由于握手本身已经失败，这里记为失败，而不是凭据门控。',
+    },
+    tools_list_not_jsonrpc: {
+      en: 'We called tools/list. The server answered HTTP 503 with a body we could not read as a JSON-RPC message.',
+      zh: '我们调用了 tools/list。服务器返回 HTTP 503，但响应体无法按 JSON-RPC 消息读取。',
+    },
+    tools_list_jsonrpc_error: {
+      en: 'We called tools/list. The server answered HTTP 503 with a JSON-RPC error instead of a tool list.',
+      zh: '我们调用了 tools/list。服务器返回 HTTP 503，内容是 JSON-RPC error，而不是工具列表。',
+    },
+    tools_list_not_array: {
+      en: 'We called tools/list. The server answered HTTP 503 with a JSON-RPC result that does not contain a tools array.',
+      zh: '我们调用了 tools/list。服务器返回 HTTP 503 和 JSON-RPC result，但其中没有 tools 数组。',
+    },
+    fingerprint_tool_missing_name: {
+      en: 'At least one tool in the tools/list response has no string name, so this fingerprint could not be computed.',
+      zh: 'tools/list 响应中至少有一个工具没有字符串类型的 name，因此无法计算此指纹。',
+    },
+    fingerprint_canonicalize_failed: {
+      en: 'The tool data could not be converted into the canonical JSON form this fingerprint is computed from.',
+      zh: '工具数据无法转换为计算此指纹所用的规范化 JSON 形式。',
+    },
+  }
+  const STATUS_RENDERING_T73B_KEYS = [
+    'handshake_discover_rejected', 'handshake_discover_http_error', 'handshake_initialize_http_error', 'handshake_ack_http_error',
+    'tools_list_not_jsonrpc', 'tools_list_jsonrpc_error', 'tools_list_not_array',
+  ]
+
+  await t('T73b: the eighteen FAILED-reason keys render exactly the approved en/zh sentences, whatever else the signed params carry', () => {
+    assert.equal(Object.keys(FAILED_REASON_COPY).length, 18)
+    const widest = { status: 503, jsonrpc_error_code: -32601 }
+    for (const [key, copy] of Object.entries(FAILED_REASON_COPY)) {
+      assert.equal(REASON_MESSAGES[key]!.en(widest), copy.en, `${key}/en`)
+      assert.equal(REASON_MESSAGES[key]!.zh(widest), copy.zh, `${key}/zh`)
+    }
+  })
+
+  await t('T73b: renderers read `status` for exactly seven keys and nothing for the other eleven — never jsonrpc_error_code', () => {
+    for (const key of Object.keys(FAILED_REASON_COPY)) {
+      const want = STATUS_RENDERING_T73B_KEYS.includes(key) ? ['status'] : []
       for (const locale of ['en', 'zh'] as const) {
         const touched = new Set<string>()
         const spy = new Proxy({} as Record<string, string | number>, {

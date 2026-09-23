@@ -180,6 +180,85 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     en: (p) => `We called tools/call with a tool name that does not exist. The server answered HTTP ${requireParam(p, 'status')} with a response whose Content-Type names an event stream, in which we found no non-empty data events.`,
     zh: (p) => `我们用一个不存在的工具名调用了 tools/call。服务器返回 HTTP ${requireParam(p, 'status')}，响应的 Content-Type 声明为事件流，但我们在其中没有找到任何非空的 data 事件。`,
   },
+  // T73b: why a FAILED discovery_handshake / protocol_revision / tools_list /
+  // toolset_fingerprint / schema_fingerprint failed (protocol.ts's
+  // FailureReason, probe.ts's protocol_revision split, fingerprint.ts's error
+  // class). Some of these reasons also carry `status` and/or a safe-integer
+  // `jsonrpc_error_code` as signed evidence; as with T73, the renderers read
+  // only what the approved sentence names — `status` for seven keys, never
+  // jsonrpc_error_code.
+  handshake_discover_not_jsonrpc: {
+    en: () => 'We sent a server/discover request. The server answered HTTP 200 with a body we could not read as a JSON-RPC message.',
+    zh: () => '我们发送了 server/discover 请求。服务器返回 HTTP 200，但响应体无法按 JSON-RPC 消息读取。',
+  },
+  handshake_discover_jsonrpc_error: {
+    en: () => 'We sent a server/discover request. The server answered HTTP 200 with a JSON-RPC error instead of a discovery result. We only try the older initialize handshake after a 4xx answer, so it was not tried.',
+    zh: () => '我们发送了 server/discover 请求。服务器返回 HTTP 200，内容是 JSON-RPC error，而不是 discover 结果。我们只在收到 4xx 时才改用旧版 initialize 握手，所以没有改用。',
+  },
+  handshake_discover_no_supported_versions: {
+    en: () => 'We sent a server/discover request. The server answered HTTP 200 with a JSON-RPC result, but its supportedVersions field is missing, is not an array, or does not start with a version string.',
+    zh: () => '我们发送了 server/discover 请求。服务器返回 HTTP 200 和 JSON-RPC result，但其中的 supportedVersions 缺失、不是数组，或第一项不是版本字符串。',
+  },
+  handshake_discover_rejected: {
+    en: (p) => `We sent a server/discover request. The server answered HTTP ${requireParam(p, 'status')} with a protocol error defined by the current MCP specification, rejecting this request, so we did not fall back to the older initialize handshake.`,
+    zh: (p) => `我们发送了 server/discover 请求。服务器返回 HTTP ${requireParam(p, 'status')}，附带当前 MCP 规范定义的协议错误，拒绝了这次请求；因此我们没有改用旧版 initialize 握手。`,
+  },
+  handshake_discover_http_error: {
+    en: (p) => `We sent a server/discover request. The server answered HTTP ${requireParam(p, 'status')} — neither the 200 a discovery result needs nor a 4xx that could lead us to try the older initialize handshake.`,
+    zh: (p) => `我们发送了 server/discover 请求。服务器返回 HTTP ${requireParam(p, 'status')}——既不是 discover 结果所需的 200，也不是可能让我们改用旧版 initialize 握手的 4xx。`,
+  },
+  handshake_initialize_http_error: {
+    en: (p) => `server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP ${requireParam(p, 'status')} instead of 200.`,
+    zh: (p) => `server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP ${requireParam(p, 'status')}，而不是 200。`,
+  },
+  handshake_initialize_not_jsonrpc: {
+    en: () => 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200, but with a body we could not read as a JSON-RPC message.',
+    zh: () => 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，但响应体无法按 JSON-RPC 消息读取。',
+  },
+  handshake_initialize_jsonrpc_error: {
+    en: () => 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC error instead of an initialize result.',
+    zh: () => 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，内容是 JSON-RPC error，而不是 initialize 结果。',
+  },
+  handshake_initialize_no_protocol_version: {
+    en: () => 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC result that has no protocolVersion string.',
+    zh: () => 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200 和 JSON-RPC result，但其中没有字符串类型的 protocolVersion。',
+  },
+  handshake_ack_http_error: {
+    en: (p) => `The server accepted our initialize request (older handshake), but answered the notifications/initialized message that completes the handshake with HTTP ${requireParam(p, 'status')} instead of a 2xx.`,
+    zh: (p) => `服务器接受了我们的 initialize 请求（旧版握手），但对完成握手所需的 notifications/initialized 通知返回 HTTP ${requireParam(p, 'status')}，而不是 2xx。`,
+  },
+  protocol_revision_missing: {
+    en: () => 'The handshake did not yield a usable protocol version, so there is nothing to compare against the protocol revisions this check recognizes.',
+    zh: () => '握手没有得到可用的协议版本，因此没有可与本检查认可的协议修订版本比对的值。',
+  },
+  protocol_revision_unknown: {
+    en: () => 'The server declared a protocol version that is not one of the protocol revisions this check recognizes. This can also mean the server speaks a newer revision than this check knows about.',
+    zh: () => '服务器声明的协议版本不在本检查认可的协议修订版本之列。这也可能意味着服务器使用的是比本检查所知更新的修订版本。',
+  },
+  tools_list_challenge_after_failed_handshake: {
+    en: () => 'tools/list was answered with a 401 and an authentication challenge. Because the handshake itself had already failed, this is recorded as a failure rather than as a credential gate.',
+    zh: () => 'tools/list 收到 401 和认证 challenge。由于握手本身已经失败，这里记为失败，而不是凭据门控。',
+  },
+  tools_list_not_jsonrpc: {
+    en: (p) => `We called tools/list. The server answered HTTP ${requireParam(p, 'status')} with a body we could not read as a JSON-RPC message.`,
+    zh: (p) => `我们调用了 tools/list。服务器返回 HTTP ${requireParam(p, 'status')}，但响应体无法按 JSON-RPC 消息读取。`,
+  },
+  tools_list_jsonrpc_error: {
+    en: (p) => `We called tools/list. The server answered HTTP ${requireParam(p, 'status')} with a JSON-RPC error instead of a tool list.`,
+    zh: (p) => `我们调用了 tools/list。服务器返回 HTTP ${requireParam(p, 'status')}，内容是 JSON-RPC error，而不是工具列表。`,
+  },
+  tools_list_not_array: {
+    en: (p) => `We called tools/list. The server answered HTTP ${requireParam(p, 'status')} with a JSON-RPC result that does not contain a tools array.`,
+    zh: (p) => `我们调用了 tools/list。服务器返回 HTTP ${requireParam(p, 'status')} 和 JSON-RPC result，但其中没有 tools 数组。`,
+  },
+  fingerprint_tool_missing_name: {
+    en: () => 'At least one tool in the tools/list response has no string name, so this fingerprint could not be computed.',
+    zh: () => 'tools/list 响应中至少有一个工具没有字符串类型的 name，因此无法计算此指纹。',
+  },
+  fingerprint_canonicalize_failed: {
+    en: () => 'The tool data could not be converted into the canonical JSON form this fingerprint is computed from.',
+    zh: () => '工具数据无法转换为计算此指纹所用的规范化 JSON 形式。',
+  },
   auth_401_no_challenge: {
     en: () => 'A 401 was received with no credentials, but no WWW-Authenticate challenge was observable.',
     zh: () => '无凭据时收到 401，但没有 WWW-Authenticate challenge 可供观察',

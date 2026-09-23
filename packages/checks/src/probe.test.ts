@@ -252,6 +252,84 @@ await t('没有漏网：每条实际产出 error_taxonomy OBSERVED_RISK 的 fixt
   assert.ok(errorTaxonomyReasonFixtures.length >= 8, `只有 ${errorTaxonomyReasonFixtures.length} 条`)
 })
 
+console.log('\nT73b：FAILED 的 reason 也是签名证据 —— 五个 check 上凡是实际产出 FAILED 的 fixture，其期望必须声明 reason，且与 probe 产出逐字段相等（未声明 = 红）。fixture 里的 params: {} 表示签名记录里整个没有 params 字段（有一个空对象也算不等）')
+
+const FAILED_REASON_CHECKS = ['discovery_handshake', 'protocol_revision', 'tools_list', 'toolset_fingerprint', 'schema_fingerprint']
+
+/** One dedicated fixture per T73b key, and the one assertion in it that the
+ *  fixture-swap red proof mutates. Written out here, independently of the
+ *  fixture file: the per-fixture test below checks the PROBE's actual key for
+ *  that assertion against this table (not the fixture's declaration), so a
+ *  fixture that quietly stops pinning its key turns red here, while swapping a
+ *  declared key turns exactly that fixture's test red. */
+const T73B_DEDICATED: Record<string, [fixtureId: string, checkId: string]> = {
+  handshake_discover_not_jsonrpc: ['handshake-discover-not-jsonrpc', 'discovery_handshake'],
+  handshake_discover_jsonrpc_error: ['handshake-discover-jsonrpc-error', 'discovery_handshake'],
+  handshake_discover_no_supported_versions: ['handshake-discover-no-supported-versions', 'discovery_handshake'],
+  handshake_discover_rejected: ['handshake-discover-rejected', 'discovery_handshake'],
+  handshake_discover_http_error: ['handshake-discover-http-error', 'discovery_handshake'],
+  handshake_initialize_http_error: ['handshake-initialize-http-error', 'discovery_handshake'],
+  handshake_initialize_not_jsonrpc: ['handshake-initialize-not-jsonrpc', 'discovery_handshake'],
+  handshake_initialize_jsonrpc_error: ['handshake-initialize-jsonrpc-error', 'discovery_handshake'],
+  handshake_initialize_no_protocol_version: ['handshake-initialize-no-protocol-version', 'discovery_handshake'],
+  handshake_ack_http_error: ['handshake-ack-http-error', 'discovery_handshake'],
+  protocol_revision_missing: ['protocol-revision-missing', 'protocol_revision'],
+  protocol_revision_unknown: ['protocol-revision-unknown', 'protocol_revision'],
+  tools_list_challenge_after_failed_handshake: ['tools-list-challenge-after-failed-handshake', 'tools_list'],
+  tools_list_not_jsonrpc: ['tools-list-not-jsonrpc', 'tools_list'],
+  tools_list_jsonrpc_error: ['tools-list-jsonrpc-error', 'tools_list'],
+  tools_list_not_array: ['tools-list-not-array', 'tools_list'],
+  fingerprint_tool_missing_name: ['fingerprint-tool-missing-name', 'toolset_fingerprint'],
+  fingerprint_canonicalize_failed: ['fingerprint-canonicalize-failed', 'schema_fingerprint'],
+}
+
+const failedReasonCells: string[] = []
+for (const fixture of FIXTURE_CORPUS) {
+  const expectations = fixture.expectedAssertions.filter((a) => FAILED_REASON_CHECKS.includes(a.check_id) && a.assertion_status === 'FAILED')
+  if (expectations.length === 0) continue
+  for (const e of expectations) failedReasonCells.push(`${fixture.id}/${e.check_id}`)
+  const dedicated = Object.entries(T73B_DEDICATED).find(([, [id]]) => id === fixture.id)
+  await t(`${fixture.id}：FAILED 的 reason 与 fixture 期望完全相等（${expectations.map((e) => e.check_id).join(' / ')}）`, async () => {
+    const result = await runProbe(makeInput(fixture.createHandler()))
+    for (const e of expectations) {
+      const actual = result.assertions.find((a) => a.check_id === e.check_id)!
+      assert.ok(e.reason, `${fixture.id}/${e.check_id}: 期望是 FAILED，但没有声明 reason —— 签名进记录的原因必须被 fixture 钉住`)
+      const { key, params } = e.reason!
+      assert.deepStrictEqual(actual.reason, Object.keys(params).length > 0 ? { key, params } : { key }, `${fixture.id}/${e.check_id}`)
+      assert.strictEqual(actual.unverified_reason, null, `${fixture.id}/${e.check_id}: FAILED 不写 unverified_reason`)
+    }
+    if (dedicated) {
+      const [dedicatedKey, [, checkId]] = dedicated
+      assert.equal(result.assertions.find((a) => a.check_id === checkId)!.reason?.key, dedicatedKey, `${fixture.id} 是 ${dedicatedKey} 的专属 fixture`)
+    }
+  })
+}
+
+await t('没有漏网：五个 check 上实际产出的每一格 FAILED 都在上面那组里（反之亦然），且每一格都带非空 reason', () => {
+  assert.equal(corpusResults.length, FIXTURE_CORPUS.length, 'corpus-conformance 循环没有为每条 fixture 留下结果')
+  const observed: string[] = []
+  FIXTURE_CORPUS.forEach((f, i) => {
+    for (const a of corpusResults[i]!.assertions) {
+      if (!FAILED_REASON_CHECKS.includes(a.check_id) || a.assertion_status !== 'FAILED') continue
+      observed.push(`${f.id}/${a.check_id}`)
+      assert.ok(a.reason !== null && a.reason.key.length > 0, `${f.id}/${a.check_id}: FAILED 没有 reason`)
+    }
+  })
+  assert.deepEqual([...failedReasonCells].sort(), observed.sort())
+})
+
+await t('T73b 的 18 个 key 各有一条专属 fixture：key 都在 REASON_MESSAGES 里，fixture 两两不同且都在语料里，且专属那一格在 fixture 里声明为 FAILED', () => {
+  const entries = Object.entries(T73B_DEDICATED)
+  assert.equal(entries.length, 18)
+  assert.equal(new Set(entries.map(([, [id]]) => id)).size, 18)
+  for (const [key, [id, checkId]] of entries) {
+    assert.ok(key in REASON_MESSAGES, key)
+    const fixture = FIXTURE_CORPUS.find((f) => f.id === id)
+    assert.ok(fixture, `${id} 不在 FIXTURE_CORPUS 里`)
+    assert.equal(fixture!.expectedAssertions.find((a) => a.check_id === checkId)?.assertion_status, 'FAILED', `${id}/${checkId}`)
+  }
+})
+
 console.log('\nLead finding N3（round 2）：corpus-conformance 循环（第 40 行起）只比对 execution_status / assertion_status，不比对 reason —— 不在这里加宽那个共享循环（会重新评判已有的每一条 fixture），改为单独钉住两条新增 credential-gated 正例的 reason.key 与 params.scheme')
 
 await t('credential-gated-handshake：discovery_handshake / protocol_revision / tools_list 的 reason 精确等于 { key: \'credential_required\', params: { scheme: \'bearer\' } }', async () => {

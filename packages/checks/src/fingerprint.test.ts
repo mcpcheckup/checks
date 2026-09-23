@@ -24,7 +24,39 @@ await t('cross-layer-hash-mismatch：toolset 算得出（只需要 name），sch
   const schema = await computeSchemaFingerprint(crossLayerHashMismatch.tools!)
   assert.equal(toolset.status, 'VERIFIED')
   assert.equal(schema.status, 'FAILED')
-  assert.ok((schema as { reason: string }).reason.length > 0)
+  // T73b: the FAILED reason is a bounded catalog key now, not the raw
+  // canonicalizer message (inputSchema missing ⇒ UNSUPPORTED_TYPE).
+  assert.deepStrictEqual((schema as { reason: unknown }).reason, { key: 'fingerprint_canonicalize_failed' })
+})
+
+console.log('\nT73b：FAILED 的 reason 按错误类分类，只有两个 key、没有 params，错误原文（含第三方键名）一个字也不留')
+
+await t('缺 name（TypeError，来自 requireToolName）→ 两个指纹都是 fingerprint_tool_missing_name', async () => {
+  const tools = [{ name: 'ok', inputSchema: {} }, { inputSchema: {} }]
+  assert.deepStrictEqual(await computeToolsetFingerprint(tools), { status: 'FAILED', reason: { key: 'fingerprint_tool_missing_name' } })
+  assert.deepStrictEqual(await computeSchemaFingerprint(tools), { status: 'FAILED', reason: { key: 'fingerprint_tool_missing_name' } })
+})
+
+await t('name 不是字符串 / 工具不是对象 → fingerprint_tool_missing_name', async () => {
+  for (const tools of [[{ name: 7, inputSchema: {} }], [null], ['a'], [[]]]) {
+    assert.deepStrictEqual(await computeToolsetFingerprint(tools), { status: 'FAILED', reason: { key: 'fingerprint_tool_missing_name' } }, JSON.stringify(tools))
+  }
+})
+
+await t('CanonicalizationError（孤立代理项 / 1e400 / NFC 重键）与 RangeError（极深嵌套）→ fingerprint_canonicalize_failed，且 reason 里不含第三方键名', async () => {
+  let deep: unknown = {}
+  for (let i = 0; i < 200_000; i++) deep = { d: deep }
+  const cases: [string, unknown[]][] = [
+    ['lone surrogate in name', [{ name: 'a\ud800', inputSchema: {} }]],
+    ['non-finite number', [{ name: 'a', inputSchema: { max: Infinity } }]],
+    ['NFC-duplicate keys', [{ name: 'a', inputSchema: { 'CANARYé': 1, 'CANARYé': 2 } }]],
+    ['deep nesting', [{ name: 'a', inputSchema: deep }]],
+  ]
+  for (const [label, tools] of cases) {
+    const schema = await computeSchemaFingerprint(tools)
+    assert.deepStrictEqual(schema, { status: 'FAILED', reason: { key: 'fingerprint_canonicalize_failed' } }, label)
+  }
+  assert.deepStrictEqual(await computeToolsetFingerprint([{ name: 'a\ud800' }]), { status: 'FAILED', reason: { key: 'fingerprint_canonicalize_failed' } })
 })
 
 await t('large-toolset-nested-schemas：多层嵌套 + 8 个工具下两者依然稳定算得出', async () => {

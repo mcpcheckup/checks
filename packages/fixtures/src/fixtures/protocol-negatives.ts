@@ -13,6 +13,7 @@ import {
   withOverrides,
   latencyObserved,
   unclaimedDriftAssertions,
+  type ModernHandlerOptions,
 } from './shared.ts'
 
 export const staleProtocolVersion: Fixture = {
@@ -27,11 +28,7 @@ export const staleProtocolVersion: Fixture = {
   tools: CLEAN_TOOLS,
   createHandler: () => createLegacyHandler(CLEAN_TOOLS, { protocolVersion: '2023-01-01' }),
   sampleRun: (handler) => legacySampleRun(handler, { protocolVersion: '2023-01-01' }),
-  expectedAssertions: withOverride(cleanBaselineAssertions(), {
-    check_id: 'protocol_revision',
-    execution_status: 'COMPLETED',
-    assertion_status: 'FAILED',
-  }),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), failedWith('protocol_revision', 'protocol_revision_unknown')),
 }
 
 export const toolsListIllegalStructure: Fixture = {
@@ -61,7 +58,7 @@ export const toolsListIllegalStructure: Fixture = {
           }),
         ),
       ),
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('tools_list', 'tools_list_not_array', { status: 200 }),
   ),
 }
 
@@ -100,9 +97,9 @@ export const legacyEverythingRequiresAuthStillFails: Fixture = {
         ),
       ),
     [
-      { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-      { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-      { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+      failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
+      revisionMissing(),
+      failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
       { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_401_no_challenge', params: {} } },
     ],
   ),
@@ -244,8 +241,8 @@ export const redirectCrossHost: Fixture = {
   // 时的旧行为，现在从未发生。
   sampleRun: (handler) => modernSampleRun(handler),
   expectedAssertions: withOverrides(cleanBaselineAssertions(), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_discover_http_error', { status: 302 }),
+    revisionMissing(),
     { check_id: 'redirect_policy', execution_status: 'COMPLETED', assertion_status: 'OBSERVED_RISK' },
   ]),
 }
@@ -285,9 +282,9 @@ export const forbidden403NotCredentialGated: Fixture = {
   createHandler: (): FetchHandler => async () => rawResponse(403, { 'www-authenticate': 'Bearer realm="mcp"' }, JSON.stringify({ error: 'forbidden' })),
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 403 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 403 }),
   ]),
 }
 
@@ -304,9 +301,9 @@ export const credentialChallengeEmptyHeaderNotExempted: Fixture = {
   createHandler: (): FetchHandler => async () => rawResponse(401, { 'www-authenticate': '' }, null),
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
     { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_401_no_challenge', params: {} } },
   ]),
 }
@@ -323,9 +320,9 @@ export const credentialChallengeMalformedHeaderNotExempted: Fixture = {
   createHandler: (): FetchHandler => async () => rawResponse(401, { 'www-authenticate': '="foo"' }, null),
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
     { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
@@ -354,9 +351,9 @@ export const credentialChallengeHtabSeparatorNotExempted: Fixture = {
   createHandler: (): FetchHandler => async () => rawResponse(401, { 'www-authenticate': HTAB_SEPARATOR_CHALLENGE }, null),
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
     { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
@@ -385,9 +382,9 @@ export const credentialChallengeQdtextControlCharNotExempted: Fixture = {
   createHandler: (): FetchHandler => async () => rawResponse(401, { 'www-authenticate': QDTEXT_CONTROL_CHAR_CHALLENGE }, null),
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
     { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
@@ -412,9 +409,9 @@ export const credentialChallengeMalformedRemainderNotExempted: Fixture = {
   createHandler: (): FetchHandler => async () => rawResponse(401, { 'www-authenticate': 'Bearer ???' }, null),
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 401 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 401 }),
     { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
@@ -448,9 +445,9 @@ export const recognizedModernErrorCodeUnchanged: Fixture = {
     }),
   sampleRun: (handler) => modernSampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_discover_rejected', { status: 400, jsonrpc_error_code: -32020 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_jsonrpc_error', { status: 400, jsonrpc_error_code: -32020 }),
   ]),
 }
 
@@ -495,9 +492,9 @@ export const recognizedModernErrorCodeAt401NotExempted: Fixture = {
   // silently left at the baseline's VERIFIED so this fixture's real
   // observed behavior stays pinned.
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_discover_rejected', { status: 401, jsonrpc_error_code: -32020 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_challenge_after_failed_handshake'),
     { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } },
   ]),
 }
@@ -619,9 +616,9 @@ export const serviceUnavailable503NoRetryAfterNotRateLimited: Fixture = {
   createHandler: (): FetchHandler => async () => rawResponse(503, {}, null),
   sampleRun: (handler) => modernSampleRun(handler),
   expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), [
-    { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
-    { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'FAILED' },
+    failedWith('discovery_handshake', 'handshake_discover_http_error', { status: 503 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 503 }),
     // T73: no body and no Content-Type at all ⇒ empty_body / media_type none.
     errorTaxonomyRisk('empty_body', 503, 'none'),
   ]),
@@ -762,4 +759,297 @@ export const errorTaxonomyEventStreamNoData: Fixture = {
     }),
   sampleRun: (handler) => modernSampleRun(handler),
   expectedAssertions: withOverride(cleanBaselineAssertions(), errorTaxonomyRisk('event_stream_no_data', 200, 'text/event-stream')),
+}
+
+// ---- T73b: every FAILED protocol / fingerprint assertion records WHY ----
+
+/** A FAILED expectation with its signed reason ref. Keys and params are
+ *  spelled out here from the rule tables (packages/checks/src/protocol.ts
+ *  FailureReason, probe.ts's protocol_revision split, fingerprint.ts), not
+ *  imported from packages/checks, so a drift on either side turns
+ *  probe.test.ts red. `params: {}` means the signed reason carries none. */
+function failedWith(check_id: string, key: string, params: Record<string, number> = {}): ExpectedAssertion {
+  return { check_id, execution_status: 'COMPLETED', assertion_status: 'FAILED', reason: { key, params } }
+}
+
+/** Every handshake that ends without a version: nothing to compare. */
+function revisionMissing(): ExpectedAssertion {
+  return failedWith('protocol_revision', 'protocol_revision_missing')
+}
+
+const FAILED_REASON_GUARD_SHARED =
+  'T73b：判定不变（同一输入仍是同一个 FAILED），变的是签名记录里多了一个有界原因：同一个 FAILED 背后是哪一种' +
+  '失败，今后能从记录本身读出来，而不必重新探测。原因只取常量（key、HTTP 状态码、可选的安全整数 error code），' +
+  '任何第三方原文都不进记录。'
+
+const HTML_PAGE = '<html><body><h1>MCP endpoint</h1></body></html>'
+
+function modernDiscoverFails(
+  id: string,
+  description: string,
+  guard: string,
+  discoverResponse: (rpcId: unknown) => Response,
+  handshake: ExpectedAssertion,
+): Fixture {
+  return {
+    id,
+    description,
+    protocolRevision: null,
+    kind: 'negative',
+    guardsAgainst: FAILED_REASON_GUARD_SHARED + guard,
+    tools: CLEAN_TOOLS,
+    createHandler: () => createModernHandler(CLEAN_TOOLS, { discoverResponse }),
+    sampleRun: (handler) => modernSampleRun(handler),
+    // tools/list still runs after a failed handshake and this server answers it
+    // normally, so only the two handshake-derived checks move.
+    expectedAssertions: withOverrides(cleanBaselineAssertions(), [handshake, revisionMissing()]),
+  }
+}
+
+export const handshakeDiscoverNotJsonrpc = modernDiscoverFails(
+  'handshake-discover-not-jsonrpc',
+  '一个服务器对 server/discover 返回 HTTP 200 + 一张 text/html 页面；其余请求按 modern 正常应答。',
+  '本条钉住 200 分支的第一类：响应体根本读不成 JSON-RPC 消息。',
+  () => rawResponse(200, { 'content-type': 'text/html' }, HTML_PAGE),
+  failedWith('discovery_handshake', 'handshake_discover_not_jsonrpc'),
+)
+
+export const handshakeDiscoverJsonrpcError = modernDiscoverFails(
+  'handshake-discover-jsonrpc-error',
+  '一个 legacy 风格的服务器对 server/discover 返回 HTTP 200 + JSON-RPC error -32601（Method not found）。',
+  '本条钉住 200 分支的第二类，也是 TODO 209 那 41 条要回答的形状：200 + JSON-RPC error 不触发回退（回退只在 4xx），' +
+    '记下安全整数 error code。若分类器把它并进「不是 JSON-RPC」或「没有 supportedVersions」，这里会红。',
+  (rpcId) => jsonRpcError(rpcId, -32601, 'Method not found'),
+  failedWith('discovery_handshake', 'handshake_discover_jsonrpc_error', { jsonrpc_error_code: -32601 }),
+)
+
+export const handshakeDiscoverNoSupportedVersions = modernDiscoverFails(
+  'handshake-discover-no-supported-versions',
+  '一个服务器对 server/discover 返回 HTTP 200 + JSON-RPC result，但 supportedVersions 是空数组。',
+  '本条钉住 200 分支的第三类：是 JSON-RPC result，只是没有可用的 supportedVersions（空数组的第一项不是字符串）。',
+  (rpcId) => jsonRpcResult(rpcId, { resultType: 'complete', supportedVersions: [], capabilities: { tools: {} } }),
+  failedWith('discovery_handshake', 'handshake_discover_no_supported_versions'),
+)
+
+export const handshakeDiscoverRejected = modernDiscoverFails(
+  'handshake-discover-rejected',
+  '一个 modern 服务器对 server/discover 返回 HTTP 400 + 已识别的现代错误码 -32022（UnsupportedProtocolVersion）；其余请求正常。',
+  '本条钉住 4xx + 已识别错误码这一支：不回退，记下 status 与 error code（这一支的 code 恒为三个已识别码之一）。',
+  (rpcId) => jsonRpcError(rpcId, -32022, 'UnsupportedProtocolVersionError', { status: 400 }),
+  failedWith('discovery_handshake', 'handshake_discover_rejected', { status: 400, jsonrpc_error_code: -32022 }),
+)
+
+export const handshakeDiscoverHttpError = modernDiscoverFails(
+  'handshake-discover-http-error',
+  '一个服务器对 server/discover 返回 HTTP 202 且没有 body；其余请求按 modern 正常应答。',
+  '本条钉住「既不是 200 也不是 4xx」那一支里最容易被漏看的一格：200 以外的 2xx 也落在这里，而不是被当成成功。',
+  () => rawResponse(202, {}, null),
+  failedWith('discovery_handshake', 'handshake_discover_http_error', { status: 202 }),
+)
+
+function legacyInitializeFails(
+  id: string,
+  description: string,
+  guard: string,
+  initializeResponse: (rpcId: unknown) => Response,
+  handshake: ExpectedAssertion,
+): Fixture {
+  return {
+    id,
+    description,
+    protocolRevision: null,
+    kind: 'negative',
+    guardsAgainst: FAILED_REASON_GUARD_SHARED + guard,
+    tools: CLEAN_TOOLS,
+    // omitSessionId: the failed initialize mints no session, and this server
+    // (like mcp.deepwiki.com) does not require one — so tools/list still
+    // succeeds and only the two handshake-derived checks move.
+    createHandler: () => createLegacyHandler(CLEAN_TOOLS, { omitSessionId: true, initializeResponse }),
+    sampleRun: (handler) => legacySampleRun(handler),
+    expectedAssertions: withOverrides(cleanBaselineAssertions(), [handshake, revisionMissing()]),
+  }
+}
+
+export const handshakeInitializeHttpError = legacyInitializeFails(
+  'handshake-initialize-http-error',
+  '一个 legacy 服务器：server/discover 回 400 触发回退，initialize 本身返回 HTTP 500 纯文本。',
+  '本条钉住 initialize 的第一类：状态码不是 200，记下 status（不论 body 长什么样）。',
+  () => rawResponse(500, { 'content-type': 'text/plain' }, 'Internal Server Error'),
+  failedWith('discovery_handshake', 'handshake_initialize_http_error', { status: 500 }),
+)
+
+export const handshakeInitializeNotJsonrpc = legacyInitializeFails(
+  'handshake-initialize-not-jsonrpc',
+  '一个 legacy 服务器：回退后的 initialize 返回 HTTP 200 + 一张 text/html 页面。',
+  '本条钉住 initialize 的第二类：200，但响应体读不成 JSON-RPC 消息。',
+  () => rawResponse(200, { 'content-type': 'text/html' }, HTML_PAGE),
+  failedWith('discovery_handshake', 'handshake_initialize_not_jsonrpc'),
+)
+
+export const handshakeInitializeJsonrpcError = legacyInitializeFails(
+  'handshake-initialize-jsonrpc-error',
+  '一个 legacy 服务器：回退后的 initialize 返回 HTTP 200 + JSON-RPC error -32602。',
+  '本条钉住 initialize 的第三类：200 + JSON-RPC error，记下安全整数 error code。',
+  (rpcId) => jsonRpcError(rpcId, -32602, 'Unsupported protocol version'),
+  failedWith('discovery_handshake', 'handshake_initialize_jsonrpc_error', { jsonrpc_error_code: -32602 }),
+)
+
+export const handshakeInitializeNoProtocolVersion = legacyInitializeFails(
+  'handshake-initialize-no-protocol-version',
+  '一个 legacy 服务器：回退后的 initialize 返回 HTTP 200 + JSON-RPC result，但 result 里没有 protocolVersion。',
+  '本条钉住 initialize 的第四类：是 JSON-RPC result，只是没有字符串类型的 protocolVersion。',
+  (rpcId) => jsonRpcResult(rpcId, { capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'notes-mcp', version: '1.4.0' } }),
+  failedWith('discovery_handshake', 'handshake_initialize_no_protocol_version'),
+)
+
+export const handshakeAckHttpError: Fixture = {
+  id: 'handshake-ack-http-error',
+  description: '一个 legacy 服务器：initialize 正常（2025-06-18），但对 notifications/initialized 返回 HTTP 400 纯文本。',
+  protocolRevision: '2025-06-18',
+  kind: 'negative',
+  guardsAgainst:
+    FAILED_REASON_GUARD_SHARED +
+    '本条钉住握手的最后一步：initialize 已给出版本，只有 notifications/initialized 没拿到 2xx。protocol_revision ' +
+    '因此仍是 VERIFIED（版本在矩阵里），只有 discovery_handshake 是 FAILED——两者独立。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createLegacyHandler(CLEAN_TOOLS, { initializedNotificationResponse: () => rawResponse(400, { 'content-type': 'text/plain' }, 'Bad Request') }),
+  sampleRun: (handler) => legacySampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), failedWith('discovery_handshake', 'handshake_ack_http_error', { status: 400 })),
+}
+
+export const protocolRevisionMissing: Fixture = {
+  id: 'protocol-revision-missing',
+  description: '一个 modern 服务器：server/discover 成功，但 supportedVersions 的第一项是空字符串 ""。',
+  protocolRevision: null,
+  kind: 'negative',
+  guardsAgainst:
+    FAILED_REASON_GUARD_SHARED +
+    '本条钉住 protocol_revision 的「缺失」一支按假值判断，而不是只看 null：握手本身 VERIFIED（第一项是字符串），' +
+    '但空字符串不是一个可比对的版本。这是 missing 唯一一个不与握手失败同时出现的格子。',
+  tools: CLEAN_TOOLS,
+  createHandler: () => createModernHandler(CLEAN_TOOLS, { protocolVersion: '' }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), revisionMissing()),
+}
+
+export const protocolRevisionUnknown: Fixture = {
+  id: 'protocol-revision-unknown',
+  description: '一个 modern 服务器：server/discover 成功，supportedVersions 的第一项是矩阵里没有的 "2099-01-01"。',
+  protocolRevision: null,
+  kind: 'negative',
+  guardsAgainst:
+    FAILED_REASON_GUARD_SHARED +
+    '本条钉住 protocol_revision 的「不认识」一支（modern 路径；stale-protocol-version 是 legacy 路径）：' +
+    '签名记录里只有 key，声明的版本字符串本身（第三方文本）与其长度都不记。',
+  tools: CLEAN_TOOLS,
+  createHandler: () => createModernHandler(CLEAN_TOOLS, { protocolVersion: '2099-01-01' }),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverride(cleanBaselineAssertions(), failedWith('protocol_revision', 'protocol_revision_unknown')),
+}
+
+function toolsListFails(id: string, description: string, guard: string, opts: ModernHandlerOptions, overrides: ExpectedAssertion[]): Fixture {
+  return {
+    id,
+    description,
+    protocolRevision: overrides.some((o) => o.check_id === 'discovery_handshake') ? null : '2026-07-28',
+    kind: 'negative',
+    guardsAgainst: FAILED_REASON_GUARD_SHARED + guard,
+    createHandler: () => createModernHandler(CLEAN_TOOLS, opts),
+    sampleRun: (handler) => modernSampleRun(handler),
+    expectedAssertions: withOverrides(toolsListInvalidStructureCascade(cleanBaselineAssertions()), overrides),
+  }
+}
+
+export const toolsListChallengeAfterFailedHandshake = toolsListFails(
+  'tools-list-challenge-after-failed-handshake',
+  '一个服务器：server/discover 返回 HTTP 500；tools/list 返回 401 + 合法的 WWW-Authenticate: Bearer，body 却是一份结构完好的工具列表。',
+  '本条钉住 finding B6 那一格：tools/list 的 challenge 只在握手成功时才算凭据门控；握手已失败时它落在 FAILED，' +
+    '原因是 challenge 本身，而不是 body（body 在这里甚至是合法的 tools 数组）。',
+  {
+    discoverResponse: () => rawResponse(500, { 'content-type': 'text/plain' }, 'Internal Server Error'),
+    toolsListResponse: (rpcId) =>
+      rawResponse(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer realm="mcp"' }, JSON.stringify({ jsonrpc: '2.0', id: rpcId, result: { tools: CLEAN_TOOLS } })),
+  },
+  [
+    failedWith('discovery_handshake', 'handshake_discover_http_error', { status: 500 }),
+    revisionMissing(),
+    failedWith('tools_list', 'tools_list_challenge_after_failed_handshake'),
+  ],
+)
+
+export const toolsListNotJsonrpc = toolsListFails(
+  'tools-list-not-jsonrpc',
+  '一个 modern 服务器：握手正常，tools/list 返回 HTTP 502 + 一张 text/html 页面。',
+  '本条钉住 tools/list 的「读不成 JSON-RPC」一支，并记下 status。',
+  { toolsListResponse: () => rawResponse(502, { 'content-type': 'text/html' }, '<html><body><h1>Bad Gateway</h1></body></html>') },
+  [failedWith('tools_list', 'tools_list_not_jsonrpc', { status: 502 })],
+)
+
+export const toolsListJsonrpcError = toolsListFails(
+  'tools-list-jsonrpc-error',
+  '一个 modern 服务器：握手正常，tools/list 返回 HTTP 200 + JSON-RPC error -32603。',
+  '本条钉住 tools/list 的「JSON-RPC error」一支，记下 status 与安全整数 error code。',
+  { toolsListResponse: (rpcId) => jsonRpcError(rpcId, -32603, 'Internal error') },
+  [failedWith('tools_list', 'tools_list_jsonrpc_error', { status: 200, jsonrpc_error_code: -32603 })],
+)
+
+export const toolsListNotArray = toolsListFails(
+  'tools-list-not-array',
+  '一个 modern 服务器：握手正常，tools/list 返回 HTTP 200 + JSON-RPC result，但 result 里根本没有 tools 字段。',
+  '本条钉住 tools/list 的「result 里没有 tools 数组」一支（tools-list-illegal-structure 是 tools 为字符串的同支）。',
+  { toolsListResponse: (rpcId) => jsonRpcResult(rpcId, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public' }) },
+  [failedWith('tools_list', 'tools_list_not_array', { status: 200 })],
+)
+
+const COMPARISON_UNAVAILABLE = { key: 'fingerprint_comparison_unavailable', params: {} }
+
+const TOOLS_ONE_MISSING_NAME = [
+  CLEAN_TOOLS[0],
+  { description: 'Archive a note by id.', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+]
+
+export const fingerprintToolMissingName: Fixture = {
+  id: 'fingerprint-tool-missing-name',
+  description: '一个 modern 服务器：tools/list 结构合法，但其中一个工具没有 name 字段。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    FAILED_REASON_GUARD_SHARED +
+    '本条钉住指纹失败的「缺 name」一类（requireToolName 的 TypeError）：两个指纹都 FAILED，都记同一个 key，' +
+    '不记工具下标，也不记异常原文。',
+  tools: TOOLS_ONE_MISSING_NAME,
+  createHandler: () => createModernHandler(TOOLS_ONE_MISSING_NAME),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverrides(cleanBaselineAssertions(), [
+    failedWith('toolset_fingerprint', 'fingerprint_tool_missing_name'),
+    failedWith('schema_fingerprint', 'fingerprint_tool_missing_name'),
+    { check_id: 'toolset_unchanged_vs_approved', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: COMPARISON_UNAVAILABLE },
+    { check_id: 'schema_unchanged_vs_approved', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: COMPARISON_UNAVAILABLE },
+  ]),
+}
+
+/** Two property names that are different strings on the wire but the same
+ *  string after NFC ("café" precomposed vs. e + combining acute). */
+const TOOLS_NFC_DUPLICATE_KEYS = [
+  CLEAN_TOOLS[0],
+  { name: 'tag_note', description: 'Tag a note.', inputSchema: { type: 'object', properties: { 'café': { type: 'string' }, 'café': { type: 'string' } } } },
+]
+
+export const fingerprintCanonicalizeFailed: Fixture = {
+  id: 'fingerprint-canonicalize-failed',
+  description: '一个 modern 服务器：tools/list 结构合法，但一个工具的 inputSchema 里有两个 NFC 归一后相同的属性名。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst:
+    FAILED_REASON_GUARD_SHARED +
+    '本条钉住指纹失败的「无法规范化」一类（CanonicalizationError DUPLICATE_KEY_AFTER_NFC）：toolset 层只取 name，' +
+    '照样 VERIFIED；schema 层 FAILED。canonicalizer 的错误原文里带着这两个第三方键名，所以绝不能进记录——只记 key。',
+  tools: TOOLS_NFC_DUPLICATE_KEYS,
+  createHandler: () => createModernHandler(TOOLS_NFC_DUPLICATE_KEYS),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: withOverrides(cleanBaselineAssertions(), [
+    failedWith('schema_fingerprint', 'fingerprint_canonicalize_failed'),
+    { check_id: 'schema_unchanged_vs_approved', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: COMPARISON_UNAVAILABLE },
+  ]),
 }

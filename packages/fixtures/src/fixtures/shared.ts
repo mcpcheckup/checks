@@ -308,6 +308,12 @@ export interface LegacyHandlerOptions {
    *  Absent by default — every pre-existing legacy fixture keeps its exact
    *  previous behaviour. */
   toolsCallResponse?: (id: unknown, name: unknown) => Response
+  /** T73b: replaces the `initialize` answer (the session still counts as
+   *  initialized), so a fixture can pin one way the legacy handshake fails.
+   *  Absent by default — every pre-existing legacy fixture is unchanged. */
+  initializeResponse?: (id: unknown) => Response
+  /** T73b: replaces the 202 answer to `notifications/initialized`. */
+  initializedNotificationResponse?: () => Response
 }
 
 function acceptHeaderSatisfied(headers: Headers): boolean {
@@ -357,6 +363,7 @@ export function createLegacyHandler(tools: unknown[], opts: LegacyHandlerOptions
         return opts.discoverProbeResponse?.(call.id) ?? jsonRpcError(call.id, -32601, 'Method not found', { status: 400 })
       case 'initialize': {
         sessionInitialized = true
+        if (opts.initializeResponse) return opts.initializeResponse(call.id)
         const sessionHeaders = opts.omitSessionId ? {} : { 'mcp-session-id': FIXED_SESSION_ID }
         return respondToRequest(
           {
@@ -368,7 +375,7 @@ export function createLegacyHandler(tools: unknown[], opts: LegacyHandlerOptions
         )
       }
       case 'notifications/initialized':
-        return notificationAccepted()
+        return opts.initializedNotificationResponse?.() ?? notificationAccepted()
       case 'tools/list': {
         if (!opts.omitSessionId && (!sessionInitialized || call.headers.get('mcp-session-id') !== FIXED_SESSION_ID)) {
           return jsonRpcError(call.id, -32000, 'Session not initialized', { status: 400 })
