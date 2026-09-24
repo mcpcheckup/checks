@@ -15,7 +15,12 @@
  *      registry.ts, types.ts, checks.json — `git diff a05097e` on those is
  *      empty for T86). A later change to one of them must freeze the 0.6.0
  *      version first, or this stops being a differential. DO NOT "update" the
- *      frozen copy to match a later implementation.
+ *      frozen copy to match a later implementation. (TODO 458, suite 0.7.1,
+ *      changed wire.ts, whose 0.6.0 and 0.7.0 versions are the same blob; it
+ *      froze that version as frozen/suite-0.7.0/wire.ts, and
+ *      wire-budget-differential.test.ts shows the new wire.ts gives these
+ *      frozen files identical results for every in-budget input it tries. Every
+ *      input here answers at once, far inside the duration budget.)
  *   3. ORACLE — T73b's independent JSON-RPC / SSE reading and handshake
  *      classification (verbatim), plus the T86 rule as ordered branches. It
  *      imports nothing from ./probe.ts or ./protocol.ts.

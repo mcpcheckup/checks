@@ -17,11 +17,26 @@ export interface GuardSignals {
   dnsAnswerChanged?: boolean
 }
 
+/** What sendRequest (wire.ts) tells every call it makes (TODO 458). */
+export interface FetchCallOptions {
+  /** The time left in the run's aggregate duration budget when this call was
+   *  made, in ms: always > 0 and ≤ budget.maxDurationMs. sendRequest's own
+   *  timer, set to that deadline, ends the call if it is still running when
+   *  the timer fires, whatever the implementation does; nothing the call
+   *  produces after that is read. An implementation
+   *  that also enforces it should give up no EARLIER than that (the production
+   *  adapter gives guardedFetch timeoutMs plus a grace): a failure of its own
+   *  that beats sendRequest's timer is reported as that failure, not as the
+   *  budget running out. */
+  timeoutMs: number
+}
+
 /** The sole outbound-network seam this package uses. Almost structurally
  *  identical to the fetch API itself (and to @mcpcheckup/fixtures' FetchHandler)
  *  so a fixture's createHandler() drops in for tests with zero adapter code —
- *  fixtures ignore the third parameter and TypeScript accepts that (a function
- *  with fewer declared parameters is assignable to a type expecting more). In
+ *  fixtures ignore the third and fourth parameters and TypeScript accepts that
+ *  (a function with fewer declared parameters is assignable to a type
+ *  expecting more). A wrapper around another FetchLike must forward all four. In
  *  production the caller is expected to supply an adapter over
  *  @mcpcheckup/ssrf-guard's guardedFetch() that reconstructs a plain Response —
  *  this package never calls guardedFetch itself (see the source-scan test in
@@ -34,6 +49,7 @@ export type FetchLike = (
   input: RequestInfo | URL,
   init: RequestInit | undefined,
   onGuardSignal: (signals: GuardSignals) => void,
+  options?: FetchCallOptions,
 ) => Promise<Response>
 
 export type EvidenceProvenance = 'INDEPENDENTLY_OBSERVED' | 'SELF_ATTESTED' | 'STATICALLY_ANALYZED'

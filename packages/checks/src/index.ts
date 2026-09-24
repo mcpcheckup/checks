@@ -17,5 +17,6 @@ export type {
   DriftEvent,
   EvidenceProvenance,
   FetchLike,
+  FetchCallOptions,
   ProbeBudget,
 } from './types.ts'

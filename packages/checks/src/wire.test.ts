@@ -1,6 +1,8 @@
 import assert from 'node:assert'
 import { sendRequest, createProbeContext, ProbeAborted, parseRetryAfterSeconds } from './wire.ts'
+import type { ProbeContext } from './wire.ts'
 import type { FetchLike } from './types.ts'
+import { BudgetExceeded, SsrfBlocked } from '@mcpcheckup/ssrf-guard'
 import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 
 let pass = 0, fail = 0
@@ -326,6 +328,229 @@ await t('反例：Retry-After 的有无是 503 唯一的判据——同一段代
   )
   const r = await sendRequest(withoutHeader, 'https://example.com/b', {}, BUDGET, createProbeContext(Date.now()))
   assert.equal(r.status, 503)
+})
+
+console.log('\nsendRequest：每次请求只拿到整轮预算的剩余时间（TODO 458）')
+
+/** Fails the test instead of hanging it when a mutation removes the deadline. */
+function watchdog<T>(p: Promise<T>, ms = 3_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const guard = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`watchdog: still pending after ${ms} ms — nothing bounded this call`)), ms) })
+  return Promise.race([p, guard]).finally(() => clearTimeout(timer))
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** A ctx whose run started so long ago that `leftMs` of the budget remain. */
+const ctxWithLeft = (leftMs: number, budget: ProbeBudget = BUDGET) => {
+  const ctx = createProbeContext(Date.now())
+  ctx.startedAtMs = Date.now() - (budget.maxDurationMs - leftMs)
+  return ctx
+}
+/** The run's deadline, as sendRequest computes it. */
+const deadlineOf = (ctx: ProbeContext, budget: ProbeBudget = BUDGET) => ctx.startedAtMs + budget.maxDurationMs
+/** Spins synchronously until Date.now() reaches `atMs`. No timer callback can
+ *  run while this spins, and a promise settled right after it settles in
+ *  microtasks — before any timer macrotask — so "how much time was left when
+ *  the step settled" is fixed by construction, not by the runner's speed.
+ *  (TODO 458 R3: a ctx built with 1 ms left and then assumed to still have
+ *  it when the request starts was flaky on CI.) */
+const busyUntil = (atMs: number) => { while (Date.now() < atMs) { /* spin */ } }
+const isDurationAbort = (budget: ProbeBudget) => (e: unknown) =>
+  e instanceof ProbeAborted && e.code === 'MAX_DURATION' && e.message === `探测已超过 ${budget.maxDurationMs}ms 的总预算` &&
+  JSON.stringify(e.details) === JSON.stringify({ maxDurationMs: budget.maxDurationMs })
+
+await t('fetchImpl 收到第 4 参 { timeoutMs }，值是整轮预算的剩余时间，不是一份全新的 maxDurationMs', async () => {
+  const seen: unknown[] = []
+  const fetchImpl: FetchLike = async (_i, _init, _s, options) => { seen.push(options); return new Response('ok') }
+  await sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctxWithLeft(1_000))
+  assert.equal(seen.length, 1)
+  const timeoutMs = (seen[0] as { timeoutMs: number }).timeoutMs
+  assert.ok(timeoutMs > 0 && timeoutMs <= 1_000, `timeoutMs 必须是剩余的约 1000 ms，实得 ${timeoutMs}`)
+  assert.deepEqual(Object.keys(seen[0] as object), ['timeoutMs'])
+})
+
+await t('重定向循环的每一跳都重新计算剩余时间：第二跳拿到的比第一跳少，少的正是第一跳花掉的时间', async () => {
+  const timeouts: number[] = []
+  const fetchImpl: FetchLike = async (input, _init, _s, options) => {
+    timeouts.push(options!.timeoutMs)
+    if (String(input).endsWith('/a')) { await sleep(60); return new Response(null, { status: 302, headers: { location: '/b' } }) }
+    return new Response('ok')
+  }
+  const r = await sendRequest(fetchImpl, 'https://example.com/a', { method: 'GET' }, BUDGET, createProbeContext(Date.now()))
+  assert.equal(r.bodyText, 'ok')
+  assert.equal(timeouts.length, 2)
+  assert.ok(timeouts[0]! <= BUDGET.maxDurationMs && timeouts[0]! > BUDGET.maxDurationMs - 50, `第一跳 ${timeouts[0]}`)
+  assert.ok(timeouts[1]! <= timeouts[0]! - 50, `第二跳 ${timeouts[1]} 必须比第一跳 ${timeouts[0]} 少掉约 60 ms`)
+})
+
+await t('时钟倒退（startedAtMs 在未来）时 timeoutMs 也不超过 maxDurationMs', async () => {
+  const seen: number[] = []
+  const fetchImpl: FetchLike = async (_i, _init, _s, options) => { seen.push(options!.timeoutMs); return new Response('ok') }
+  await sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, createProbeContext(Date.now() + 60_000))
+  assert.deepEqual(seen, [BUDGET.maxDurationMs])
+})
+
+await t('剩余时间恰为 0：抛 ProbeAborted(MAX_DURATION)（原文案、原 details），fetchImpl 一次都不被调用，请求计数不变', async () => {
+  let calls = 0
+  const fetchImpl: FetchLike = async () => { calls++; return new Response('ok') }
+  const ctx = ctxWithLeft(0)
+  await assert.rejects(() => sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx), isDurationAbort(BUDGET))
+  assert.equal(calls, 0)
+  assert.equal(ctx.requestCount, 0)
+})
+
+await t('一直不返回的 fetchImpl（无视 timeoutMs）：在剩余时间到点时被 wire.ts 自己的计时器截断，抛 ProbeAborted(MAX_DURATION)', async () => {
+  let calls = 0
+  const fetchImpl: FetchLike = () => { calls++; return new Promise<Response>(() => {}) }
+  const ctx = ctxWithLeft(200)
+  await assert.rejects(() => watchdog(sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx)), isDurationAbort(BUDGET))
+  const lateBy = Date.now() - deadlineOf(ctx)
+  assert.equal(calls, 1, '前提：请求确实发出了，是计时器而不是请求前检查结束了它')
+  assert.ok(lateBy >= -2 && lateBy <= 150, `应在截止时间截断，实际相差 ${lateBy} ms`)
+})
+
+await t('读 body 也在截止时间之内：响应头及时到了、body 迟迟读不完，照样在到点时抛 ProbeAborted(MAX_DURATION)', async () => {
+  let textCalls = 0
+  const slowBody = { status: 200, headers: new Headers(), text: () => { textCalls++; return sleep(1_000).then(() => 'late') } } as unknown as Response
+  const fetchImpl: FetchLike = async () => slowBody
+  const ctx = ctxWithLeft(200)
+  await assert.rejects(() => watchdog(sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx)), isDurationAbort(BUDGET))
+  assert.equal(textCalls, 1, '前提：body 确实开始读了，是计时器而不是读之前的检查结束了它')
+  assert.ok(Date.now() - deadlineOf(ctx) <= 150, '不得等到 body 读完')
+})
+
+await t('R1 ⑤：被截止时间中止的请求，其后到达的 Response 一个字节都不读，其后报告的 GuardSignals 一律丢弃', async () => {
+  let textCalls = 0
+  let lateSignalDelivered = false
+  let calls = 0
+  const fetchImpl: FetchLike = async (_i, _init, onGuardSignal) => {
+    calls++
+    await sleep(500) // 截止时间在 200 ms 之后
+    onGuardSignal({ dnsAnswerChanged: true })
+    lateSignalDelivered = true
+    return { status: 200, headers: new Headers(), text: async () => { textCalls++; return 'late body' } } as unknown as Response
+  }
+  const ctx = ctxWithLeft(200)
+  await assert.rejects(() => watchdog(sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx)), isDurationAbort(BUDGET))
+  await sleep(600) // 让那个迟到的调用自己跑完
+  assert.equal(calls, 1, '前提：请求确实发出了')
+  assert.equal(lateSignalDelivered, true, '前提：迟到的信号确实被报告了')
+  assert.equal(ctx.dnsAnswerChangedObserved, false, '中止之后报告的 DNS 变化不得记入本轮')
+  assert.equal(textCalls, 0, '中止之后到达的响应一个字节都不读')
+})
+
+await t('Codex P2：响应在截止时间之后才交回（已缓冲好的 body）——body 一个字节都不读，结论是 ProbeAborted(MAX_DURATION)', async () => {
+  let textCalls = 0
+  const ctx = ctxWithLeft(50)
+  const fetchImpl: FetchLike = async () => {
+    busyUntil(deadlineOf(ctx) + 1) // 同步越过截止时间：期间没有任何计时器能触发
+    return { status: 200, headers: new Headers(), text: async () => { textCalls++; return 'buffered' } } as unknown as Response
+  }
+  await assert.rejects(() => sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx), isDurationAbort(BUDGET))
+  assert.equal(textCalls, 0, '截止时间之后不得再开始读 body——哪怕它早已缓冲好、会在零延迟计时器之前读完')
+})
+
+await t('Codex P2：截止时间在上一跳重定向期间过去——下一跳请求根本不发出，结论是 ProbeAborted(MAX_DURATION)', async () => {
+  let calls = 0
+  const ctx = ctxWithLeft(50)
+  const fetchImpl: FetchLike = async () => {
+    calls++
+    busyUntil(deadlineOf(ctx) + 1)
+    return new Response(null, { status: 302, headers: { location: '/next' } })
+  }
+  await assert.rejects(() => sendRequest(fetchImpl, 'https://example.com/a', { method: 'GET' }, BUDGET, ctx), isDurationAbort(BUDGET))
+  assert.equal(calls, 1, '截止时间之后不得再发起下一跳请求')
+  assert.equal(ctx.requestCount, 1)
+})
+
+await t('时长与请求数同时用完时，时长优先（与 TODO 458 之前的检查顺序相同），且不发请求', async () => {
+  let calls = 0
+  const ctx = ctxWithLeft(0)
+  ctx.requestCount = BUDGET.maxRequests
+  await assert.rejects(() => sendRequest(async () => { calls++; return new Response('ok') }, 'https://example.com/a', {}, BUDGET, ctx), isDurationAbort(BUDGET))
+  assert.equal(calls, 0)
+})
+
+await t('对照：同一个 DNS 变化信号在截止时间之前报告，照常记入本轮（上一条的「丢弃」不是因为信号根本没接上）', async () => {
+  const fetchImpl: FetchLike = async (_i, _init, onGuardSignal) => {
+    onGuardSignal({ dnsAnswerChanged: true })
+    return new Response('ok')
+  }
+  const ctx = ctxWithLeft(5_000)
+  await sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx)
+  assert.equal(ctx.dnsAnswerChangedObserved, true)
+})
+
+await t('离截止时间只剩 1–5 ms 时 fetchImpl 自己失败：错误原样上抛——「时间预算用完」只由 wire.ts 自己的计时器触发，不看时钟离截止还有多近（review R1 B1）', async () => {
+  // The ctx starts with ample time, so the request certainly starts; fetchImpl
+  // then spins until exactly k ms remain and throws. Nothing can interleave
+  // with that synchronous spin, and the rejection settles in microtasks before
+  // our timer's macrotask could run — so every case really settles with ≤ k ms
+  // left, on any runner.
+  let calls = 0
+  let ctx = ctxWithLeft(50)
+  const leftAtThrow: number[] = []
+  const throwing = (err: unknown, k: number): FetchLike => async () => {
+    calls++
+    busyUntil(deadlineOf(ctx) - k)
+    leftAtThrow.push(deadlineOf(ctx) - Date.now())
+    throw err
+  }
+  const errors: unknown[] = [
+    new TypeError('socket hang up'),
+    new SsrfBlocked('PRIVATE_USE', '10.0.0.1 is private-use'),
+    new BudgetExceeded('MAX_REDIRECTS', 'probe exceeded its 3-redirect budget'),
+    new BudgetExceeded('MAX_DURATION', 'probe exceeded its 3ms wall-clock budget'),
+    new Error('trial probe declined to fetch "evil.example.com"'),
+  ]
+  for (const leftMs of [1, 3, 5]) {
+    for (const err of errors) {
+      ctx = ctxWithLeft(50)
+      await assert.rejects(
+        () => sendRequest(throwing(err, leftMs), 'https://example.com/a', {}, BUDGET, ctx),
+        (e: unknown) => e === err,
+        `剩 ${leftMs} ms 时 ${(err as Error).name}: ${(err as Error).message} 必须原样上抛，不得改写成 MAX_DURATION`,
+      )
+    }
+  }
+  assert.equal(calls, 15, '前提：每一次都真的发出了请求，失败发生在请求之后，不是被请求前检查拦下')
+  assert.ok(leftAtThrow.every((l, i) => l <= [1, 3, 5][Math.floor(i / 5)]!), `前提：每次抛出时剩余时间都 ≤ k：${leftAtThrow.join(',')}`)
+})
+
+await t('不按错误名泛化：离截止时间还远时，即使 fetchImpl 抛的是 BudgetExceeded(MAX_DURATION) 或 TimeoutError，也原样上抛、不改写', async () => {
+  const guardTimeout = new BudgetExceeded('MAX_DURATION', 'probe exceeded its 10000ms wall-clock budget')
+  await assert.rejects(() => sendRequest(async () => { throw guardTimeout }, 'https://example.com/a', {}, BUDGET, ctxWithLeft(5_000)), (e: unknown) => e === guardTimeout)
+  const domTimeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+  await assert.rejects(() => sendRequest(async () => { throw domTimeout }, 'https://example.com/a', {}, BUDGET, ctxWithLeft(5_000)), (e: unknown) => e === domTimeout)
+})
+
+await t('截止时间之前开始读 body 时的 body 超限仍是 MAX_BODY_BYTES：我们自己的 ProbeAborted 保留原代码', async () => {
+  const ctx = ctxWithLeft(100)
+  const fetchImpl: FetchLike = async () => {
+    busyUntil(deadlineOf(ctx) - 20)
+    return new Response('short body', { headers: { 'content-length': '99999999' } })
+  }
+  await assert.rejects(
+    () => sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx),
+    (e: unknown) => e instanceof ProbeAborted && e.code === 'MAX_BODY_BYTES',
+  )
+})
+
+await t('计时器在每条路径上都被清掉：成功 / fetchImpl 抛错 / body 超限 / 429 / 重定向超限 / 截止中止 / 请求前中止之后，没有遗留的 Timeout', async () => {
+  const timeouts = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
+  const before = timeouts()
+  const paths: [string, FetchLike, ProbeContext, RequestInit][] = [
+    ['成功', async () => new Response('ok'), createProbeContext(Date.now()), {}],
+    ['fetchImpl 抛错', async () => { throw new Error('boom') }, createProbeContext(Date.now()), {}],
+    ['body 超限', async () => new Response('x', { headers: { 'content-length': '99999999' } }), createProbeContext(Date.now()), {}],
+    ['429', async () => new Response('', { status: 429 }), createProbeContext(Date.now()), {}],
+    ['重定向超限', async () => new Response(null, { status: 302, headers: { location: '/again' } }), createProbeContext(Date.now()), { method: 'GET' }],
+    ['截止中止', () => new Promise<Response>(() => {}), ctxWithLeft(20), {}],
+    ['请求前中止', async () => new Response('ok'), ctxWithLeft(0), {}],
+  ]
+  for (const [label, fetchImpl, ctx, init] of paths) {
+    await sendRequest(fetchImpl, 'https://example.com/a', init, BUDGET, ctx).catch(() => {})
+    assert.equal(timeouts(), before, `${label} 之后遗留了计时器`)
+  }
 })
 
 console.log('\nparseRetryAfterSeconds：只认 delay-seconds，且只认非负安全整数')

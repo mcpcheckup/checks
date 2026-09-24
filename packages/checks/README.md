@@ -126,6 +126,15 @@ every wire operation in this package. No individual check re-implements any of i
 This is what "the budget is global, not per-check" (8 requests total for the *whole
 run*, not 8 per check) actually means in the code, not just in the doc comment.
 
+Each request is given only the time left in the run's duration budget. If the probe's
+own deadline timer fires while a request, or the reading of its response, is still in
+progress, that request is abandoned: nothing it returns or reports after that moment is
+used. Once no time is left, the probe starts no further request of its own, and does not
+read the body of a response it has already received but not yet read. When a run stops
+this way, the checks that had not completed are recorded as `SKIPPED`/`UNVERIFIED` with
+`probe_budget_exhausted_duration` — or, for `reachability` when time ran out before the
+handshake had completed, `ERROR`/`UNVERIFIED` with the same reason.
+
 ## Why a budget-exhausted (or otherwise aborted) run makes `reachability` UNVERIFIED, never FAILED — and why checks that already completed keep their result
 
 A single `try`/`catch` wraps the entire wire sequence — handshake through the final

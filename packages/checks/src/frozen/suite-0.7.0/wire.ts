@@ -1,4 +1,8 @@
-import type { FetchLike, GuardSignals, ProbeBudget } from './types.ts'
+// FROZEN: packages/checks/src/wire.ts at suite 0.7.0 (c76de46), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for wire-budget-differential.test.ts, which checks
+// FROZEN: its git blob id. DO NOT edit or "update" it; it is the 0.7.0 behaviour.
+import type { FetchLike, GuardSignals, ProbeBudget } from '../../types.ts'
 
 export type ProbeAbortedCode = 'MAX_REQUESTS' | 'MAX_DURATION' | 'MAX_BODY_BYTES' | 'MAX_REDIRECTS' | 'RATE_LIMITED'
 
@@ -44,7 +48,7 @@ export interface ProbeContext {
  *  Date.now() — wire.ts stays a pure function of its inputs. Deliberately NOT
  *  derived from ProbeInput.now(): that clock exists to make OUTPUT timestamps
  *  reproducible (tests fix it to a constant string), while startedAtMs feeds
- *  the *real* wall-clock deadline below (`ctx.startedAtMs + maxDurationMs`),
+ *  the *real* wall-clock budget checks below (`Date.now() - ctx.startedAtMs`),
  *  which must track actual elapsed time regardless of what now() returns —
  *  conflating the two would make a fixed test clock either spuriously trip
  *  MAX_DURATION (if it's stale relative to real time) or make the duration
@@ -115,35 +119,6 @@ function rateLimitAbort(response: Response): ProbeAborted | undefined {
   )
 }
 
-function durationAbort(budget: ProbeBudget): ProbeAborted {
-  return new ProbeAborted('MAX_DURATION', `探测已超过 ${budget.maxDurationMs}ms 的总预算`, { maxDurationMs: budget.maxDurationMs })
-}
-
-/* A step that has started is put down to the run's deadline by one thing
- * only: the timer sendRequest set for that step fired. Never by the clock (no
- * "a failure this close to the deadline must be the deadline") and never by
- * the error's name. Anything else a started step throws — however close to
- * the deadline — propagates unchanged, because a signed reason saying the
- * time budget ran out must only ever be written when it did. Separately, a
- * step is not started at all once no time is left (the request pre-check and
- * withinDeadline's pre-step check read the clock, but no step has run there,
- * so no error is rewritten). A step that settles in the moment between the
- * deadline and its timer's callback is not abandoned: its status and signals
- * are still acted on; what is refused is any step started after it — a
- * following redirect hop or a body read not yet begun. A body read that itself
- * settles in that moment is used (TODO 539).
- *
- * That leaves one race to rule out: a fetchImpl with its OWN timer for the
- * same deadline failing a moment before ours fires. It is removed
- * structurally, not with a clock window. guardedFetch takes its deadline from
- * its own later Date.now() (guarded-fetch.ts), so it is never earlier than
- * ours, and the FetchLike contract (FetchCallOptions in types.ts) asks an
- * implementation to give up no earlier than timeoutMs: the production
- * FetchLike built on guardedFetch adds a fixed grace on top of timeoutMs for
- * guardedFetch's internal backstop. Our timer is therefore always first to
- * fire and ends the step; guardedFetch's own timeout only ever fires after
- * the step was abandoned, when nothing reads its result. */
-
 async function readBodyWithBudget(response: Response, maxBodyBytes: number): Promise<string> {
   const declared = response.headers.get('content-length')
   if (declared !== null) {
@@ -192,21 +167,7 @@ async function readBodyWithBudget(response: Response, maxBodyBytes: number): Pro
  *  a single shared decision point just moves the "what if this layer forgets" risk
  *  to one place instead of removing it. This duplication was prompted by an
  *  internally-tracked credential-replay finding; the reasoning for not
- *  centralizing it is stated above.
- *
- *  The duration budget is one deadline for the whole run, ctx.startedAtMs +
- *  budget.maxDurationMs (TODO 458). Each call to fetchImpl is told only the
- *  time left before it (FetchCallOptions.timeoutMs), and each hop's call and
- *  body read are raced against this function's own timer set to that
- *  deadline. When the timer wins, the run stops with ProbeAborted
- *  ('MAX_DURATION') and nothing the abandoned call produces afterwards — its
- *  Response, its body, a GuardSignals report — is read or recorded. No step
- *  is started once no time is left; a call that settles between the deadline
- *  and the timer's callback is not abandoned (see the note above
- *  readBodyWithBudget). Before
- *  TODO 458 the deadline was checked only before each request, and a request
- *  started just inside it could run for a further full maxDurationMs in
- *  guardedFetch, so a run could take about twice its budget. */
+ *  centralizing it is stated above. */
 export async function sendRequest(
   fetchImpl: FetchLike,
   url: string,
@@ -219,57 +180,19 @@ export async function sendRequest(
   let currentUrl = url
   let hop = 0
 
-  const deadlineAtMs = ctx.startedAtMs + budget.maxDurationMs
-  // Never more than one full budget, even if the clock has stepped backwards.
-  const leftMs = () => Math.min(budget.maxDurationMs, deadlineAtMs - Date.now())
-  // Set once this call has been abandoned at the deadline. From then on its
-  // output is ignored, including a late GuardSignals report: a DNS change
-  // reported by a request we walked away from must not disqualify the run
-  // (TODO 458 R1 ⑤).
-  let abandoned = false
-
   const onGuardSignal = (signals: GuardSignals) => {
-    if (abandoned) return
     if (signals.dnsAnswerChanged) ctx.dnsAnswerChangedObserved = true
   }
 
-  // Races one step against our own timer, cleared on every path. The step is
-  // put down to the deadline only when that timer fired (see the note above
-  // readBodyWithBudget); any failure of the step itself propagates unwrapped.
-  // A step is never started once the deadline has passed: an already-settled
-  // step (a resolved fetchImpl, a buffered body) would otherwise win the race
-  // against a zero-delay timer and be used after the deadline. The time left
-  // is computed once and is both the timer's delay and what the step is told.
-  const withinDeadline = async <T>(step: (leftMs: number) => Promise<T>, left: number = leftMs()): Promise<T> => {
-    if (left <= 0) {
-      abandoned = true
-      throw durationAbort(budget)
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const expiry = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        abandoned = true
-        reject(durationAbort(budget))
-      }, left)
-    })
-    try {
-      return await Promise.race([step(left), expiry])
-    } catch (e) {
-      if (abandoned) throw durationAbort(budget)
-      throw e
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-
   for (;;) {
-    const remainingMs = leftMs()
-    if (remainingMs <= 0) throw durationAbort(budget)
+    if (Date.now() - ctx.startedAtMs > budget.maxDurationMs) {
+      throw new ProbeAborted('MAX_DURATION', `探测已超过 ${budget.maxDurationMs}ms 的总预算`, { maxDurationMs: budget.maxDurationMs })
+    }
     if (ctx.requestCount >= budget.maxRequests) {
       throw new ProbeAborted('MAX_REQUESTS', `探测已达到 ${budget.maxRequests} 次请求的总预算`, { maxRequests: budget.maxRequests })
     }
     ctx.requestCount++
-    const response = await withinDeadline((timeoutMs) => fetchImpl(currentUrl, init, onGuardSignal, { timeoutMs }), remainingMs)
+    const response = await fetchImpl(currentUrl, init, onGuardSignal)
 
     // Checked before anything else this response could lead to — before the
     // redirect hop, before the body is even read. Throwing here is what makes
@@ -299,7 +222,7 @@ export async function sendRequest(
       }
     }
 
-    const bodyText = await withinDeadline(() => readBodyWithBudget(response, budget.maxBodyBytes))
+    const bodyText = await readBodyWithBudget(response, budget.maxBodyBytes)
     return { status: response.status, headers: response.headers, bodyText, finalUrl: currentUrl }
   }
 }
