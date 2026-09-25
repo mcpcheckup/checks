@@ -872,16 +872,29 @@ function sameJson(a: unknown, b: unknown): boolean {
   return true
 }
 
+/** T86b (suite 0.8.0) widened credentialChallenge from { scheme } to
+ *  { scheme, status, wwwAuthenticate } for auth_metadata. The two added
+ *  fields are pinned here (status 401, the header value exactly as received)
+ *  and then dropped, so (b) still compares everything T73b could change. */
+function schemeOnly<T>(r: T): T {
+  const c = (r as { credentialChallenge?: { scheme: string; status: number; wwwAuthenticate: string } } | undefined)?.credentialChallenge
+  if (c === undefined) return r
+  assert.deepStrictEqual(Object.keys(c), ['scheme', 'status', 'wwwAuthenticate'], 'T86b credentialChallenge fields')
+  assert.equal(c.status, 401, 'a credential gate is always a 401')
+  assert.equal(c.wwwAuthenticate, VALID_CHALLENGE, 'the header value exactly as received')
+  return { ...r, credentialChallenge: { scheme: c.scheme } }
+}
+
 async function checkInput(id: string, s: Script, varied: Resp): Promise<void> {
   const [impl, frozen] = [await implDirect(s), await frozenDirect(s)]
 
-  // (b) direct results, minus the new field.
+  // (b) direct results, minus the new field (and T86b's two credentialChallenge fields, see schemeOnly).
   try {
     assert.equal(impl.thrown, frozen.thrown, 'thrown')
-    assert.deepStrictEqual(withoutField(impl.handshake, 'failure'), withoutField(frozen.handshake, 'failure'))
+    assert.deepStrictEqual(withoutField(schemeOnly(impl.handshake), 'failure'), withoutField(frozen.handshake, 'failure'))
     // tools compared iteratively: assert.deepStrictEqual recurses and runs out
     // of stack on the 100,000-deep tool arrays of the fingerprint stage.
-    assert.deepStrictEqual(withoutField(withoutField(impl.toolsList, 'failure'), 'tools'), withoutField(withoutField(frozen.toolsList, 'failure'), 'tools'))
+    assert.deepStrictEqual(withoutField(withoutField(schemeOnly(impl.toolsList), 'failure'), 'tools'), withoutField(withoutField(frozen.toolsList, 'failure'), 'tools'))
     assert.ok(sameJson(impl.toolsList?.tools, frozen.toolsList?.tools), 'tools differ')
     if (impl.handshake?.handshakeOk) assert.ok(!('failure' in impl.handshake), 'failure on an ok handshake')
     if (impl.handshake && !impl.handshake.handshakeOk) assert.ok(impl.handshake.failure, 'no failure on a failed handshake')

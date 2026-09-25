@@ -1,7 +1,8 @@
 import assert from 'node:assert'
-import { parseBearerChallenge, judgeAuthMetadata, classifyCredentialChallenge } from './auth.ts'
+import { parseBearerChallenge, judgeAuthMetadata, judgeAuthMetadataFromGate, judgeAuthChallenge, classifyCredentialChallenge } from './auth.ts'
+import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-0.7.1/auth.ts'
 import { performHandshake, performUnknownToolCall } from './protocol.ts'
-import { createProbeContext } from './wire.ts'
+import { createProbeContext, ProbeAborted } from './wire.ts'
 import {
   modernBaselineClean,
   noCredentialsUnverifiableAuth,
@@ -445,6 +446,94 @@ await t('jwks-multiple-keys-not-flagged：metadata 合法、scope 一致，即�
   const { fetchImpl, ctx, callResult } = await callResultFor(jwksMultipleKeysNotFlagged)
   const v = await judgeAuthMetadata({ fetchImpl, budget: BUDGET, ctx, callResult })
   assert.equal(v.status, 'VERIFIED')
+})
+
+console.log('\nT86b：judgeAuthChallenge（纯函数）+ 两个入口，对同一个 (status, WWW-Authenticate) 与冻结 0.7.1 的 judgeAuthMetadata 逐字段同判')
+
+const META_URL = 'https://notes-mcp.example.com/.well-known/oauth-protected-resource'
+const WITH_URL = `Bearer realm="mcp", resource_metadata="${META_URL}"`
+const WITH_URL_AND_SCOPE = `Bearer realm="mcp", resource_metadata="${META_URL}", scope="notes:read notes:write"`
+
+/** A metadata server answering the one GET with this status / body, recording what it was asked. */
+function metadataServer(status: number, body: string, calls: string[]) {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push(`${init?.method ?? 'GET'} ${typeof input === 'string' ? input : input instanceof URL ? input.href : input.url}`)
+    return new Response(body, { status, headers: { 'content-type': 'application/json' } })
+  }
+}
+
+/** Every verdict judgeAuthMetadata can return. `gate` marks the (status,
+ *  header) pairs a credential gate can carry: classifyCredentialChallenge
+ *  only accepts a 401 with a structurally valid challenge, so the status≠401
+ *  and auth_401_no_challenge branches are reachable only from the tools/call
+ *  entry (judgeAuthMetadata), never from judgeAuthMetadataFromGate. */
+const AC3_CASES: { name: string; status: number; header: string | null; meta: [number, string]; gate: boolean; want: string }[] = [
+  { name: 'status 403 (≠ 401)', status: 403, header: WITH_URL, meta: [200, '{}'], gate: false, want: 'VERIFIED' },
+  { name: 'status 200 (≠ 401)', status: 200, header: null, meta: [200, '{}'], gate: false, want: 'VERIFIED' },
+  { name: '401 without a header', status: 401, header: null, meta: [200, '{}'], gate: false, want: 'UNVERIFIED auth_401_no_challenge' },
+  { name: '401 with an empty header', status: 401, header: '', meta: [200, '{}'], gate: false, want: 'UNVERIFIED auth_401_no_challenge' },
+  { name: '401, challenge without resource_metadata', status: 401, header: 'Bearer realm="mcp"', meta: [200, '{}'], gate: true, want: 'UNVERIFIED auth_challenge_no_metadata_url' },
+  { name: '401, metadata document 404', status: 401, header: WITH_URL, meta: [404, 'nope'], gate: true, want: 'OBSERVED_RISK auth_metadata_http_error' },
+  { name: '401, metadata document not JSON', status: 401, header: WITH_URL, meta: [200, '{not json'], gate: true, want: 'OBSERVED_RISK auth_metadata_invalid_json' },
+  { name: '401, metadata document not an object', status: 401, header: WITH_URL, meta: [200, '42'], gate: true, want: 'OBSERVED_RISK auth_metadata_not_json_object' },
+  { name: '401, scope the document does not support', status: 401, header: WITH_URL_AND_SCOPE, meta: [200, '{"scopes_supported":["notes:read"]}'], gate: true, want: 'OBSERVED_RISK auth_scope_contradiction' },
+  { name: '401, document consistent with the scope', status: 401, header: WITH_URL_AND_SCOPE, meta: [200, '{"scopes_supported":["notes:read","notes:write"]}'], gate: true, want: 'VERIFIED' },
+  { name: '401, document without scopes_supported', status: 401, header: WITH_URL, meta: [200, '{"resource":"https://notes-mcp.example.com"}'], gate: true, want: 'VERIFIED' },
+]
+
+const label = (v: { status: string; reason?: { key: string } | null }) => (v.status === 'VERIFIED' ? 'VERIFIED' : `${v.status} ${v.reason!.key}`)
+
+for (const c of AC3_CASES) {
+  await t(`AC3 ${c.name}：${c.want}`, async () => {
+    const headers = new Headers(c.header === null ? {} : { 'www-authenticate': c.header })
+    const callResult = { status: c.status, headers, bodyText: '', currentEndpoint: ENDPOINT }
+    const oldCalls: string[] = [], newCalls: string[] = []
+    const old = await frozen071JudgeAuthMetadata({ fetchImpl: metadataServer(...c.meta, oldCalls), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
+    const now = await judgeAuthMetadata({ fetchImpl: metadataServer(...c.meta, newCalls), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
+    assert.equal(label(old), c.want, 'the frozen 0.7.1 verdict is the one this case is named for')
+    assert.deepStrictEqual(now, old, 'tools/call entry: same verdict object as 0.7.1')
+    assert.deepStrictEqual(newCalls, oldCalls, 'tools/call entry: same metadata request as 0.7.1')
+
+    const pure = judgeAuthChallenge(c.status, headers.get('www-authenticate'))
+    if ('verdict' in pure) {
+      assert.deepStrictEqual(pure.verdict, old, 'the pure function settles it without a request')
+      assert.equal(oldCalls.length, 0)
+    } else {
+      assert.deepStrictEqual(oldCalls, [`GET ${pure.fetch.url}`], 'the pure function names exactly the document 0.7.1 fetched')
+    }
+
+    if (!c.gate) return
+    assert.ok(classifyCredentialChallenge(c.status, headers), 'this pair really is a credential gate')
+    const gateCalls: string[] = []
+    const gate = await judgeAuthMetadataFromGate({
+      fetchImpl: metadataServer(...c.meta, gateCalls),
+      budget: BUDGET,
+      ctx: createProbeContext(Date.now()),
+      challenge: { scheme: 'bearer', status: c.status, wwwAuthenticate: c.header! },
+    })
+    assert.deepStrictEqual(gate, old, 'gate entry: same verdict object as 0.7.1 on a 401 carrying the same header')
+    assert.deepStrictEqual(gateCalls, oldCalls, 'gate entry: same metadata request')
+  })
+}
+
+await t('AC3 覆盖面：六个非 VERIFIED key 都出现；其中五个经门控入口可达，auth_401_no_challenge 与 status≠401 两支只有 tools/call 入口可达（门控只在 401 + 合法 challenge 时成立）', () => {
+  const keys = (cases: typeof AC3_CASES) => new Set(cases.filter((c) => c.want !== 'VERIFIED').map((c) => c.want.split(' ')[1]))
+  assert.deepStrictEqual([...keys(AC3_CASES)].sort(), ['auth_401_no_challenge', 'auth_challenge_no_metadata_url', 'auth_metadata_http_error', 'auth_metadata_invalid_json', 'auth_metadata_not_json_object', 'auth_scope_contradiction'])
+  assert.deepStrictEqual([...keys(AC3_CASES.filter((c) => c.gate))].sort(), ['auth_challenge_no_metadata_url', 'auth_metadata_http_error', 'auth_metadata_invalid_json', 'auth_metadata_not_json_object', 'auth_scope_contradiction'])
+  for (const c of AC3_CASES.filter((x) => !x.gate)) {
+    assert.equal(classifyCredentialChallenge(c.status, new Headers(c.header === null ? {} : { 'www-authenticate': c.header })), null, `${c.name}: not a gate`)
+  }
+})
+
+await t('T86b 红线：门控入口的 GET 走 sendRequest —— 同一份预算计数，预算用尽时抛 ProbeAborted，而不是自己去取', async () => {
+  const calls: string[] = []
+  const ctx = createProbeContext(Date.now())
+  ctx.requestCount = BUDGET.maxRequests
+  await assert.rejects(
+    judgeAuthMetadataFromGate({ fetchImpl: metadataServer(200, '{}', calls), budget: BUDGET, ctx, challenge: { scheme: 'bearer', status: 401, wwwAuthenticate: WITH_URL } }),
+    (e: unknown) => e instanceof ProbeAborted && e.code === 'MAX_REQUESTS',
+  )
+  assert.deepStrictEqual(calls, [], 'nothing was fetched past the budget')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

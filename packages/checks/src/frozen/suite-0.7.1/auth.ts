@@ -1,7 +1,11 @@
-import { sendRequest } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
-import type { CredentialChallenge, ProbeCallResult } from './protocol.ts'
-import type { FetchLike, ProbeBudget } from './types.ts'
+// FROZEN: packages/checks/src/auth.ts at suite 0.7.1 (2c99377), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for the T86b differentials (credential-gate-withhold-differential.test.ts
+// FROZEN: and others), which check its git blob id. DO NOT edit or "update" it; it is the 0.7.1 behaviour.
+import { sendRequest } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
+import type { ProbeCallResult } from './protocol.ts'
+import type { FetchLike, ProbeBudget } from '../../types.ts'
 
 export interface AuthChallenge {
   resourceMetadataUrl: string | null
@@ -362,8 +366,8 @@ function consumeToken68(v: string, i: number): number {
  *
  *  Zero IO — this function itself never calls fetch/sendRequest and never
  *  reaches into ./protocol.ts or ./probe.ts (the module as a whole does
- *  import sendRequest from ./wire.ts and types from ./protocol.ts, for the
- *  auth_metadata judges below; classifyCredentialChallenge just never touches
+ *  import sendRequest from ./wire.ts and a type from ./protocol.ts, for
+ *  judgeAuthMetadata below; classifyCredentialChallenge just never touches
  *  either). */
 export function classifyCredentialChallenge(status: number, headers: Headers): { scheme: string } | null {
   if (status !== 401) return null
@@ -454,34 +458,6 @@ export type AuthMetadataVerdict =
   | { status: 'UNVERIFIED'; reason: Reason }
   | { status: 'OBSERVED_RISK'; reason: Reason }
 
-/** T86b: what auth_metadata can conclude from a status and a WWW-Authenticate
- *  value alone — either the verdict, or the resource_metadata document still
- *  to be fetched (and the challenge's own scope, to check against it). */
-export type AuthChallengeJudgment =
-  | { verdict: AuthMetadataVerdict }
-  | { fetch: { url: string; scope: string | null } }
-
-/** The request-free half of auth_metadata, shared by both entries below, so
- *  the same (status, header) gets the same verdict from either. Zero IO.
- *  Through judgeAuthMetadataFromGate the status is always 401 and the header
- *  always present (classifyCredentialChallenge accepted it), so the first two
- *  branches are reachable only from judgeAuthMetadata. */
-export function judgeAuthChallenge(status: number, wwwAuthenticate: string | null): AuthChallengeJudgment {
-  if (status !== 401) {
-    return { verdict: { status: 'VERIFIED' } }
-  }
-  if (!wwwAuthenticate) {
-    return { verdict: { status: 'UNVERIFIED', reason: { key: 'auth_401_no_challenge' } } }
-  }
-  const challenge = parseBearerChallenge(wwwAuthenticate)
-  if (!challenge.resourceMetadataUrl) {
-    return { verdict: { status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url' } } }
-  }
-  return { fetch: { url: challenge.resourceMetadataUrl, scope: challenge.scope } }
-}
-
-type AuthMetadataFetch = { fetchImpl: FetchLike; budget: ProbeBudget; ctx: ProbeContext }
-
 /** Judges auth_metadata from the same tools/call(unknown tool) response
  *  error_taxonomy already triggered — no separate probe request needed for the
  *  challenge itself. If it's a real challenge with a resource_metadata pointer,
@@ -492,30 +468,29 @@ type AuthMetadataFetch = { fetchImpl: FetchLike; budget: ProbeBudget; ctx: Probe
  *  multi-key JWKS is a normal key-rotation window, not evidence of anything —
  *  see jwks-multiple-keys-not-flagged in @mcpcheckup/fixtures), so fetching it
  *  would only spend probe budget without changing the verdict. */
-export async function judgeAuthMetadata(opts: AuthMetadataFetch & { callResult: ProbeCallResult }): Promise<AuthMetadataVerdict> {
-  const { callResult } = opts
-  return judgeAuthMetadataFrom(opts, judgeAuthChallenge(callResult.status, callResult.headers.get('www-authenticate')))
-}
+export async function judgeAuthMetadata(opts: {
+  fetchImpl: FetchLike
+  budget: ProbeBudget
+  ctx: ProbeContext
+  callResult: ProbeCallResult
+}): Promise<AuthMetadataVerdict> {
+  const { fetchImpl, budget, ctx, callResult } = opts
 
-/** T86b: judges auth_metadata from the 401 challenge on the response that
- *  put the handshake or tools/list behind credentials, when runProbe withheld
- *  the tools/call because of that gate. Same judgment and same metadata fetch
- *  as judgeAuthMetadata; only the input differs. */
-export async function judgeAuthMetadataFromGate(opts: AuthMetadataFetch & { challenge: CredentialChallenge }): Promise<AuthMetadataVerdict> {
-  const { challenge } = opts
-  return judgeAuthMetadataFrom(opts, judgeAuthChallenge(challenge.status, challenge.wwwAuthenticate))
-}
-
-/** The metadata fetch and its judgment, when judgeAuthChallenge asked for one:
- *  one GET through sendRequest, on the run's own fetchImpl, budget and ctx. */
-async function judgeAuthMetadataFrom(opts: AuthMetadataFetch, judgment: AuthChallengeJudgment): Promise<AuthMetadataVerdict> {
-  if ('verdict' in judgment) {
-    return judgment.verdict
+  if (callResult.status !== 401) {
+    return { status: 'VERIFIED' }
   }
-  const { fetchImpl, budget, ctx } = opts
-  const challenge = judgment.fetch
 
-  const metaRes = await sendRequest(fetchImpl, challenge.url, { method: 'GET' }, budget, ctx)
+  const wwwAuth = callResult.headers.get('www-authenticate')
+  if (!wwwAuth) {
+    return { status: 'UNVERIFIED', reason: { key: 'auth_401_no_challenge' } }
+  }
+
+  const challenge = parseBearerChallenge(wwwAuth)
+  if (!challenge.resourceMetadataUrl) {
+    return { status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url' } }
+  }
+
+  const metaRes = await sendRequest(fetchImpl, challenge.resourceMetadataUrl, { method: 'GET' }, budget, ctx)
   if (metaRes.status !== 200) {
     return { status: 'OBSERVED_RISK', reason: { key: 'auth_metadata_http_error', params: { status: metaRes.status } } }
   }

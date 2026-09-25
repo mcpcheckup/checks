@@ -1,6 +1,10 @@
-import { sendRequest } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
-import type { FetchLike, ProbeBudget } from './types.ts'
+// FROZEN: packages/checks/src/protocol.ts at suite 0.7.1 (2c99377), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for the T86b differentials (credential-gate-withhold-differential.test.ts
+// FROZEN: and others), which check its git blob id. DO NOT edit or "update" it; it is the 0.7.1 behaviour.
+import { sendRequest } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
+import type { FetchLike, ProbeBudget } from '../../types.ts'
 import { classifyCredentialChallenge } from './auth.ts'
 
 const CLIENT_INFO = { name: 'mcp-checkup-prober', version: '0.1.0' }
@@ -219,34 +223,14 @@ export interface HandshakeResult {
    *  return — a recognized modern JSON-RPC error is a real client/server
    *  mismatch, not a credential gate (see the handshake- and tools-list-layer
    *  credential-gate rules below). */
-  credentialChallenge?: CredentialChallenge
-}
-
-/** T86b: a response classifyCredentialChallenge accepted, as runProbe needs
- *  it. `scheme` is the one part that goes into a Reason (and so into the
- *  stored, possibly signed, assertion). `status` (always 401, since
- *  classifyCredentialChallenge accepts nothing else) and `wwwAuthenticate`
- *  (the header value exactly as `Headers.get` returned it) exist only so
- *  auth_metadata can judge this challenge (judgeAuthMetadataFromGate); they
- *  must never be copied into a Reason. No body. */
-export interface CredentialChallenge {
-  scheme: string
-  status: number
-  wwwAuthenticate: string
-}
-
-/** classifyCredentialChallenge plus the status and header it accepted. */
-function gateChallenge(status: number, headers: Headers): CredentialChallenge | null {
-  const challenge = classifyCredentialChallenge(status, headers)
-  const wwwAuthenticate = headers.get('www-authenticate')
-  return challenge && wwwAuthenticate !== null ? { scheme: challenge.scheme, status, wwwAuthenticate } : null
+  credentialChallenge?: { scheme: string }
 }
 
 /** Attaches credentialChallenge only when classifyCredentialChallenge finds one —
  *  exactOptionalPropertyTypes means the property must be entirely absent, not
  *  present-with-undefined, when there's nothing to report. */
-function credentialChallengeFrom(status: number, headers: Headers): { credentialChallenge: CredentialChallenge } | Record<string, never> {
-  const challenge = gateChallenge(status, headers)
+function credentialChallengeFrom(status: number, headers: Headers): { credentialChallenge: { scheme: string } } | Record<string, never> {
+  const challenge = classifyCredentialChallenge(status, headers)
   return challenge ? { credentialChallenge: challenge } : {}
 }
 
@@ -434,7 +418,7 @@ export interface ToolsListResult {
    *  (the tools-list-layer credential-gate rule). Still only ever
    *  present when `ok` is false, but the causality is now the other way
    *  round: a challenge here FORCES `ok` false. See performToolsList. */
-  credentialChallenge?: CredentialChallenge
+  credentialChallenge?: { scheme: string }
   /** T73b: set whenever `ok` is false, except the handshakeOk + challenge
    *  cell probe.ts's tools-list-layer credential-gate rule records as
    *  UNVERIFIED — so on every cell it judges tools_list FAILED (and, unused,
@@ -520,7 +504,7 @@ export async function performToolsList(opts: {
   // rule states (status + headers; it never mentioned the body) and with the
   // published tools_list.cannot_* copy, which has no body condition either.
   // The code was narrower than both; no copy changes.
-  const challenge = gateChallenge(res.status, res.headers)
+  const challenge = classifyCredentialChallenge(res.status, res.headers)
   const parsed = parseJsonRpcBody(res.bodyText, res.headers.get('content-type'))
   const result = parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
   const tools = result?.tools
@@ -546,11 +530,10 @@ export interface ProbeCallResult {
 
 /** Calls the name reserved for a tool that should not exist, the protocol-level
  *  way of triggering an error scenario (checks.json's error_taxonomy /
- *  auth_metadata both read this same response when it is sent — never a
- *  business tool). A server can still define that name, so runProbe withholds
- *  this call when the tool list names it or could not be read in full (T86),
- *  and on both credential-gated branches (T86b), where auth_metadata reads the
- *  gate's own 401 challenge instead. */
+ *  auth_metadata both read this same response — never a business tool). A
+ *  server can still define that name, so runProbe withholds this call when the
+ *  tool list names it or could not be read in full, except on the
+ *  credential-gated branches that left no list to read (T86). */
 export async function performUnknownToolCall(opts: {
   fetchImpl: FetchLike
   budget: ProbeBudget

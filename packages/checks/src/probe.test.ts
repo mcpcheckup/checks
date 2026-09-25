@@ -1,8 +1,10 @@
 import assert from 'node:assert'
 import { runProbe } from './probe.ts'
 import { runProbe as frozenRunProbe } from './frozen/suite-0.6.0/probe.ts'
+import { runProbe as frozen071RunProbe } from './frozen/suite-0.7.1/probe.ts'
+import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-0.7.1/auth.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
-import { ProbeAborted } from './wire.ts'
+import { ProbeAborted, createProbeContext } from './wire.ts'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { DEFAULT_PROBE_BUDGET, createProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
@@ -644,9 +646,11 @@ console.log('\nT6.9-F / F2：四条路径的出站请求计数表——预算 4�
  *   · modern 路径 3 次（server/discover -> tools/list -> tools/call），4 就够；
  *   · legacy 路径 5 次（server/discover 4xx -> initialize -> notifications/
  *     initialized -> tools/list -> tools/call），4 差一次，这正是 F2 要修的；
- *   · legacy + 握手层凭据门也是 5 次：握手在 initialize 上就被 401 挡住，省掉了
- *     notifications/initialized，但 tools/call 的 401 challenge 让 auth_metadata
- *     多抓一次 resource_metadata 文档，正好补回来；
+ *   · 握手层凭据门（legacy 回退）自 suite 0.8.0（T86b）起是 4 次：server/discover
+ *     4xx -> initialize 被 401 挡住（省掉 notifications/initialized）-> tools/list
+ *     -> 门控 challenge 引出的 resource_metadata 抓取；门控下不再发 tools/call，
+ *     所以 4 就够（0.7.x 多一次 tools/call，是 5 次、4 跑不完）。它因此不再属于
+ *     「legacy 在 4 与 8 下不同」那一组；
  *   · 第五行是**全语料最贵的一条路径，6 次**：legacy 握手完整成功（3）+
  *     tools/list（4）+ tools/call（5）+ tools/call 的 401 challenge 引出的
  *     resource_metadata 抓取（6）。
@@ -661,7 +665,7 @@ const REQUEST_COUNT_TABLE: [string, string, number, boolean, number, boolean][] 
   ['modern open', 'modern-baseline-clean', 3, true, 3, true],
   ['legacy open', 'legacy-baseline-clean', 4, false, 5, true],
   ['modern gated', 'credential-gated-tools-list', 3, true, 3, true],
-  ['legacy gated (handshake)', 'credential-gated-handshake', 4, false, 5, true],
+  ['gated handshake (legacy fallback)', 'credential-gated-handshake', 4, true, 4, true],
   ['legacy gated (tools/call) — 全语料最贵', 'legacy-tools-call-credential-gated', 4, false, 6, true],
 ]
 
@@ -694,11 +698,11 @@ for (const [label, fixtureId, requestsAt4, completeAt4, requestsAt8, completeAt8
   })
 }
 
-await t('这张表有区分力（否则它是一张恒真的表）：legacy 三条在 4 与 8 下的请求数必须不同，modern 两条必须相同', () => {
+await t('这张表有区分力（否则它是一张恒真的表）：legacy 两条在 4 与 8 下的请求数必须不同，modern 两条与门控握手一条必须相同', () => {
   const legacy = REQUEST_COUNT_TABLE.filter(([label]) => label.startsWith('legacy'))
-  const modern = REQUEST_COUNT_TABLE.filter(([label]) => label.startsWith('modern'))
-  assert.equal(legacy.length, 3, 'round 2 加了第五行；这个数字写死是为了让"加了一行却忘了想清楚它属不属于这条断言"变红')
-  assert.equal(modern.length, 2)
+  const modern = REQUEST_COUNT_TABLE.filter(([label]) => label.startsWith('modern') || label.startsWith('gated'))
+  assert.equal(legacy.length, 2, 'round 2 加了第五行，T86b 把门控握手一行移出 legacy 组；这个数字写死是为了让"加了一行却忘了想清楚它属不属于这条断言"变红')
+  assert.equal(modern.length, 3)
   for (const [label, , at4, complete4, at8] of legacy) {
     assert.notEqual(at4, at8, `${label}：两档若相同，这张表就没在描述 F2 修的那个差异`)
     assert.equal(complete4, false, `${label}：旧的未认领档必须真的跑不完——那是 F2 的全部理由`)
@@ -845,18 +849,15 @@ await t('T86 红证 c2（probe-tool-name-unverifiable-tools-list-failed / tools-
   }
 })
 
-await t('T86 R2 红证（probe-tool-name-collision-gated-handshake）：握手被凭据门控，但 tools/list 无凭据可读且列着保留名 ⇒ 不发 tools/call，两行 probe_tool_name_collision，无 params', async () => {
-  await assertWithheld('probe-tool-name-collision-gated-handshake', 'probe_tool_name_collision')
-})
+// T86 R2's two gated-handshake red proofs (probe-tool-name-collision-gated-handshake,
+// probe-tool-name-unverifiable-gated-handshake) are T86b's now: from suite 0.8.0
+// a credential gate wins over collision / nextCursor. Their 0.7.x
+// behaviour stays pinned by probe-tool-name-differential.test.ts, which runs the
+// frozen 0.7.1 copy; the T86b section below pins the new one.
 
-await t('T86 R2 红证（probe-tool-name-unverifiable-gated-handshake）：握手被凭据门控，但 tools/list 无凭据可读且带 nextCursor ⇒ 不发 tools/call，两行 probe_tool_name_unverifiable，无 params', async () => {
-  await assertWithheld('probe-tool-name-unverifiable-gated-handshake', 'probe_tool_name_unverifiable')
-})
-
+// T86b: the three c1 fixtures that used to be listed here (a credential gate
+// with no readable list) no longer send the call; see the T86b section below.
 for (const [label, fixtureId] of [
-  ['c1 反向（tools/list 401 + challenge，401 的 body 里甚至列着保留名）', 'probe-tool-name-gated-tools-list-still-sent'],
-  ['c1 反向（握手层凭据门控，tools/list 也被挡，无可读列表）', 'credential-gated-handshake'],
-  ['c1 反向（tools/list 层凭据门控）', 'credential-gated-tools-list'],
   ['近似名反向（后缀 / 大小写 / 只在描述里出现）', 'probe-tool-name-near-miss-still-sent'],
 ] as const) {
   await t(`T86 ${label}（${fixtureId}）：tools/call 照发，请求序列与整份 ProbeResult 都与 0.6.0 逐字段相同`, async () => {
@@ -871,12 +872,6 @@ for (const [label, fixtureId] of [
     }
   })
 }
-
-await t('T86 c1 反向不是空对空：probe-tool-name-gated-tools-list-still-sent 的 auth_metadata 真的从 tools/call 的 401 抓了 resource_metadata 文档并判为 VERIFIED', async () => {
-  const { result, calls } = await runRecorded('probe-tool-name-gated-tools-list-still-sent', runProbe)
-  assert.deepStrictEqual(calls, ['server/discover', 'tools/list', 'tools/call', 'GET /.well-known/oauth-protected-resource'])
-  assert.equal(result.assertions.find((a) => a.check_id === 'auth_metadata')!.assertion_status, 'VERIFIED')
-})
 
 // Deny-by-default, same as the T73 / T73b sections: the corpus loop above only
 // compares the two statuses, so every fixture whose run carries a T86 key must
@@ -897,14 +892,16 @@ for (const fixture of FIXTURE_CORPUS) {
   })
 }
 
-await t('T86 没有漏网：语料里实际带 T86 key 的每一格都在上面那组里（反之亦然），且恰好是那些与 0.6.0 结果不同的 fixture；其余每条 fixture 的 ProbeResult 与 0.6.0 逐字段相同', async () => {
+await t('T86 没有漏网：语料里实际带 T86 key 的每一格都在上面那组里（反之亦然）；与 0.6.0 结果不同的 fixture 恰好是这些再加上 T86b 门控下不发调用的那些（error_taxonomy 记 credential_required）；其余每条 fixture 的 ProbeResult 与 0.6.0 逐字段相同', async () => {
   assert.equal(corpusResults.length, FIXTURE_CORPUS.length, 'corpus-conformance 循环没有为每条 fixture 留下结果')
   const observed: string[] = []
   const differs: string[] = []
+  const gated: string[] = []
   for (const [i, fixture] of FIXTURE_CORPUS.entries()) {
     const now = corpusResults[i]!
     for (const a of now.assertions) {
       if (a.reason && T86_KEYS.includes(a.reason.key)) observed.push(`${fixture.id}/${a.check_id}`)
+      if (a.check_id === 'error_taxonomy' && a.reason?.key === 'credential_required') gated.push(fixture.id)
     }
     const then = await frozenRunProbe(makeInput(fixture.createHandler()))
     try {
@@ -915,8 +912,182 @@ await t('T86 没有漏网：语料里实际带 T86 key 的每一格都在上面�
     }
   }
   assert.deepStrictEqual([...t86Cells].sort(), observed.sort())
-  assert.deepStrictEqual([...new Set(t86Cells.map((c) => c.split('/')[0]!))].sort(), differs.sort())
+  assert.deepStrictEqual([...new Set([...t86Cells.map((c) => c.split('/')[0]!), ...gated])].sort(), differs.sort())
   assert.ok(differs.length >= 3, `只有 ${differs.length} 条 fixture 走到不发的分支`)
+  assert.ok(gated.length >= 9, `只有 ${gated.length} 条 fixture 走到 T86b 的门控分支`)
+})
+
+console.log('\nT86b（suite 0.8.0）：凭据门控下不发保留名的 tools/call。门控 = 冻结 0.7.1 的 tools_list 记 credential_required 的那些 run；其余 fixture 的 ProbeResult 与请求序列与冻结的 0.7.1（src/frozen/suite-0.7.1）逐字段相同')
+
+/** One outbound request and the answer it got: the label requestLabel gives
+ *  it, plus that answer's status and WWW-Authenticate value. */
+interface Exchange { label: string; status: number; wwwAuthenticate: string | null }
+
+async function runExchanges(fixtureId: string, probe: typeof runProbe): Promise<{ result: ProbeResult; exchanges: Exchange[] }> {
+  const fixture = FIXTURE_CORPUS.find((f) => f.id === fixtureId)
+  assert.ok(fixture, `fixture ${fixtureId} 不在语料里`)
+  const handler = fixture.createHandler()
+  const exchanges: Exchange[] = []
+  const recording: ProbeInput['fetchImpl'] = async (input, init) => {
+    const res = await handler(input, init)
+    exchanges.push({ label: requestLabel(input, init), status: res.status, wwwAuthenticate: res.headers.get('www-authenticate') })
+    return res
+  }
+  return { result: await probe(makeInput(recording)), exchanges }
+}
+
+const row = (r: ProbeResult, checkId: string) => r.assertions.find((a) => a.check_id === checkId)!
+const labels = (xs: Exchange[]) => xs.map((x) => x.label)
+const HANDSHAKE_LABELS = ['server/discover', 'initialize', 'notifications/initialized']
+const METADATA_GET = 'GET /.well-known/oauth-protected-resource'
+
+/** Read off the recorded exchanges, never off either implementation's
+ *  internals: the response that put the run behind credentials is the last
+ *  handshake response when discovery_handshake itself carries
+ *  credential_required, otherwise the tools/list response. */
+function gateExchange(then: { result: ProbeResult; exchanges: Exchange[] }): Exchange {
+  const handshakeGated = row(then.result, 'discovery_handshake').reason?.key === 'credential_required'
+  const candidates = then.exchanges.filter((x) => (handshakeGated ? HANDSHAKE_LABELS.includes(x.label) : x.label === 'tools/list'))
+  const gate = candidates[candidates.length - 1]
+  assert.ok(gate && gate.status === 401 && gate.wwwAuthenticate !== null, 'the gate response is a 401 carrying a challenge')
+  return gate
+}
+
+/** 0.7.1's auth_metadata judgment for a 401 carrying this exact challenge
+ *  header, fetching any metadata document from the same fixture. */
+async function frozen071AuthFor(fixtureId: string, wwwAuthenticate: string) {
+  const handler = FIXTURE_CORPUS.find((f) => f.id === fixtureId)!.createHandler()
+  return frozen071JudgeAuthMetadata({
+    fetchImpl: async (input, init) => handler(input, init),
+    budget: DEFAULT_PROBE_BUDGET,
+    ctx: createProbeContext(Date.now()),
+    callResult: { status: 401, headers: new Headers({ 'www-authenticate': wwwAuthenticate }), bodyText: '', currentEndpoint: 'https://notes-mcp.example.com/mcp' },
+  })
+}
+
+const T86B_GATED = new Set<string>()
+const T86B_COUNTS: string[] = []
+const toolsCalls = (xs: Exchange[]) => xs.filter((x) => x.label === 'tools/call').length
+
+for (const fixture of FIXTURE_CORPUS) {
+  await t(`${fixture.id}：T86b 对冻结 0.7.1 的差分（非门控逐字段相同；门控不发 tools/call）`, async () => {
+    const now = await runExchanges(fixture.id, runProbe)
+    const then = await runExchanges(fixture.id, frozen071RunProbe)
+    const gated = row(then.result, 'tools_list').reason?.key === 'credential_required'
+    if (!gated) {
+      assert.deepStrictEqual(labels(now.exchanges), labels(then.exchanges), 'non-gated: request sequence identical to 0.7.1')
+      assert.deepStrictEqual(now.result, then.result, 'non-gated: ProbeResult identical to 0.7.1')
+      return
+    }
+    T86B_GATED.add(fixture.id)
+    const gate = gateExchange(then)
+    const cut = labels(then.exchanges).indexOf('tools/call')
+    const before = cut < 0 ? labels(then.exchanges) : labels(then.exchanges).slice(0, cut)
+    assert.equal(toolsCalls(now.exchanges), 0, `gated: tools/call sent: ${JSON.stringify(labels(now.exchanges))}`)
+    assert.deepStrictEqual(labels(now.exchanges).slice(0, before.length), before, 'gated: every request before the tools/call is 0.7.1\'s')
+    const rest = labels(now.exchanges).slice(before.length)
+    assert.ok(rest.length <= 1 && rest.every((l) => l === METADATA_GET), `gated: after that, at most the metadata GET: ${JSON.stringify(rest)}`)
+
+    const toolsList = row(now.result, 'tools_list')
+    const et = row(now.result, 'error_taxonomy')
+    assert.equal(`${et.execution_status}/${et.assertion_status}`, 'SKIPPED/UNVERIFIED')
+    assert.deepStrictEqual(et.reason, { key: 'credential_required', params: { scheme: (toolsList.reason!.params as { scheme: string }).scheme } })
+    assert.deepStrictEqual(et.unverified_reason, et.reason)
+
+    const auth = row(now.result, 'auth_metadata')
+    const oracle = await frozen071AuthFor(fixture.id, gate.wwwAuthenticate!)
+    assert.equal(auth.execution_status, 'COMPLETED')
+    assert.equal(auth.assertion_status, oracle.status, 'auth_metadata = 0.7.1 judgeAuthMetadata on a 401 carrying the gate header')
+    assert.deepStrictEqual(auth.reason, oracle.status === 'VERIFIED' ? null : oracle.reason)
+    assert.equal(rest.length, oracle.status !== 'VERIFIED' && oracle.reason?.key === 'auth_challenge_no_metadata_url' ? 0 : 1, 'the metadata GET happens exactly when the gate challenge names a document (a gate is always a 401 with a header)')
+
+    const others = (r: ProbeResult) => ({ ...r, assertions: r.assertions.filter((a) => !T86_ROWS.includes(a.check_id)) })
+    assert.deepStrictEqual(others(now.result), others(then.result), 'gated: every other row and field identical to 0.7.1')
+    const serialized = JSON.stringify(now.result)
+    assert.ok(!serialized.includes(gate.wwwAuthenticate!) && !serialized.includes('resource_metadata') && !serialized.includes('realm'), 'the challenge header never reaches the ProbeResult')
+
+    T86B_COUNTS.push(`${fixture.id}: 0.7.1 ${then.exchanges.length} requests (${toolsCalls(then.exchanges)} tools/call) -> 0.8.0 ${now.exchanges.length} (${toolsCalls(now.exchanges)} tools/call); gate ${gate.label}; auth_metadata ${auth.assertion_status}${auth.reason ? ` ${auth.reason.key}` : ''}`)
+  })
+}
+
+console.log(`  gated fixtures (${T86B_GATED.size}):\n    ${T86B_COUNTS.join('\n    ')}`)
+
+await t('T86b 门控集合正是这些 fixture（加一条门控 fixture 而不想清楚它属于哪一组会变红）', () => {
+  assert.deepStrictEqual([...T86B_GATED].sort(), [
+    'credential-challenge-list-ows-before-comma',
+    'credential-gated-handshake',
+    'credential-gated-tools-list',
+    'credential-gated-tools-list-with-tools-body',
+    'probe-tool-name-collision-gated-handshake',
+    'probe-tool-name-gated-tools-list-body-lists-name',
+    'probe-tool-name-registered-handshake-gated',
+    'probe-tool-name-registered-tools-list-gated',
+    'probe-tool-name-unverifiable-gated-handshake',
+  ])
+})
+
+for (const [fixtureId, gateLabel] of [
+  ['probe-tool-name-registered-tools-list-gated', 'tools/list'],
+  ['probe-tool-name-registered-handshake-gated', 'initialize'],
+] as const) {
+  await t(`T86b 红证（${fixtureId}）：服务器真的定义了保留名、门控落在 ${gateLabel}；0.7.1 恰好发一次 tools/call 且被执行，0.8.0 一次都不发；error_taxonomy SKIPPED/UNVERIFIED credential_required；auth_metadata 与 0.7.1 对同一个 challenge 头的判定相同`, async () => {
+    const now = await runExchanges(fixtureId, runProbe)
+    const then = await runExchanges(fixtureId, frozen071RunProbe)
+    const callsThen = then.exchanges.filter((x) => x.label === 'tools/call')
+    assert.equal(callsThen.length, 1, '0.7.1 sends exactly one tools/call')
+    assert.equal(callsThen[0]!.status, 200, 'and the server runs it (200, no challenge)')
+    assert.equal(toolsCalls(now.exchanges), 0, '0.8.0 sends none')
+    assert.equal(gateExchange(then).label, gateLabel)
+    const et = row(now.result, 'error_taxonomy')
+    assert.deepStrictEqual([et.execution_status, et.assertion_status, et.reason], ['SKIPPED', 'UNVERIFIED', { key: 'credential_required', params: { scheme: 'bearer' } }])
+    const oracle = await frozen071AuthFor(fixtureId, gateExchange(then).wwwAuthenticate!)
+    const auth = row(now.result, 'auth_metadata')
+    assert.deepStrictEqual([auth.execution_status, auth.assertion_status, oracle.status], ['COMPLETED', 'VERIFIED', 'VERIFIED'])
+    assert.ok(labels(now.exchanges).includes(METADATA_GET), 'the metadata document is fetched through the run\'s fetchImpl')
+  })
+}
+
+await t('T86b 红证（probe-tool-name-gated-tools-list-body-lists-name，原 …-still-sent）：tools/list 与 tools/call 都回同一个 401 challenge 时，0.8.0 恰好少一次请求（那次 tools/call），metadata 文档照抓，auth_metadata 仍为 VERIFIED', async () => {
+  const now = await runExchanges('probe-tool-name-gated-tools-list-body-lists-name', runProbe)
+  const then = await runExchanges('probe-tool-name-gated-tools-list-body-lists-name', frozen071RunProbe)
+  assert.deepStrictEqual(labels(then.exchanges), ['server/discover', 'tools/list', 'tools/call', METADATA_GET])
+  assert.deepStrictEqual(labels(now.exchanges), ['server/discover', 'tools/list', METADATA_GET])
+  assert.equal(row(now.result, 'auth_metadata').assertion_status, 'VERIFIED')
+})
+
+
+/** credential-gated-handshake (legacy fallback) under a small request budget,
+ *  recording the requests. The README's step 5 budget qualifier, both halves. */
+async function gatedHandshakeAtBudget(maxRequests: number): Promise<{ result: ProbeResult; calls: string[] }> {
+  const handler = FIXTURE_CORPUS.find((f) => f.id === 'credential-gated-handshake')!.createHandler()
+  const calls: string[] = []
+  const recording: ProbeInput['fetchImpl'] = async (input, init) => {
+    calls.push(requestLabel(input, init))
+    return handler(input, init)
+  }
+  const result = await runProbe({ ...makeInput(recording), budget: { ...DEFAULT_PROBE_BUDGET, maxRequests } })
+  return { result, calls }
+}
+
+await t('T86b × 预算（README 第 5 步的预算限定句，前半）：握手层门控 + maxRequests=2 —— 预算在两行写入之前用尽，error_taxonomy 与 auth_metadata 都是 SKIPPED/UNVERIFIED probe_budget_exhausted_requests {maxRequests:2}，0 次 tools/call', async () => {
+  const { result, calls } = await gatedHandshakeAtBudget(2)
+  assert.deepStrictEqual(calls, ['server/discover', 'initialize'])
+  const want = { key: 'probe_budget_exhausted_requests', params: { maxRequests: 2 } }
+  for (const check_id of ['error_taxonomy', 'auth_metadata']) {
+    const a = row(result, check_id)
+    assert.deepStrictEqual([a.execution_status, a.assertion_status, a.reason, a.unverified_reason], ['SKIPPED', 'UNVERIFIED', want, want], check_id)
+    for (const locale of ['en', 'zh'] as const) assert.ok(REASON_MESSAGES[want.key]![locale](a.reason!.params).includes('2'), `${check_id}/${locale} renders`)
+  }
+})
+
+await t('T86b × 预算（后半）：握手层门控 + maxRequests=3 —— 门控 challenge 的 metadata GET 撞上预算：error_taxonomy 已先写入，保持 credential_required；auth_metadata 是 SKIPPED/UNVERIFIED probe_budget_exhausted_requests {maxRequests:3}；0 次 tools/call', async () => {
+  const { result, calls } = await gatedHandshakeAtBudget(3)
+  assert.deepStrictEqual(calls, ['server/discover', 'initialize', 'tools/list'])
+  const et = row(result, 'error_taxonomy')
+  assert.deepStrictEqual([et.execution_status, et.assertion_status, et.reason], ['SKIPPED', 'UNVERIFIED', { key: 'credential_required', params: { scheme: 'bearer' } }])
+  const auth = row(result, 'auth_metadata')
+  const want = { key: 'probe_budget_exhausted_requests', params: { maxRequests: 3 } }
+  assert.deepStrictEqual([auth.execution_status, auth.assertion_status, auth.reason, auth.unverified_reason], ['SKIPPED', 'UNVERIFIED', want, want])
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

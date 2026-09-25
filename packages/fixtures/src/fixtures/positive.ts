@@ -192,11 +192,11 @@ export const largeToolsetNestedSchemas: Fixture = {
 // The two fixtures below are its acceptance-criteria positive cases, one per
 // cascade layer (handshake layer, tools-list layer).
 
-const CREDENTIAL_GATE_METADATA_PATH = '/.well-known/oauth-protected-resource'
+export const CREDENTIAL_GATE_METADATA_PATH = '/.well-known/oauth-protected-resource'
 const CREDENTIAL_GATE_METADATA_URL = `${new URL(ENDPOINT).origin}${CREDENTIAL_GATE_METADATA_PATH}`
 /** A real RFC 9110 §11.3 challenge shape (auth-scheme "Bearer" followed by
  *  SP-separated auth-params) — not invented header syntax. */
-const CREDENTIAL_GATE_CHALLENGE = `Bearer realm="mcp", resource_metadata="${CREDENTIAL_GATE_METADATA_URL}"`
+export const CREDENTIAL_GATE_CHALLENGE = `Bearer realm="mcp", resource_metadata="${CREDENTIAL_GATE_METADATA_URL}"`
 
 const TOOLS_DERIVED_CHECK_IDS = ['toolset_fingerprint', 'schema_fingerprint', 'tool_description_hygiene', 'toolset_unchanged_vs_approved', 'schema_unchanged_vs_approved']
 
@@ -219,11 +219,17 @@ function createCredentialGatedEverywhereHandler(): FetchHandler {
   }
 }
 
+/** T86b (suite 0.8.0): under either credential gate the reserved-name
+ *  tools/call is not sent, so error_taxonomy is SKIPPED/UNVERIFIED with the
+ *  gate's own credential_required reason; auth_metadata is still COMPLETED,
+ *  judged from the gate's 401 challenge (VERIFIED in the base, since the
+ *  challenge used here points at a metadata document that is served). */
 export function credentialGatedCascadeAssertions(gatedCheckIds: string[]): ExpectedAssertion[] {
   const reason = { key: 'credential_required', params: { scheme: 'bearer' } }
   const base = cleanBaselineAssertions()
-    .filter((a) => !TOOLS_DERIVED_CHECK_IDS.includes(a.check_id))
+    .filter((a) => !TOOLS_DERIVED_CHECK_IDS.includes(a.check_id) && a.check_id !== 'error_taxonomy')
     .concat(TOOLS_DERIVED_CHECK_IDS.map((check_id): ExpectedAssertion => ({ check_id, execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason })))
+    .concat([{ check_id: 'error_taxonomy', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason }])
   return gatedCheckIds.reduce(
     (acc, check_id) => withOverride(acc, { check_id, execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason }),
     base,
@@ -314,9 +320,10 @@ export const credentialGatedToolsList: Fixture = {
   guardsAgainst:
     'credential-gate 规则的第二个落点（工具列表层）：握手本身没有被挡，discovery_handshake / protocol_revision ' +
     '必须保留它们真实的 VERIFIED 结果——credential-gating 只发生在 tools/list 这一步时，不能让它污染已经真实验证过的' +
-    '握手结论。只有 tools_list 本身及其下游五项记 UNVERIFIED/credential_required；tools/call 本身完全公开（有的服务端' +
-    '只隐藏工具清单、不隐藏调用能力本身，是同样合法的设计选择），error_taxonomy / auth_metadata 因此保持真实结果不受' +
-    '影响，与 no-credentials-unverifiable-auth（那条是 tools/call 本身被挡）互补，不重复。',
+    '握手结论。tools_list 本身及其下游五项记 UNVERIFIED/credential_required。tools/call 在这台服务器上是公开的（有的服务端' +
+    '只隐藏工具清单、不隐藏调用能力本身，是同样合法的设计选择），但自 suite 0.8.0（T86b）起，门控下探测不发保留名的' +
+    'tools/call：error_taxonomy 记 SKIPPED/UNVERIFIED/credential_required，auth_metadata 改读 tools/list 这次 401 的' +
+    'challenge 与它指向的文档。与 no-credentials-unverifiable-auth（那条是 tools/call 本身被挡）互补，不重复。',
   createHandler: () =>
     createModernHandler(CLEAN_TOOLS, {
       toolsListResponse: () => rawResponse(401, { 'www-authenticate': CREDENTIAL_GATE_CHALLENGE }, null),
@@ -447,17 +454,19 @@ export const probeToolNameNearMissStillSent: Fixture = {
   expectedAssertions: cleanBaselineAssertions(),
 }
 
-export const probeToolNameGatedToolsListStillSent: Fixture = {
-  id: 'probe-tool-name-gated-tools-list-still-sent',
+export const probeToolNameGatedToolsListBodyListsName: Fixture = {
+  id: 'probe-tool-name-gated-tools-list-body-lists-name',
   description:
     '一个 modern 服务器：握手正常；tools/list 返回 401 + 合法 WWW-Authenticate: Bearer challenge，401 的 body 里带着一份含保留名的工具数组；' +
     'tools/call 同样是 401 + challenge，resource_metadata 文档正常提供。',
   protocolRevision: '2026-07-28',
   kind: 'positive',
   guardsAgainst:
-    'T86 的凭据门控一支：tools/list 被 401 + challenge 挡住时 tools/call 照发，与 0.6.0 一致——auth_metadata 要靠这次' +
-    '无凭据调用的 401 来观察，而未认证的调用在门控服务器上执行不到任何工具。401 的 body 是服务端自己不认的响应，' +
-    '里面的工具名不构成「首页同名」（与 credential-gated-tools-list-with-tools-body 同一条原则）。',
+    'T86b（suite 0.8.0）的凭据门控一支：tools/list 被 401 + challenge 挡住时不发 tools/call（suite 0.7.x 在这里照发，' +
+    '本条原名 probe-tool-name-gated-tools-list-still-sent）。error_taxonomy 记 SKIPPED/UNVERIFIED/credential_required，' +
+    'auth_metadata 改读 tools/list 这次 401 的 challenge 并抓取它指向的文档。401 的 body 是服务端自己不认的响应，' +
+    '里面的工具名不构成「首页同名」（与 credential-gated-tools-list-with-tools-body 同一条原则），原因是 credential_required ' +
+    '而不是 probe_tool_name_collision。',
   createHandler: () =>
     createModernHandler(CLEAN_TOOLS, {
       toolsListResponse: (id) =>

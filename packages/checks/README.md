@@ -62,18 +62,24 @@ handful of wire calls, and several checks read from the same call:
    see "Baselines and drift" below.
 5. **`tools/call`** with the name we reserve for a tool that should not exist
    (`__mcpcheckup_probe_nonexistent_tool__`) — the protocol-level, non-destructive way
-   to trigger an error scenario, matching exactly what the fixture corpus models. This
-   single response feeds both `error_taxonomy` (is the error shape protocol-conformant)
-   and `auth_metadata` (was there a `WWW-Authenticate` challenge, and if so, does its
-   declared `scope` actually match its own linked resource-metadata document's
-   `scopes_supported`). A bare 401/403 counts as a legitimate auth rejection for
-   `error_taxonomy`'s purposes (not a taxonomy violation) but is exactly what
+   to trigger an error scenario, matching exactly what the fixture corpus models. When
+   the call is sent, its response feeds both `error_taxonomy` (is the error shape
+   protocol-conformant) and `auth_metadata` (was there a `WWW-Authenticate` challenge,
+   and if so, does its declared `scope` actually match its own linked resource-metadata
+   document's `scopes_supported`). A bare 401/403 counts as a legitimate auth rejection
+   for `error_taxonomy`'s purposes (not a taxonomy violation) but is exactly what
    `auth_metadata` reads. The name is reserved for a tool that should not exist, but a
-   server can define it, so the call is withheld when the first `tools/list` page names
-   it, when the list carries a `nextCursor`, or when `tools/list` failed; both checks
-   are then `SKIPPED`/`UNVERIFIED`. The one exception is a credential gate that left
-   no list to read: there the call is still sent, because `auth_metadata` needs that
-   unauthenticated 401.
+   server can define it, so outside a credential gate the call is withheld when the
+   first `tools/list` page names it, when the list carries a `nextCursor`, or when
+   `tools/list` failed; both checks are then `SKIPPED`/`UNVERIFIED`. Under a credential
+   gate (a 401 challenge on the handshake or on `tools/list`, see "Why a
+   credential-gated handshake or tools/list is UNVERIFIED" below) the call is not sent,
+   whatever the list says: `error_taxonomy` is then `SKIPPED`/`UNVERIFIED` with
+   `credential_required`, and `auth_metadata` reads the 401 challenge on the response
+   that required credentials. If the run's budget runs out before either check is
+   recorded, that check is `SKIPPED`/`UNVERIFIED` with the budget's own key instead
+   (see "Why a budget-exhausted (or otherwise aborted) run makes `reachability`
+   UNVERIFIED" below).
 6. **`redirect_policy`** is judged last, from whether *any* wire call in the whole run
    crossed hosts on a redirect (tracked once, centrally, in `wire.ts`'s
    `ProbeContext` — not recomputed per call site). Every wire call this package makes
@@ -216,13 +222,16 @@ structurally valid `WWW-Authenticate` challenge — see `auth.ts`'s
 `classifyCredentialChallenge` for the exact grammar this checks against, the
 one place that predicate is computed — `probe.ts`'s cascade records
 `discovery_handshake`/`protocol_revision`/`tools_list` as `UNVERIFIED` with
-reason `credential_required`, not `FAILED`. The reasoning is the same one
-this section's title borrows from `reachability`'s own UNVERIFIED-not-FAILED
-discipline above: "we couldn't verify what's behind the gate" is a true,
-narrower claim than "it's broken," and asserting the broader, false claim
-just because the narrower one is inconvenient to report is exactly the
-failure mode CLAUDE.md's `不确定时的出口是 UNVERIFIED` rule exists to rule
-out.
+reason `credential_required`, not `FAILED`. Under either gate,
+`error_taxonomy` is `UNVERIFIED` with `credential_required` too: since suite
+0.8.0 the probe does not send its `tools/call` behind a gate, and
+`auth_metadata` reads the gate's own `401` challenge instead (step 5 above).
+The reasoning is the same one this section's title borrows from
+`reachability`'s own UNVERIFIED-not-FAILED discipline above: "we couldn't
+verify what's behind the gate" is a true, narrower claim than "it's broken,"
+and asserting the broader, false claim just because the narrower one is
+inconvenient to report is exactly the failure mode CLAUDE.md's
+`不确定时的出口是 UNVERIFIED` rule exists to rule out.
 
 This exemption is narrow on purpose and does **not** apply to every 4xx a
 handshake attempt can produce:
@@ -449,9 +458,10 @@ made — the guard can only observe the DNS mismatch after the fact, not prevent
 - Never calls a business tool — the only `tools/call` this package ever makes uses the
   name we reserve for a tool that should not exist
   (`__mcpcheckup_probe_nonexistent_tool__`), withheld whenever the server's tool list
-  names it or could not be read in full, unless a credential gate left no list to read
-  (step 5 above); that call is exactly what `checks.json`'s `forbidden` list requires
-  (a protocol-level error trigger, not a real operation).
+  names it or could not be read in full, and whenever a credential gate stands in front
+  of the handshake or the tool list (step 5 above); that call is exactly what
+  `checks.json`'s `forbidden` list requires (a protocol-level error trigger, not a real
+  operation).
 - Never writes, never sends credentials, never does anything destructive.
 - Never puts a target's raw response body or headers into an `Assertion`'s `reason` —
   every `reason` string in this package is authored by this package's own code (status

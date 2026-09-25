@@ -260,5 +260,35 @@ await t('modern-baseline-clean：调用不存在的工具，拿到合法 JSON-RP
   assert.ok(parsed.error)
 })
 
+console.log('\nT86b credentialChallenge：{ scheme, status, wwwAuthenticate }——status 恒 401，header 与收到的逐字相同，不带 body；403 与无头 401 仍然没有这个字段')
+
+await t('initialize / notifications/initialized / tools/list 三处门控都带上 status 与原样的 WWW-Authenticate；403（带头）与 401 无头都不算门控', async () => {
+  const header = 'Bearer realm="mcp", resource_metadata="https://notes-mcp.example.com/.well-known/oauth-protected-resource", scope="a b"'
+  const scripted = (answers: Record<string, () => Response>) => async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const method = typeof init?.body === 'string' ? (JSON.parse(init.body) as { method: string }).method : 'GET'
+    const answer = answers[method]
+    return answer ? answer() : new Response('{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}', { status: 400, headers: { 'content-type': 'application/json' } })
+  }
+  const gate = (status: number, withHeader = true) => () => new Response('{"secret":"body"}', { status, headers: withHeader ? { 'www-authenticate': header } : {} })
+  const initOk = () => new Response('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}', { status: 200, headers: { 'content-type': 'application/json' } })
+  const ackOk = () => new Response(null, { status: 202 })
+  const want = { scheme: 'bearer', status: 401, wwwAuthenticate: header }
+
+  const hsInit = await performHandshake({ fetchImpl: scripted({ initialize: gate(401) }), endpoint: 'https://notes-mcp.example.com/mcp', budget: BUDGET, ctx: createProbeContext(Date.now()), newId })
+  assert.deepStrictEqual(hsInit.credentialChallenge, want)
+  const hsAck = await performHandshake({ fetchImpl: scripted({ initialize: initOk, 'notifications/initialized': gate(401) }), endpoint: 'https://notes-mcp.example.com/mcp', budget: BUDGET, ctx: createProbeContext(Date.now()), newId })
+  assert.deepStrictEqual(hsAck.credentialChallenge, want)
+  const hsOk = await performHandshake({ fetchImpl: scripted({ initialize: initOk, 'notifications/initialized': ackOk }), endpoint: 'https://notes-mcp.example.com/mcp', budget: BUDGET, ctx: createProbeContext(Date.now()), newId })
+  const list = await performToolsList({ fetchImpl: scripted({ 'tools/list': gate(401) }), budget: BUDGET, ctx: createProbeContext(Date.now()), newId, handshake: hsOk })
+  assert.deepStrictEqual(list.credentialChallenge, want)
+
+  for (const answer of [gate(403), gate(401, false)]) {
+    const hs = await performHandshake({ fetchImpl: scripted({ initialize: answer }), endpoint: 'https://notes-mcp.example.com/mcp', budget: BUDGET, ctx: createProbeContext(Date.now()), newId })
+    assert.ok(!('credentialChallenge' in hs), 'no gate at initialize')
+    const tl = await performToolsList({ fetchImpl: scripted({ 'tools/list': answer }), budget: BUDGET, ctx: createProbeContext(Date.now()), newId, handshake: hsOk })
+    assert.ok(!('credentialChallenge' in tl), 'no gate at tools/list')
+  }
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

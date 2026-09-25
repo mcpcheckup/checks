@@ -16,7 +16,7 @@ import {
   unclaimedDriftAssertions,
   type ModernHandlerOptions,
 } from './shared.ts'
-import { credentialGatedCascadeAssertions } from './positive.ts'
+import { credentialGatedCascadeAssertions, CREDENTIAL_GATE_CHALLENGE, CREDENTIAL_GATE_METADATA_PATH } from './positive.ts'
 
 export const staleProtocolVersion: Fixture = {
   id: 'stale-protocol-version',
@@ -1078,7 +1078,8 @@ export const fingerprintCanonicalizeFailed: Fixture = {
 const PROBE_TOOL_NAME_GUARD_SHARED =
   'T86：探测用的 tools/call 带一个保留名（本应不存在的工具）。这个名字是公开的，服务器可以真的定义它；' +
   '那样这次调用就会真的执行对方的一个工具，违背「我们从不调用你的工具」。所以只有能排除同名时才发；' +
-  '不发时 error_taxonomy / auth_metadata（两者都只读这一次响应）记 SKIPPED/UNVERIFIED 并带原因，其余检查不变。'
+  '不发时 error_taxonomy（只读这一次响应）记 SKIPPED/UNVERIFIED 并带原因；auth_metadata 在凭据门控下改读门控响应的 401 ' +
+  'challenge（suite 0.8.0，T86b），否则同样 SKIPPED/UNVERIFIED；其余检查不变。'
 
 export const probeToolNameCollision: Fixture = {
   id: 'probe-tool-name-collision',
@@ -1145,19 +1146,24 @@ function gatedHandshakeReadableList(opts: { toolsListResponse?: (id: unknown) =>
 }
 
 const GATED_HANDSHAKE_READABLE_LIST_GUARD =
-  '握手被凭据门控（initialize 401 + 合法 challenge），tools/list 却无凭据就返回了可读的清单（T86 R2）：' +
-  '「门控服务器上未认证调用执行不到工具」这一前提已破，所以照样按清单判 a / b，不发 tools/call。' +
+  '握手被凭据门控（initialize 401 + 合法 challenge），tools/list 却无凭据就返回了可读的清单：不发 tools/call。' +
+  'T86 R2（suite 0.7.x）按这份清单判 a / b；自 suite 0.8.0（T86b）起门控优先：error_taxonomy 记 ' +
+  'SKIPPED/UNVERIFIED/credential_required，auth_metadata 改读 initialize 那次 401 的 challenge（这里不带 ' +
+  'resource_metadata，故为 auth_challenge_no_metadata_url）。' +
   '握手层门控本身的判定不变：discovery_handshake / protocol_revision / tools_list 记 UNVERIFIED/credential_required，不算指纹。'
+
+/** T86b: the gate's challenge, `Bearer realm="mcp"`, has no resource_metadata. */
+const GATED_HANDSHAKE_AUTH_NO_METADATA_URL: ExpectedAssertion[] = [{ check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_challenge_no_metadata_url', params: {} } }]
 
 export const probeToolNameCollisionGatedHandshake: Fixture = {
   id: 'probe-tool-name-collision-gated-handshake',
   description: '一个 legacy 服务器：initialize 返回 401 + Bearer challenge；tools/list 无凭据可读，其中有与探测保留名逐字相同的工具，调用它会真的执行。',
   protocolRevision: null,
   kind: 'negative',
-  guardsAgainst: PROBE_TOOL_NAME_GUARD_SHARED + GATED_HANDSHAKE_READABLE_LIST_GUARD + '本条钉住门控握手下的「首页精确同名」（probe_tool_name_collision）。',
+  guardsAgainst: PROBE_TOOL_NAME_GUARD_SHARED + GATED_HANDSHAKE_READABLE_LIST_GUARD + '本条的清单是「首页精确同名」（0.7.x 的 probe_tool_name_collision）。',
   createHandler: () => gatedHandshakeReadableList(),
   sampleRun: (handler) => legacySampleRun(handler),
-  expectedAssertions: withOverrides(credentialGatedCascadeAssertions(['discovery_handshake', 'protocol_revision', 'tools_list']), probeCallWithheld('probe_tool_name_collision')),
+  expectedAssertions: withOverrides(credentialGatedCascadeAssertions(['discovery_handshake', 'protocol_revision', 'tools_list']), GATED_HANDSHAKE_AUTH_NO_METADATA_URL),
 }
 
 export const probeToolNameUnverifiableGatedHandshake: Fixture = {
@@ -1165,11 +1171,66 @@ export const probeToolNameUnverifiableGatedHandshake: Fixture = {
   description: '一个 legacy 服务器：initialize 返回 401 + Bearer challenge；tools/list 无凭据可读，第一页只有两个普通工具并带 nextCursor，保留名的那个工具在后面的页里。',
   protocolRevision: null,
   kind: 'negative',
-  guardsAgainst: PROBE_TOOL_NAME_GUARD_SHARED + GATED_HANDSHAKE_READABLE_LIST_GUARD + '本条钉住门控握手下的「清单不完整」（probe_tool_name_unverifiable）。',
+  guardsAgainst: PROBE_TOOL_NAME_GUARD_SHARED + GATED_HANDSHAKE_READABLE_LIST_GUARD + '本条的清单是「清单不完整」（0.7.x 的 probe_tool_name_unverifiable）。',
   createHandler: () =>
     gatedHandshakeReadableList({
       toolsListResponse: (id) => jsonRpcResult(id, { tools: CLEAN_TOOLS, nextCursor: 'page-2' }),
     }),
   sampleRun: (handler) => legacySampleRun(handler),
-  expectedAssertions: withOverrides(credentialGatedCascadeAssertions(['discovery_handshake', 'protocol_revision', 'tools_list']), probeCallWithheld('probe_tool_name_unverifiable')),
+  expectedAssertions: withOverrides(credentialGatedCascadeAssertions(['discovery_handshake', 'protocol_revision', 'tools_list']), GATED_HANDSHAKE_AUTH_NO_METADATA_URL),
+}
+
+// ---- T86b (suite 0.8.0): no reserved-name tools/call under a credential gate ----
+
+/** 401 + the served-metadata Bearer challenge, no body. */
+const gate401 = (): Response => rawResponse(401, { 'www-authenticate': CREDENTIAL_GATE_CHALLENGE }, null)
+
+/** The resource_metadata document CREDENTIAL_GATE_CHALLENGE points at. */
+function gateMetadataDocument(): Response {
+  const origin = new URL(ENDPOINT).origin
+  return rawResponse(200, { 'content-type': 'application/json' }, JSON.stringify({ resource: origin, authorization_servers: [`${origin}/oauth`] }))
+}
+
+/** Serves the metadata document on its path and hands every other request to base. */
+function withGateMetadata(base: FetchHandler): FetchHandler {
+  return async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+    return url.pathname === CREDENTIAL_GATE_METADATA_PATH ? gateMetadataDocument() : base(input, init)
+  }
+}
+
+const PROBE_TOOL_NAME_REGISTERED_BEHIND_GATE_GUARD =
+  'T86b（TODO 516，Codex #147 P1）：这台服务器只把清单放在凭据后面，却真的定义了保留名的工具，未认证的 tools/call ' +
+  '会真的执行它。suite 0.7.x 在「门控且读不到清单」时照发这次调用（为了让 auth_metadata 拿到它的 401），于是会执行对方的' +
+  '一个工具。自 suite 0.8.0 起门控下一律不发：请求序列里不得出现 tools/call；error_taxonomy 记 ' +
+  'SKIPPED/UNVERIFIED/credential_required（与 tools_list 同一个 scheme）；auth_metadata 改读门控响应的 401 challenge，' +
+  '与 0.7.x 对同一个 challenge 头的判定相同（这里抓取 resource_metadata 文档后为 VERIFIED）。'
+
+export const probeToolNameRegisteredToolsListGated: Fixture = {
+  id: 'probe-tool-name-registered-tools-list-gated',
+  description:
+    '一个 modern 服务器：握手正常；tools/list 返回 401 + 合法 WWW-Authenticate: Bearer challenge（含 resource_metadata 指针，文档正常提供）；' +
+    'tools/call 不设门控，且服务器真的定义了与探测保留名逐字相同的工具，调用它会真的执行。',
+  protocolRevision: '2026-07-28',
+  kind: 'negative',
+  guardsAgainst: PROBE_TOOL_NAME_REGISTERED_BEHIND_GATE_GUARD + '本条钉住 tools/list 层门控。',
+  createHandler: () => withGateMetadata(createModernHandler(TOOLS_WITH_RESERVED_NAME, { toolsListResponse: () => gate401() })),
+  sampleRun: (handler) => modernSampleRun(handler),
+  expectedAssertions: credentialGatedCascadeAssertions(['tools_list']),
+}
+
+export const probeToolNameRegisteredHandshakeGated: Fixture = {
+  id: 'probe-tool-name-registered-handshake-gated',
+  description:
+    '一个 legacy 服务器：server/discover 走 4xx 回退；initialize 与 tools/list 都返回 401 + 合法 WWW-Authenticate: Bearer challenge' +
+    '（含 resource_metadata 指针，文档正常提供）；tools/call 不设门控，且服务器真的定义了与探测保留名逐字相同的工具，调用它会真的执行。',
+  protocolRevision: null,
+  kind: 'negative',
+  guardsAgainst: PROBE_TOOL_NAME_REGISTERED_BEHIND_GATE_GUARD + '本条钉住握手层（initialize）门控。',
+  createHandler: () =>
+    withGateMetadata(
+      createLegacyHandler(TOOLS_WITH_RESERVED_NAME, { omitSessionId: true, initializeResponse: () => gate401(), toolsListResponse: () => gate401() }),
+    ),
+  sampleRun: (handler) => legacySampleRun(handler),
+  expectedAssertions: credentialGatedCascadeAssertions(['discovery_handshake', 'protocol_revision', 'tools_list']),
 }

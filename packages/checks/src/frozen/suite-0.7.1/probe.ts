@@ -1,18 +1,21 @@
+// FROZEN: packages/checks/src/probe.ts at suite 0.7.1 (2c99377), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for the T86b differentials (credential-gate-withhold-differential.test.ts
+// FROZEN: and others), which check its git blob id. DO NOT edit or "update" it; it is the 0.7.1 behaviour.
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import type { Assertion } from '@mcpcheckup/attestation-schema'
 
 type ExecutionStatus = Assertion['execution_status']
-import { runHygieneCheck } from './hygiene.ts'
-import { createProbeContext, ProbeAborted } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
+import { runHygieneCheck } from '../../hygiene.ts'
+import { createProbeContext, ProbeAborted } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
 import { performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
-import type { CredentialChallenge } from './protocol.ts'
-import { judgeAuthMetadata, judgeAuthMetadataFromGate } from './auth.ts'
+import { judgeAuthMetadata } from './auth.ts'
 import { judgeErrorTaxonomy } from './error-taxonomy.ts'
-import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from './fingerprint.ts'
-import type { FingerprintVerdict } from './fingerprint.ts'
-import type { CheckDefinition, ChecksRegistry } from './registry.ts'
-import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from './types.ts'
+import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from '../../fingerprint.ts'
+import type { FingerprintVerdict } from '../../fingerprint.ts'
+import type { CheckDefinition, ChecksRegistry } from '../../registry.ts'
+import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from '../../types.ts'
 
 /** A name no real business tool would ever use — the protocol-level, non-destructive
  *  way error_taxonomy and auth_metadata trigger a safe error scenario. Never a
@@ -237,28 +240,24 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     A('transport_type', 'COMPLETED', 'VERIFIED')
     A('latency_profile', 'COMPLETED', 'VERIFIED')
 
-    // Always run tools/list, in both cascade branches: the credential-gate rule
-    // does not change whether it is sent, and on the branches that still send
-    // the tools/call, performUnknownToolCall below needs
-    // toolsList.currentEndpoint regardless of how the tools_list assertion
-    // itself gets judged.
+    // Always run tools/list, in both cascade branches: the probe budget and
+    // request count are unchanged by this feature, and performUnknownToolCall
+    // below still needs toolsList.currentEndpoint regardless of how the
+    // tools_list assertion itself gets judged.
     const toolsList = await performToolsList({ fetchImpl, budget, ctx, newId, handshake })
 
     // T86: set when the tools/call probe must not be sent, because the server
-    // may really define PROBE_TOOL_NAME. A readable list is judged first: its
-    // first page names that exact tool (collision; exact string equality, no
-    // case folding, trimming or prefix match), or it carries a nextCursor
-    // (unverifiable). The final else adds the failed tools/list. T86b: both
-    // credential-gated branches then replace it with their credential_required
-    // reason, whatever the list said (a gate wins over collision / nextCursor),
-    // so no gated run sends the call; auth_metadata reads the gate's own 401
-    // challenge (gateChallenge) instead of that call's response.
+    // may really define PROBE_TOOL_NAME. Any readable list is judged, on every
+    // branch below (T86 R2): its first page names that exact tool (collision;
+    // exact string equality, no case folding, trimming or prefix match), or it
+    // carries a nextCursor (unverifiable). The final else adds the failed
+    // tools/list. Only a credential gate with no readable list still sends:
+    // auth_metadata needs that unauthenticated call's 401.
     let probeCallWithheld: Reason =
       !toolsList.ok ? null
       : toolsList.tools!.some((tool) => typeof tool === 'object' && tool !== null && (tool as { name?: unknown }).name === PROBE_TOOL_NAME) ? { key: 'probe_tool_name_collision' }
       : toolsList.hasNextCursor ? { key: 'probe_tool_name_unverifiable' }
       : null
-    let gateChallenge: CredentialChallenge | undefined
 
     if (handshakeCredentialGated) {
       // Handshake-layer credential-gate rule, continued:
@@ -271,8 +270,6 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       const reason: Reason = { key: 'credential_required', params: { scheme: handshake.credentialChallenge!.scheme } }
       A('tools_list', 'COMPLETED', 'UNVERIFIED', reason)
       skipToolsDerivedChecks(reason)
-      probeCallWithheld = reason
-      gateChallenge = handshake.credentialChallenge
     } else if (handshake.handshakeOk && !toolsList.ok && toolsList.credentialChallenge !== undefined) {
       // Tools-list-layer credential-gate rule: the handshake
       // itself was fine (discovery_handshake / protocol_revision above already
@@ -292,8 +289,6 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       const reason: Reason = { key: 'credential_required', params: { scheme: toolsList.credentialChallenge.scheme } }
       A('tools_list', 'COMPLETED', 'UNVERIFIED', reason)
       skipToolsDerivedChecks(reason)
-      probeCallWithheld = reason
-      gateChallenge = toolsList.credentialChallenge
     } else if (toolsList.ok) {
       A('tools_list', 'COMPLETED', 'VERIFIED')
 
@@ -321,18 +316,10 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     }
 
     if (probeCallWithheld) {
-      // T86: error_taxonomy reads only that call's response, so it did not
-      // run. Written first, so the catch below never becomes its second
-      // writer, even when the metadata fetch below aborts the run.
+      // T86: both rows read that one call's response, so neither ran. Written
+      // here, so the catch below never becomes their second writer.
       A('error_taxonomy', 'SKIPPED', 'UNVERIFIED', probeCallWithheld)
-      if (gateChallenge) {
-        // T86b: the gate's own 401 challenge is the input; only its reason
-        // key/params reach the assertion, never the header itself.
-        const authVerdict = await judgeAuthMetadataFromGate({ fetchImpl, budget, ctx, challenge: gateChallenge })
-        A('auth_metadata', 'COMPLETED', authVerdict.status, authVerdict.status !== 'VERIFIED' ? authVerdict.reason : null)
-      } else {
-        A('auth_metadata', 'SKIPPED', 'UNVERIFIED', probeCallWithheld)
-      }
+      A('auth_metadata', 'SKIPPED', 'UNVERIFIED', probeCallWithheld)
     } else {
       const callResult = await performUnknownToolCall({
         fetchImpl,

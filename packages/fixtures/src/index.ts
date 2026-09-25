@@ -14,7 +14,7 @@ import {
   credentialChallengeListOwsBeforeComma,
   legacyToolsCallCredentialGated,
   probeToolNameNearMissStillSent,
-  probeToolNameGatedToolsListStillSent,
+  probeToolNameGatedToolsListBodyListsName,
 } from './fixtures/positive.ts'
 import {
   staleProtocolVersion,
@@ -66,6 +66,8 @@ import {
   probeToolNameUnverifiableToolsListFailed,
   probeToolNameCollisionGatedHandshake,
   probeToolNameUnverifiableGatedHandshake,
+  probeToolNameRegisteredToolsListGated,
+  probeToolNameRegisteredHandshakeGated,
 } from './fixtures/protocol-negatives.ts'
 import {
   authChallengeScopeContradictsMetadata,
@@ -91,7 +93,7 @@ export const FIXTURE_CORPUS: Fixture[] = [
   credentialChallengeListOwsBeforeComma,
   legacyToolsCallCredentialGated,
   probeToolNameNearMissStillSent,
-  probeToolNameGatedToolsListStillSent,
+  probeToolNameGatedToolsListBodyListsName,
   staleProtocolVersion,
   toolsListIllegalStructure,
   legacyEverythingRequiresAuthStillFails,
@@ -141,6 +143,8 @@ export const FIXTURE_CORPUS: Fixture[] = [
   probeToolNameUnverifiableToolsListFailed,
   probeToolNameCollisionGatedHandshake,
   probeToolNameUnverifiableGatedHandshake,
+  probeToolNameRegisteredToolsListGated,
+  probeToolNameRegisteredHandshakeGated,
   authChallengeScopeContradictsMetadata,
   authMetadataIllegalStructure,
   authChallengeNoMetadataUrl,
@@ -213,6 +217,8 @@ export {
   probeToolNameUnverifiableToolsListFailed,
   probeToolNameCollisionGatedHandshake,
   probeToolNameUnverifiableGatedHandshake,
+  probeToolNameRegisteredToolsListGated,
+  probeToolNameRegisteredHandshakeGated,
   authChallengeScopeContradictsMetadata,
   authMetadataIllegalStructure,
   authChallengeNoMetadataUrl,

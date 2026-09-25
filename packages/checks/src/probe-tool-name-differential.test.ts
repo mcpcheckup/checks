@@ -1,12 +1,25 @@
 /**
  * T86 differential invariant test — the primary evidence that withholding the
  * tools/call carrying the probe's reserved tool name changed nothing else.
+ * Since T86b (suite 0.8.0) it also carries the T86b differential over the same
+ * inputs; see "T86b" below.
  *
  * Three parties, the same shape as failed-reasons-differential.test.ts (T73b),
  * whose scripted server, T73 corpus, stage generators and oracle reading
  * functions are reused below verbatim (marked):
  *
- *   1. The implementation: runProbe (./probe.ts), end to end.
+ *   1. The T86 implementation: runProbe as of suite 0.7.x, end to end. Since
+ *      T86b changed probe.ts / protocol.ts / auth.ts, that is
+ *      ./frozen/suite-0.7.1/probe.ts (with its frozen protocol.ts, auth.ts and
+ *      error-taxonomy.ts, the last frozen so that it reads the frozen
+ *      protocol.ts rather than the live one T86b changed): the 0.7.0 and 0.7.1
+ *      blobs of probe / protocol / auth are identical (8551e58, 2c99377), so
+ *      this is exactly the code T86 shipped, and the first test below
+ *      recomputes each blob id to prove it. Everything else the frozen copies
+ *      reach — the whole in-repo import closure, workspace packages and
+ *      checks.json included — is pinned to its 2c99377b blob by the second
+ *      test (CLOSURE_071_BLOBS), because the frozen copies are the 0.7.1
+ *      behaviour only while it is.
  *   2. FROZEN 0.6.0 — ./frozen/suite-0.6.0/{probe,protocol,error-taxonomy}.ts,
  *      byte-for-byte the suite 0.6.0 (a05097e) files apart from a four-line
  *      `// FROZEN:` header and `../../` import paths; the first test below
@@ -25,7 +38,7 @@
  *      classification (verbatim), plus the T86 rule as ordered branches. It
  *      imports nothing from ./probe.ts or ./protocol.ts.
  *
- * Invariant, for every input:
+ * T86 invariant, for every input (T86 implementation vs 0.6.0):
  *   - ORACLE says the call is sent (a complete first page with no exact
  *     reserved name, or a credential gate with no readable list — T86 R2:
  *     a readable list is judged even behind a gated handshake), or the run aborts before
@@ -44,13 +57,33 @@
  *     answering tools/call with the ordinary unknown-tool error (0.6.0 would
  *     have sent the call; an aborting reply there would cascade rows the new
  *     code legitimately judges, so the comparison fixes a non-aborting one).
+ *
+ * T86b invariant, for the same inputs (runProbe, ./probe.ts, vs the frozen
+ * 0.7.1 run above). A credential gate is what T86b's ORACLE (t86bGated) reads
+ * off the script: the handshake credential-gated, or a completed handshake
+ * whose tools/list is a 401 carrying the valid challenge, with no 429 / 503 +
+ * Retry-After before the decision.
+ *   - Not gated ⇒ ProbeResult and request sequence identical to 0.7.1's.
+ *   - Gated ⇒ no tools/call on the wire; the request sequence is 0.7.1's up
+ *     to its tools/call (all of it, where 0.7.1 withheld too); error_taxonomy
+ *     SKIPPED / UNVERIFIED with { key: 'credential_required', params: { scheme:
+ *     'bearer' } }; auth_metadata COMPLETED with exactly what 0.7.1's
+ *     judgeAuthMetadata returns for a 401 carrying the gate's header (every gate
+ *     here carries VALID_CHALLENGE, which names no metadata document, so no GET
+ *     follows); every other row and ProbeResult field identical to 0.7.1's run
+ *     against the same server answering tools/call with CALL_DEFAULT.
  */
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { posix } from 'node:path'
+import ts from 'typescript'
 import { DEFAULT_PROBE_BUDGET } from '@mcpcheckup/ssrf-guard'
 import { runProbe } from './probe.ts'
 import { runProbe as frozenRunProbe } from './frozen/suite-0.6.0/probe.ts'
+import { runProbe as frozen071RunProbe } from './frozen/suite-0.7.1/probe.ts'
+import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-0.7.1/auth.ts'
+import { createProbeContext } from './wire.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { FetchLike, ProbeResult } from './types.ts'
 
@@ -72,9 +105,140 @@ const FROZEN_BLOBS: Record<string, string> = {
   'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
 }
 
-await t('the frozen 0.6.0 files are the a05097e blobs: header dropped, import paths restored, git blob id recomputed', () => {
-  for (const [name, blob] of Object.entries(FROZEN_BLOBS)) {
-    const raw = readFileSync(new URL(`./frozen/suite-0.6.0/${name}.ts`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+/** Blob ids of packages/checks/src/{name}.ts at 2c99377 (suite 0.7.1; the
+ *  same blobs as at 8551e58, suite 0.7.0), from `git rev-parse`. */
+const FROZEN_071_BLOBS: Record<string, string> = {
+  'probe': 'e5eba03ee610e76d9f637207ca2c69809c5f5de2',
+  'auth': '926a95cf8753f79c1d7085589f836bcde857b534',
+  'protocol': '5f246eb66fa9397bcfc3c0779c5551761fdc56b5',
+  'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
+}
+
+/** The in-repo import closure of frozen/suite-0.7.1, pinned to its blobs at
+ *  2c99377b. Starting from the four frozen files, every import is followed —
+ *  value and type-only, relative, `@mcpcheckup/*` workspace packages (through
+ *  their package.json `exports`), and JSON such as checks.json — down to leaf
+ *  files in this repo (importClosure071 below, reading each file's imports off
+ *  the TypeScript AST, never off a text pattern; the frozen files themselves are
+ *  checked by the blob test above and are not in this list). Each value is the
+ *  output of
+ *    git rev-parse 2c99377b:<path>
+ *  for the repo-relative path it is keyed by. Imports that leave the repo
+ *  (node:*, npm packages) are listed in CLOSURE_071_THIRD_PARTY and not pinned;
+ *  today there are none (runtime globals such as fetch and crypto.subtle are
+ *  not imports).
+ *
+ *  Why: the frozen copies are the suite 0.7.1 behaviour only while every file
+ *  they reach is byte-identical to 2c99377b — a change anywhere in this
+ *  closure changes what "0.7.1" computes without touching the frozen files.
+ *  If this test goes red, copy the 2c99377b version of that file into
+ *  frozen/suite-0.7.1 (and point the frozen imports at it) BEFORE changing the
+ *  file, then recompute this list. The test asserts both halves: the pinned
+ *  list is exactly the closure computed from the working tree, and every
+ *  pinned file still hashes to its 2c99377b blob, so no file in the closure
+ *  other than the frozen copies differs from 2c99377b. */
+const CLOSURE_071_BLOBS: Record<string, string> = {
+  'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
+  'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
+  'packages/attestation-schema/schema/attestation.schema.json': 'e530a30f249389a72c1370c6d114bc0bd81ad66a',
+  'packages/attestation-schema/src/attestation.ts': '246bfcbdc3de280a1ff407a6ba62d52b85cc6995',
+  'packages/attestation-schema/src/dsse.ts': 'abc02f6c5e793b80c06bd825f2da79c72dfb3c08',
+  'packages/attestation-schema/src/generated-types.ts': '70654ab8e9b79bdca5bb5fba29f6263afc17705e',
+  'packages/attestation-schema/src/index.ts': '04972eaf8326370bc4d881ddcdfd954e0e680e5b',
+  'packages/attestation-schema/src/invariants.ts': '78c4296f187921cf90b19686fe95fbfc61abba8e',
+  'packages/canonicalizer/src/canonicalize.ts': '45e467e746de5fa2ba40cae72af915eafdceb27b',
+  'packages/canonicalizer/src/digest.ts': '037a30ced41ba496f49b4b0643c181dd60c3bc68',
+  'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
+  'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
+  'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
+  'packages/checks/checks.json': '59ccdc81e265410dfaa5e4b36b87e81042719e32',
+  'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
+  'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
+  'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
+  'packages/checks/src/types.ts': '59d38f860a3cd07989421fc2e6b97b60cabedd10',
+  'packages/checks/src/wire.ts': 'c0ab8b30a92e22457c20acb21bc166b6c1336e56',
+  'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
+  'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
+  'packages/ssrf-guard/src/dns-wire.ts': '04357f1c08ee2d649a382d2640580903323af222',
+  'packages/ssrf-guard/src/errors.ts': 'e694101026d8de25d4ec47985c88d92b643d2298',
+  'packages/ssrf-guard/src/guarded-fetch.ts': 'dede95b54a508c1e36f7335aaf2e903fa8c040fa',
+  'packages/ssrf-guard/src/index.ts': '2aea81d2da9cdf75ea2cc0b5278dec31f7be9e8f',
+  'packages/ssrf-guard/src/ip-policy.ts': 'b581241df1a369ee55e780b1450d1997ab2635db',
+  'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
+  'packages/ssrf-guard/src/resolve.ts': '5156ec122f96556bf79a384be8814e248651fc84',
+  'packages/ssrf-guard/src/response-view.ts': '28531083e4a98a4580a3d046d876a81945b4f7e8',
+  'packages/ssrf-guard/src/url-target.ts': '46678f430c6534806c014b0265dc408c8fe29705',
+}
+const CLOSURE_071_THIRD_PARTY: string[] = []
+
+const REPO_ROOT = new URL('../../../', import.meta.url)
+const FROZEN_071_DIR = 'packages/checks/src/frozen/suite-0.7.1'
+const readRepo = (path: string) => readFileSync(new URL(path, REPO_ROOT), 'utf8')
+
+/** Module specifiers of one source file, read off the TypeScript AST (the
+ *  whole tree, via ts.forEachChild): import declarations (value, type-only
+ *  and side-effect), export … from, import x = require('…'), dynamic
+ *  import('…'), import('…') types, and /// <reference path> /
+ *  /// <reference types> directives. A specifier that is not a string literal
+ *  (a computed dynamic import, a template literal) cannot be followed, so it
+ *  THROWS rather than being skipped: a closure that silently lost an edge
+ *  would pin less than the frozen files reach. */
+function importSpecifiers(path: string, text: string): string[] {
+  const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const out: string[] = []
+  const literal = (node: ts.Node | undefined, what: string): void => {
+    if (node === undefined || !ts.isStringLiteral(node)) {
+      throw new Error(`${path}: ${what} whose module specifier is not a string literal (${node === undefined ? 'missing' : ts.SyntaxKind[node.kind]}) — the import closure cannot follow it`)
+    }
+    out.push(node.text)
+  }
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) literal(node.moduleSpecifier, 'import declaration')
+    else if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined) literal(node.moduleSpecifier, 'export … from')
+    else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) literal(node.moduleReference.expression, 'import = require()')
+    else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) literal(node.arguments[0], 'dynamic import()')
+    else if (ts.isImportTypeNode(node)) literal(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : node.argument, 'import() type')
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  for (const ref of sf.referencedFiles) out.push(ref.fileName.startsWith('.') ? ref.fileName : `./${ref.fileName}`)
+  for (const ref of sf.typeReferenceDirectives) out.push(ref.fileName)
+  return out
+}
+
+/** Follows every import from the four frozen files to in-repo leaves. */
+function importClosure071(): { files: string[]; thirdParty: string[] } {
+  const packagesByName = new Map<string, string>()
+  for (const dir of readdirSync(new URL('packages/', REPO_ROOT))) {
+    const pj = new URL(`packages/${dir}/package.json`, REPO_ROOT)
+    if (existsSync(pj)) packagesByName.set((JSON.parse(readFileSync(pj, 'utf8')) as { name: string }).name, `packages/${dir}`)
+  }
+  const seen = new Set<string>(), thirdParty = new Set<string>()
+  const queue = ['probe', 'auth', 'protocol', 'error-taxonomy'].map((n) => `${FROZEN_071_DIR}/${n}.ts`)
+  while (queue.length > 0) {
+    const file = queue.shift()!
+    if (seen.has(file)) continue
+    seen.add(file)
+    if (!file.endsWith('.ts')) continue // JSON leaf
+    for (const spec of importSpecifiers(file, readRepo(file))) {
+      if (spec.startsWith('.')) { queue.push(posix.normalize(posix.join(posix.dirname(file), spec))); continue }
+      const segments = spec.split('/')
+      const name = spec.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0]!
+      const subpath = spec.slice(name.length)
+      const dir = name.startsWith('@mcpcheckup/') ? packagesByName.get(name) : undefined
+      if (dir === undefined) { thirdParty.add(spec); continue }
+      const target = (JSON.parse(readRepo(`${dir}/package.json`)) as { exports: Record<string, unknown> }).exports[subpath === '' ? '.' : `.${subpath}`]
+      assert.equal(typeof target, 'string', `${spec}: exports entry is not a plain path`)
+      queue.push(posix.normalize(posix.join(dir, target as string)))
+    }
+  }
+  return { files: [...seen].filter((f) => !f.startsWith(`${FROZEN_071_DIR}/`)).sort(), thirdParty: [...thirdParty].sort() }
+}
+
+for (const [dir, blobs] of [['suite-0.6.0', FROZEN_BLOBS], ['suite-0.7.1', FROZEN_071_BLOBS]] as const)
+await t(`the frozen ${dir} files are the ${dir === 'suite-0.6.0' ? 'a05097e' : '2c99377'} blobs: header dropped, import paths restored, git blob id recomputed`, () => {
+  for (const [name, blob] of Object.entries(blobs)) {
+    const raw = readFileSync(new URL(`./frozen/${dir}/${name}.ts`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
     const lines = raw.split('\n')
     let header = 0
     while (lines[header]!.startsWith('// FROZEN:')) header++
@@ -82,7 +246,18 @@ await t('the frozen 0.6.0 files are the a05097e blobs: header dropped, import pa
     const restored = lines.slice(header).map((l) => (l.startsWith('import ') ? l.replace("from '../../", "from './") : l)).join('\n')
     const bytes = Buffer.from(restored, 'utf8')
     const id = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
-    assert.equal(id, blob, `${name}.ts is not the 0.6.0 file`)
+    assert.equal(id, blob, `${dir}/${name}.ts is not the file it claims to be`)
+  }
+})
+
+await t('the in-repo import closure of frozen/suite-0.7.1 is exactly the pinned list, and every pinned file is still its 2c99377b blob (git blob id recomputed)', () => {
+  const closure = importClosure071()
+  assert.deepStrictEqual(closure.files, Object.keys(CLOSURE_071_BLOBS).sort(), 'the pinned list is not the import closure: recompute it (see CLOSURE_071_BLOBS)')
+  assert.deepStrictEqual(closure.thirdParty, CLOSURE_071_THIRD_PARTY, 'the closure reaches a new out-of-repo import')
+  for (const [path, blob] of Object.entries(CLOSURE_071_BLOBS)) {
+    const bytes = Buffer.from(readRepo(path).split('\r\n').join('\n'), 'utf8')
+    const id = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
+    assert.equal(id, blob, `${path} changed since 2c99377b: freeze its 2c99377b version into frozen/suite-0.7.1 first`)
   }
 })
 
@@ -353,7 +528,8 @@ async function checkInput(id: string, s: T86Script): Promise<void> {
   const want = oracleDecision(s)
   const label = typeof want === 'string' ? want : want.key
   decisionCounts.set(label, (decisionCounts.get(label) ?? 0) + 1)
-  const now = await run(runProbe, s)
+  const now = await run(frozen071RunProbe, s)
+  await checkT86b(id, s, now)
   const sent = now.calls.includes('tools/call')
 
   if (typeof want === 'string') {
@@ -376,6 +552,57 @@ async function checkInput(id: string, s: T86Script): Promise<void> {
     }
   }
   if (!identical(withoutT86Rows(now.result), withoutT86Rows(then.result))) violation(id, 'outside error_taxonomy / auth_metadata, the result differs from 0.6.0')
+}
+
+// ---------------------------------------------------------------------------
+// T86b: runProbe (./probe.ts) against the frozen 0.7.1 run of the same input.
+// ---------------------------------------------------------------------------
+
+/** T86b ORACLE: is the run behind a credential gate when the call would be
+ *  decided? Reads the script only, through the T73b handshake reading above. */
+function t86bGated(s: Script): boolean {
+  const hs = oracleHandshake(s)
+  if (hs.aborted || rateLimited(s.toolsList)) return false
+  return hs.gated || (hs.ok && challenged(s.toolsList))
+}
+
+const GATE_REASON = { key: 'credential_required', params: { scheme: 'bearer' } }
+/** 0.7.1's own auth_metadata judgment for a 401 carrying VALID_CHALLENGE. It
+ *  names no metadata document, so it fetches nothing. */
+const GATE_AUTH = await frozen071JudgeAuthMetadata({
+  fetchImpl: async () => { throw new Error('VALID_CHALLENGE names no metadata document; nothing may be fetched') },
+  budget: DEFAULT_PROBE_BUDGET,
+  ctx: createProbeContext(Date.now()),
+  callResult: { status: 401, headers: new Headers({ 'www-authenticate': VALID_CHALLENGE }), bodyText: '', currentEndpoint: ENDPOINT },
+})
+const t86b = { gated: 0, notGated: 0, oneFewer: 0, alsoWithheldBy071: 0, status403: 0 }
+
+async function checkT86b(id: string, s: T86Script, then: { result: ProbeResult; calls: string[] }): Promise<void> {
+  const now = await run(runProbe, s)
+  if (s.initialize.status === 403 || s.ack.status === 403 || s.toolsList.status === 403) t86b.status403++
+  if (!t86bGated(s)) {
+    t86b.notGated++
+    if (!identical(now.calls, then.calls)) violation(id, `T86b not gated: requests ${JSON.stringify(now.calls)} vs 0.7.1 ${JSON.stringify(then.calls)}`)
+    if (!identical(now.result, then.result)) violation(id, 'T86b not gated: ProbeResult differs from 0.7.1')
+    return
+  }
+  t86b.gated++
+  const base = s.toolsCall === CALL_DEFAULT ? then : await run(frozen071RunProbe, { ...s, toolsCall: CALL_DEFAULT })
+  const cut = base.calls.indexOf('tools/call')
+  if (cut < 0) t86b.alsoWithheldBy071++
+  else if (now.calls.length === base.calls.length - 1) t86b.oneFewer++
+  if (now.calls.includes('tools/call')) violation(id, 'T86b gated: tools/call was sent')
+  if (!identical(now.calls, cut < 0 ? base.calls : base.calls.slice(0, cut))) violation(id, `T86b gated: requests ${JSON.stringify(now.calls)} vs 0.7.1 ${JSON.stringify(base.calls)}`)
+  const et = now.result.assertions.find((x) => x.check_id === 'error_taxonomy')!
+  if (et.execution_status !== 'SKIPPED' || et.assertion_status !== 'UNVERIFIED' || !identical(et.reason, GATE_REASON) || !identical(et.unverified_reason, GATE_REASON)) {
+    violation(id, `T86b gated: error_taxonomy = ${et.execution_status}/${et.assertion_status} ${JSON.stringify(et.reason)}`)
+  }
+  const auth = now.result.assertions.find((x) => x.check_id === 'auth_metadata')!
+  const authReason = GATE_AUTH.status === 'VERIFIED' ? null : GATE_AUTH.reason
+  if (auth.execution_status !== 'COMPLETED' || auth.assertion_status !== GATE_AUTH.status || !identical(auth.reason, authReason)) {
+    violation(id, `T86b gated: auth_metadata = ${auth.execution_status}/${auth.assertion_status} ${JSON.stringify(auth.reason)}, 0.7.1 on the gate header ${JSON.stringify(GATE_AUTH)}`)
+  }
+  if (!identical(withoutT86Rows(now.result), withoutT86Rows(base.result))) violation(id, 'T86b gated: outside error_taxonomy / auth_metadata, the result differs from 0.7.1')
 }
 
 // ---------------------------------------------------------------------------
@@ -677,7 +904,7 @@ function* t86Stage(): Generator<[string, T86Script]> {
 // Run.
 // ---------------------------------------------------------------------------
 
-console.log('T86 differential invariant：新实现 vs 冻结的 0.6.0 vs 独立 oracle（保留名 tools/call 发与不发）')
+console.log('T86 differential invariant：T86 实现（冻结的 0.7.1）vs 冻结的 0.6.0 vs 独立 oracle（保留名 tools/call 发与不发）；同一批输入上再做 T86b：现行实现 vs 冻结的 0.7.1')
 
 const stageSizes: [string, number][] = []
 const started = Date.now()
@@ -695,9 +922,17 @@ const total = stageSizes.reduce((n, [, k]) => n + k, 0)
 console.log(`  input set: ${stageSizes.map(([n, k]) => `${n}=${k}`).join(' + ')} = ${total}; ${((Date.now() - started) / 1000).toFixed(1)}s`)
 console.log(`  oracle decisions: ${[...decisionCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
 console.log(`  oracle branches: ${[...branchCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
+console.log(`  T86b: not gated ${t86b.notGated} (identical to 0.7.1), gated ${t86b.gated} (${t86b.oneFewer} with exactly one request fewer — the tools/call — and ${t86b.alsoWithheldBy071} that 0.7.1 withheld too); inputs with a 403 at initialize / ack / tools/list: ${t86b.status403}; 0.7.1's auth_metadata on the gate header: ${JSON.stringify(GATE_AUTH)}`)
 
 await t(`the invariant holds for all ${total} inputs`, () => {
   if (violations > 0) throw new Error(`${violations} violation(s)\n         ${failures.slice(0, 25).join('\n         ')}${failures.length > 25 ? '\n         … and more' : ''}`)
+})
+
+await t('the T86b input split is not vacuous: gated inputs where 0.7.1 sent the call and where it withheld it, non-gated inputs, and 403s all occur; every gated input is accounted for', () => {
+  assert.equal(t86b.gated + t86b.notGated, total)
+  assert.equal(t86b.oneFewer + t86b.alsoWithheldBy071, t86b.gated, 'every gated input either drops exactly the tools/call or was withheld by 0.7.1 too')
+  for (const [what, n] of Object.entries(t86b)) assert.ok(n > 0, `${what} never seen`)
+  assert.equal(GATE_AUTH.status, 'UNVERIFIED')
 })
 
 await t('the input set is not vacuous: every oracle branch is reached', () => {
