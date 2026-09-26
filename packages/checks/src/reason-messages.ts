@@ -33,6 +33,14 @@ function optionalParam(params: ReasonParams | undefined, key: string): string | 
   return params[key]!
 }
 
+/** reachability_unanswered's `kind`: required, and only the two values probe.ts
+ *  writes. Anything else throws, like a missing param — never a guessed sentence. */
+function unansweredKind(params: ReasonParams | undefined): 'timeout' | 'other' {
+  const kind = requireParam(params, 'kind')
+  if (kind !== 'timeout' && kind !== 'other') throw new Error(`reason-messages: unknown reachability_unanswered kind "${String(kind)}"`)
+  return kind
+}
+
 export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRenderer }> = {
   tls_certificate_out_of_scope: {
     en: () => 'This check requires a TLS-terminating container executor to validate the certificate chain — out of scope for this fetch-based prober.',
@@ -95,6 +103,28 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
   probe_rate_limited: {
     en: () => 'The server told us to come back later (HTTP 429, or 503 with Retry-After), so we stopped this round before finishing the checks.',
     zh: () => '对方要求我们稍后再来（HTTP 429，或带 Retry-After 的 503），我们在完成检查前停止了本轮。',
+  },
+  // T85 (suite 0.9.0): probe.ts's reasons for an ssrf-guard error, classified
+  // by class and code (never message). Params are only `kind` / `code`.
+  reachability_unanswered: {
+    en: (p) => unansweredKind(p) === 'timeout'
+      ? "No complete response arrived from the endpoint within the probe's time budget — later checks did not run."
+      : 'The request failed before a complete response arrived — later checks did not run.',
+    zh: (p) => unansweredKind(p) === 'timeout'
+      ? '探测时间预算内没有收到 endpoint 的完整响应——后续检查未运行。'
+      : '请求在收到完整响应前失败——后续检查未运行。',
+  },
+  reachability_dns_failed: {
+    en: () => "The endpoint's host name did not resolve — later checks did not run.",
+    zh: () => 'endpoint 的域名无法解析——后续检查未运行。',
+  },
+  probe_blocked_by_policy: {
+    en: (p) => `Our probe declined to connect to this address under its own policy (${requireParam(p, 'code')}) — later checks did not run.`,
+    zh: (p) => `我们的探测器按自身策略拒绝连接该地址（${requireParam(p, 'code')}）——后续检查未运行。`,
+  },
+  probe_resolver_unavailable: {
+    en: () => 'Our own DNS resolver did not answer — later checks did not run.',
+    zh: () => '我们自己的 DNS 解析器没有应答——后续检查未运行。',
   },
   check_not_implemented: {
     en: (p) => `This prober has not implemented check_id=${requireParam(p, 'check_id')} — this is an implementation gap, not a probe result.`,

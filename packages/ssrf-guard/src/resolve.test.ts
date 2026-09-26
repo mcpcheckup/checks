@@ -1,5 +1,5 @@
 import assert from 'node:assert'
-import { resolveHost, validateAddresses, resolveAndValidateHost, resolveTxt, DOH_ENDPOINT } from './resolve.ts'
+import { resolveHost, validateAddresses, resolveAndValidateHost, resolveTxt, DOH_ENDPOINT, DOH_TIMEOUT_MS } from './resolve.ts'
 import { SsrfBlocked } from './errors.ts'
 import { QTYPE_A, QTYPE_AAAA, QTYPE_TXT } from './dns-wire.ts'
 
@@ -227,20 +227,106 @@ await t('resolveTxt returns [] when the name exists but has no TXT records', asy
   assert.deepEqual(await resolveTxt('_x.example.com', { fetchImpl }), [])
 })
 
-await t('resolveTxt still throws SsrfBlocked on a transport failure', async () => {
+await t('resolveTxt still throws SsrfBlocked on a transport failure — code RESOLVER_UNAVAILABLE, our own resolver (T85)', async () => {
   const fetchImpl = () => Promise.reject(new Error('boom'))
-  await assert.rejects(() => resolveTxt('_x.example.com', { fetchImpl }), /RESOLUTION_FAILED/)
+  await assert.rejects(() => resolveTxt('_x.example.com', { fetchImpl }), (e: unknown) => e instanceof SsrfBlocked && e.code === 'RESOLVER_UNAVAILABLE')
 })
 
-await t('resolveTxt throws RESOLUTION_FAILED (not []) when the response cannot be decoded as a DNS message', async () => {
+await t('resolveTxt throws RESOLVER_UNAVAILABLE (not []) when the response cannot be decoded as a DNS message', async () => {
   // 与 NXDOMAIN 的 [] 要分清：解码失败意味着"没问成"，不是"问过了、没有记录"。
   const fetchImpl = async () => new Response(Uint8Array.from([1, 2, 3]), { status: 200, headers: { 'content-type': 'application/dns-message' } })
-  await assert.rejects(() => resolveTxt('_x.example.com', { fetchImpl }), /RESOLUTION_FAILED/)
+  await assert.rejects(() => resolveTxt('_x.example.com', { fetchImpl }), (e: unknown) => e instanceof SsrfBlocked && e.code === 'RESOLVER_UNAVAILABLE')
 })
 
 await t('resolveTxt throws RESOLUTION_FAILED on RCODE=2 (SERVFAIL) —— 只有 RCODE=3 (NXDOMAIN) 才返回 []', async () => {
   const fetchImpl = stubDoh({ rcode: 2 })
   await assert.rejects(() => resolveTxt('_x.example.com', { fetchImpl }), /RESOLUTION_FAILED/)
+})
+
+console.log('\nDoH timeout (T85 PR-1b, R16): every DoH request is bounded; a hang ends as RESOLVER_UNAVAILABLE')
+
+// A small injected timeout (DnsDeps.timeoutMs) instead of a real 3 s wait. GUARD_MS is the test's own
+// timer: a query the code fails to bound turns into an assertion failure here, never a hung runner.
+const TIMEOUT_MS = 30
+const GUARD_MS = 1_000
+
+/** Awaits p's rejection. Fails the test (AssertionError) if p resolves, or has not settled within GUARD_MS. */
+async function rejectionWithinGuard(p: Promise<unknown>): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const guard = new Promise<'guard'>((resolve) => { timer = setTimeout(() => resolve('guard'), GUARD_MS) })
+  const outcome = await Promise.race([p.then(() => 'resolved' as const, (error: unknown) => ({ error })), guard])
+  clearTimeout(timer)
+  if (outcome === 'guard') assert.fail(`did not settle within the test's ${GUARD_MS} ms guard: the DoH request is not bounded`)
+  if (outcome === 'resolved') assert.fail('expected a rejection')
+  return outcome.error
+}
+
+const qtypeOf = (init?: RequestInit) => { const b = init!.body as Uint8Array; return (b[b.length - 4]! << 8) | b[b.length - 3]! }
+/** A DoH request that never answers; like a real fetch it rejects with the signal's reason on abort,
+ *  and records that reason's name. Without a signal it never settles. */
+function hangingRequest(init: RequestInit | undefined, aborts: string[]): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    const signal = init?.signal
+    signal?.addEventListener('abort', () => { aborts.push((signal.reason as Error).name); reject(signal.reason) }, { once: true })
+  })
+}
+const isResolverUnavailable = (e: unknown) => e instanceof SsrfBlocked && e.code === 'RESOLVER_UNAVAILABLE'
+
+for (const hangs of [QTYPE_AAAA, QTYPE_A]) {
+  const [fastName, hangName] = hangs === QTYPE_A ? ['AAAA', 'A'] : ['A', 'AAAA']
+  await t(`(a) resolveHost: ${fastName} fails fast, ${hangName} never answers -> RESOLVER_UNAVAILABLE once the ${hangName} query times out`, async () => {
+    const aborts: string[] = []
+    const fetchImpl = (async (_i: unknown, init?: RequestInit) => {
+      if (qtypeOf(init) === hangs) return hangingRequest(init, aborts)
+      throw new TypeError('network error (simulated)')
+    }) as unknown as typeof fetch
+    const error = await rejectionWithinGuard(resolveHost('example.com', { fetchImpl, timeoutMs: TIMEOUT_MS }))
+    assert.ok(isResolverUnavailable(error), String(error))
+    assert.deepEqual(aborts, ['TimeoutError'], 'the hanging query was ended by its own timeout')
+  })
+}
+
+await t('(b) resolveTxt: the DoH request never answers -> RESOLVER_UNAVAILABLE once it times out', async () => {
+  const aborts: string[] = []
+  const fetchImpl = (async (_i: unknown, init?: RequestInit) => hangingRequest(init, aborts)) as unknown as typeof fetch
+  const error = await rejectionWithinGuard(resolveTxt('_x.example.com', { fetchImpl, timeoutMs: TIMEOUT_MS }))
+  assert.ok(isResolverUnavailable(error), String(error))
+  assert.match((error as Error).message, /DoH request to our own resolver failed/)
+  assert.deepEqual(aborts, ['TimeoutError'])
+})
+
+/** Headers arrive at once; the answer body never does, and errors with the signal's reason on abort. */
+const bodyNeverArrives = (async (_i: unknown, init?: RequestInit) => new Response(new ReadableStream({
+  start(c) { const signal = init?.signal; signal?.addEventListener('abort', () => c.error(signal.reason), { once: true }) },
+}), { status: 200 })) as unknown as typeof fetch
+
+await t('(c) an abort during the answer-body read -> RESOLVER_UNAVAILABLE from the decode try (resolveHost and resolveTxt)', async () => {
+  for (const p of [resolveHost('example.com', { fetchImpl: bodyNeverArrives, timeoutMs: TIMEOUT_MS }), resolveTxt('_x.example.com', { fetchImpl: bodyNeverArrives, timeoutMs: TIMEOUT_MS })]) {
+    const error = await rejectionWithinGuard(p)
+    assert.ok(isResolverUnavailable(error), String(error))
+    assert.match((error as Error).message, /unparseable response: The operation was aborted due to timeout/)
+  }
+})
+
+await t('by default every DoH request (both resolveHost queries, resolveTxt) gets AbortSignal.timeout(DOH_TIMEOUT_MS = 3,000); timeoutMs overrides it', async () => {
+  assert.equal(DOH_TIMEOUT_MS, 3_000)
+  const realTimeout = AbortSignal.timeout
+  const requested: number[] = []
+  const signals: unknown[] = []
+  AbortSignal.timeout = (ms: number) => { requested.push(ms); return realTimeout.call(AbortSignal, ms) }
+  try {
+    const answer = mockFetch({ [QTYPE_A]: buildResponse('example.com', QTYPE_A, 0, [aRecord('1.2.3.4')]), [QTYPE_AAAA]: buildResponse('example.com', QTYPE_AAAA, 0, []), [QTYPE_TXT]: buildResponse('_x.example.com', QTYPE_TXT, 3, []) }, [])
+    const fetchImpl = (async (i: unknown, init?: RequestInit) => { signals.push(init?.signal); return answer(i, init) }) as unknown as typeof fetch
+    await resolveHost('example.com', { fetchImpl })
+    await resolveTxt('_x.example.com', { fetchImpl })
+    assert.deepEqual(requested, [3_000, 3_000, 3_000])
+    await resolveTxt('_x.example.com', { fetchImpl, timeoutMs: 7 })
+    assert.deepEqual(requested, [3_000, 3_000, 3_000, 7])
+  } finally {
+    AbortSignal.timeout = realTimeout
+  }
+  assert.equal(signals.length, 4)
+  assert.ok(signals.every((s) => s instanceof AbortSignal))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

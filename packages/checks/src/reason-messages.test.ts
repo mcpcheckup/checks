@@ -31,6 +31,7 @@ const EXPECTED_KEYS = [
   'tools_list_challenge_after_failed_handshake', 'tools_list_not_jsonrpc', 'tools_list_jsonrpc_error', 'tools_list_not_array',
   'fingerprint_tool_missing_name', 'fingerprint_canonicalize_failed',
   'probe_tool_name_collision', 'probe_tool_name_unverifiable',
+  'reachability_unanswered', 'reachability_dns_failed', 'probe_blocked_by_policy', 'probe_resolver_unavailable',
 ]
 
 async function main() {
@@ -48,11 +49,11 @@ async function main() {
     }
   })
 
-  // Twenty-three keys require params (requireParam throws if omitted — that's the
+  // Twenty-five keys require params (requireParam throws if omitted — that's the
   // load-bearing safety net catching a future emitter bug that forgets to
   // pass one; see reason-messages.ts). This test isn't the place to exercise
   // that throw — it's a smoke test that every entry renders non-empty text —
-  // so it feeds each of those twenty-three a minimal representative params object and
+  // so it feeds each of those twenty-five a minimal representative params object and
   // leaves every param-free key on a genuine zero-arg call.
   const MINIMAL_PARAMS: Partial<Record<string, Record<string, string | number>>> = {
     probe_aborted: { message: 'x' },
@@ -78,6 +79,8 @@ async function main() {
     tools_list_not_jsonrpc: { status: 502 },
     tools_list_jsonrpc_error: { status: 200 },
     tools_list_not_array: { status: 200 },
+    reachability_unanswered: { kind: 'timeout' },
+    probe_blocked_by_policy: { code: 'PRIVATE_USE' },
   }
 
   await t('MINIMAL_PARAMS lists exactly the keys whose renderer throws with no params (derived from the table, not hand-kept)', () => {
@@ -85,10 +88,10 @@ async function main() {
       try { REASON_MESSAGES[key]!.en(); return false } catch { return true }
     })
     assert.deepEqual(needsParams.sort(), Object.keys(MINIMAL_PARAMS).sort())
-    assert.equal(needsParams.length, 23)
+    assert.equal(needsParams.length, 25)
   })
 
-  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the twenty-three that require them)', () => {
+  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the twenty-five that require them)', () => {
     for (const key of Object.keys(REASON_MESSAGES)) {
       const params = MINIMAL_PARAMS[key]
       assert.ok(REASON_MESSAGES[key]!.en(params).length > 0, `${key}: en() is empty`)
@@ -96,7 +99,7 @@ async function main() {
     }
   })
 
-  await t('SECURITY: the twenty-three param-taking keys throw (not silently render blank) when required params are omitted', () => {
+  await t('SECURITY: the twenty-five param-taking keys throw (not silently render blank) when required params are omitted', () => {
     for (const key of Object.keys(MINIMAL_PARAMS)) {
       assert.throws(() => REASON_MESSAGES[key]!.en(), /missing required param/, `${key}: en() should throw with no params`)
       assert.throws(() => REASON_MESSAGES[key]!.zh(), /missing required param/, `${key}: zh() should throw with no params`)
@@ -352,6 +355,56 @@ async function main() {
         assert.deepEqual([...touched], [], `${key}/${locale} read ${JSON.stringify([...touched])}`)
       }
     }
+  })
+
+  // T85 (suite 0.9.0): the signed sentences, verbatim.
+  const T85_COPY: [string, Record<string, string> | undefined, string, string][] = [
+    ['reachability_unanswered', { kind: 'timeout' },
+      "No complete response arrived from the endpoint within the probe's time budget — later checks did not run.",
+      '探测时间预算内没有收到 endpoint 的完整响应——后续检查未运行。'],
+    ['reachability_unanswered', { kind: 'other' },
+      'The request failed before a complete response arrived — later checks did not run.',
+      '请求在收到完整响应前失败——后续检查未运行。'],
+    ['reachability_dns_failed', undefined,
+      "The endpoint's host name did not resolve — later checks did not run.",
+      'endpoint 的域名无法解析——后续检查未运行。'],
+    ['probe_blocked_by_policy', { code: 'PRIVATE_USE' },
+      'Our probe declined to connect to this address under its own policy (PRIVATE_USE) — later checks did not run.',
+      '我们的探测器按自身策略拒绝连接该地址（PRIVATE_USE）——后续检查未运行。'],
+    ['probe_resolver_unavailable', undefined,
+      'Our own DNS resolver did not answer — later checks did not run.',
+      '我们自己的 DNS 解析器没有应答——后续检查未运行。'],
+  ]
+  await t('T85: the four new keys render exactly the signed en/zh sentences (kind timeout / other; {code} is the param)', () => {
+    for (const [key, params, en, zh] of T85_COPY) {
+      assert.equal(REASON_MESSAGES[key]!.en(params), en, `${key} ${JSON.stringify(params)} en`)
+      assert.equal(REASON_MESSAGES[key]!.zh(params), zh, `${key} ${JSON.stringify(params)} zh`)
+    }
+  })
+
+  await t('T85: reachability_unanswered fails closed on a kind it does not know — throws, never a guessed sentence (incl. inherited property names)', () => {
+    for (const kind of ['connect', 'tls', 'reset', 'TIMEOUT', '', 'toString', '__proto__', 1]) {
+      for (const locale of ['en', 'zh'] as const) {
+        assert.throws(() => REASON_MESSAGES.reachability_unanswered![locale]({ kind }), /unknown reachability_unanswered kind/, `${String(kind)}/${locale}`)
+      }
+    }
+  })
+
+  await t('T85: renderers read exactly `kind` / `code`, and dns_failed / resolver_unavailable read nothing', () => {
+    const reads = (key: string, value: string) => {
+      const touched = new Set<string>()
+      const spy = new Proxy({} as Record<string, string | number>, {
+        has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+        get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return value },
+      })
+      REASON_MESSAGES[key]!.en(spy)
+      REASON_MESSAGES[key]!.zh(spy)
+      return [...touched].sort()
+    }
+    assert.deepEqual(reads('reachability_unanswered', 'other'), ['kind'])
+    assert.deepEqual(reads('probe_blocked_by_policy', 'X'), ['code'])
+    assert.deepEqual(reads('reachability_dns_failed', 'X'), [])
+    assert.deepEqual(reads('probe_resolver_unavailable', 'X'), [])
   })
 
   console.log(`\n${pass} passed, ${fail} failed`)

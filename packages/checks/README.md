@@ -144,8 +144,9 @@ handshake had completed, `ERROR`/`UNVERIFIED` with the same reason.
 ## Why a budget-exhausted (or otherwise aborted) run makes `reachability` UNVERIFIED, never FAILED — and why checks that already completed keep their result
 
 A single `try`/`catch` wraps the entire wire sequence — handshake through the final
-`tools/call` probe. Any exception, whether it's `wire.ts`'s own `ProbeAborted` (budget
-exhausted) or an arbitrary error `fetchImpl` throws for any other reason, produces:
+`tools/call` probe. Any exception — `wire.ts`'s own `ProbeAborted` (budget exhausted),
+an error `@mcpcheckup/ssrf-guard` raised on the way to or from the target, or any other
+error `fetchImpl` throws — produces:
 every check that never got a chance to run (except `tls_certificate`, always out of
 scope regardless) becomes `SKIPPED`/`UNVERIFIED`, and `reachability` becomes
 `ERROR`/`UNVERIFIED` **if and only if it had not already been settled** — i.e. only
@@ -173,11 +174,43 @@ reason is the abort's real key and its numeric details
 generic one, so a reader can see *why* a check did not run; the approved copy for those
 keys already ends in "— later checks did not run". The key and its params must travel
 together: `reason-messages.ts`'s renderers call `requireParam` and **throw** on a
-missing one. For an arbitrary thrown error the cascade keeps the generic
-`probe_cascade_incomplete`, and only `reachability` carries `probe_aborted` with the
-error's message — that message is an unbounded third-party string, and copying it onto
-all thirteen never-ran checks would inflate a canonicalized, signed payload without
-adding information.
+missing one.
+
+Since suite 0.9.0 the same holds for an error `@mcpcheckup/ssrf-guard` raised. The
+`catch` reads its class, its `code` and its `hop` — never its message — and gives
+`reachability` (when it was not yet settled) and every never-ran check one of these
+reasons. `hop` is how many redirects the guard followed before the request that failed:
+0 is the URL it was asked for.
+
+| ssrf-guard error | reachability not yet settled | reachability already settled |
+|---|---|---|
+| `UpstreamFetchFailed` — the request, or reading its response body, failed | `reachability_unanswered` `{ kind: "other" }` | `probe_cascade_incomplete` |
+| `BudgetExceeded` `MAX_DURATION` — no complete response within the time budget | hop 0: `reachability_unanswered` `{ kind: "timeout" }`; hop > 0: `{ kind: "other" }` | `probe_budget_exhausted_duration`, with the run's own budget number |
+| `BudgetExceeded` `MAX_REQUESTS` / `MAX_REDIRECTS` / `MAX_BODY_BYTES` | `probe_budget_exhausted_requests` / `_redirects` / `_body`, with the run's own budget number | the same |
+| `RateLimited` | `probe_rate_limited` | the same |
+| `SsrfBlocked` `RESOLUTION_FAILED` — the host name did not resolve | hop 0: `reachability_dns_failed`; hop > 0: `reachability_unanswered` `{ kind: "other" }` | `probe_cascade_incomplete` |
+| `SsrfBlocked` `RESOLVER_UNAVAILABLE` — our own DNS resolver did not answer | `probe_resolver_unavailable` | the same |
+| any other `SsrfBlocked` — our own policy declined the address or the request | `probe_blocked_by_policy` `{ code }` | the same |
+
+Two rules decide the two columns, so that no reason says something false about the
+endpoint. First, the reasons whose text names "the endpoint" — `reachability_dns_failed`
+and `reachability_unanswered` `{ kind: "timeout" }` — are used only at hop 0, the
+request to the endpoint's own URL; after a redirect the failing host may be another one,
+so the reason is `reachability_unanswered` `{ kind: "other" }`. Reasons that do not name
+the endpoint do not depend on hop. Second, once `reachability` is settled the endpoint
+has answered, so a never-ran check is not told that it did not: a DNS failure or a
+failed request later in the run (for example the authorization metadata lookup, which
+can go to another host) gives the generic `probe_cascade_incomplete`, and running out of
+time gives `probe_budget_exhausted_duration`, the same reason `wire.ts`'s own time budget
+gives.
+
+The params are only `kind`, `code` or a budget number: the error's message and cause
+reach no assertion, no stored row and no signed payload. Any other thrown error — for
+example one of the prober's own wrapper errors — keeps the generic
+`probe_cascade_incomplete` on the cascade, and only `reachability` carries
+`probe_aborted` with the error's message: that message is an unbounded string, and
+copying it onto all thirteen never-ran checks would inflate a canonicalized, signed
+payload without adding information.
 
 The reasoning: "we verified the protocol handshake, then ran out of budget" is a
 coherent, honest statement — the four-state model exists specifically to let a report
@@ -188,23 +221,17 @@ earned. What still must never happen is guessing at checks that *never ran*: tho
 stay `SKIPPED`/`UNVERIFIED`, not `VERIFIED` and not `FAILED`, because nothing was
 actually observed about them in this run.
 
-**A related, deliberate design choice this package does not try to work around:** this
-package never distinguishes *why* `fetchImpl` threw. In particular, it does not import
-`@mcpcheckup/ssrf-guard`'s `SsrfBlocked`/`BudgetExceeded` error classes to `instanceof`
-against them — `ssrf-guard` is a dependency of this package for its *types* only
-(`ProbeBudget`), never called or imported as runtime values (`no-direct-fetch.test.ts`
-enforces the no-direct-network-call half of that; the no-runtime-`ssrf-guard`-import
-half is enforced by convention and code review, not a separate scan). `checks.json`
-declares `reachability`'s `failure_status` as `null` — it has exactly two reachable
-states, `VERIFIED` and `UNVERIFIED`, never `FAILED` — precisely because of this: a
-generic `FetchLike` returning `Promise<Response>` cannot reliably distinguish "we
-reached the target and it responded with something structurally broken" from "we never
-reached it at all," since both a malformed-but-received response (rare — a caller's
-`fetchImpl`/underlying HTTP client would usually throw itself, indistinguishably from a
-connection failure, well before returning a `Response` this package could inspect) and
-a network failure surface identically here: a thrown error, caught by the same
-`try`/`catch` above. Declaring a `FAILED` state that requires a signal this package
-cannot reliably produce would be worse than not declaring it — guessing `FAILED`
+**A related, deliberate design choice:** `checks.json` declares `reachability`'s
+`failure_status` as `null` — it has exactly two reachable states, `VERIFIED` and
+`UNVERIFIED`, never `FAILED`. Since suite 0.9.0 this package does tell some causes
+apart: it imports `@mcpcheckup/ssrf-guard`'s error classes (`UpstreamFetchFailed`,
+`BudgetExceeded`, `RateLimited`, `SsrfBlocked`) and reads their class, `code` and `hop` — the
+only runtime values it takes from that package; `no-direct-fetch.test.ts` still enforces
+that it never calls the network itself. It does so only to say *why* a check could not
+conclude, never to conclude `FAILED`: a request that failed, or got no complete answer
+within its budget, still does not show that the target is down — it could be our
+network. Declaring a `FAILED` state that requires a signal this
+package cannot reliably produce would be worse than not declaring it — guessing `FAILED`
 without a trustworthy basis risks exactly the false-failure outcome CLAUDE.md calls out
 as equally damaging as a false pass. If a future executor gains a reliable way to tell
 "reached, but broken" apart from "never reached," `failure_status` can be reintroduced
@@ -385,7 +412,8 @@ from `disqualifiedFromPublication` — a real vulnerability, since disqualificat
 what keeps a target's own DNS-rebinding attempt out of the published, unclaimed-target
 corpus. The fix: `FetchLike`'s third parameter, `onGuardSignal`, is a callback the
 production adapter calls directly with a `GuardSignals` object
-(`{ dnsAnswerChanged: true }`) computed from `guardedFetch`'s own return value — a
+(`{ dnsAnswerChanged: true }`) taken from the audit record `guardedFetch` hands to its
+`onAudit` callback on both the success and the throw path — a
 channel the target has no way to reach, since it never touches the `Response` object at
 all. `wire.ts`'s `sendRequest` passes this callback to every `fetchImpl` call and folds
 any `dnsAnswerChanged: true` into `ProbeContext.dnsAnswerChangedObserved`; `probe.ts`

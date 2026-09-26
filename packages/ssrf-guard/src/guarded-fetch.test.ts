@@ -291,6 +291,147 @@ await t('同一 hostname，fetch 前后两次解析答案相同：dnsAnswerChang
   assert.equal(result.dnsAnswerChangedDuringProbe, false)
 })
 
+console.log('\nguardedFetch: TODO 591——复查时我方解析器没有应答（RESOLVER_UNAVAILABLE）不算「答案变了」，原样重抛；其余复查失败仍算「变了」')
+
+/** 复查（resolveHostImpl）按调用顺序逐次给出的结果：地址集，或要抛出的错误。 */
+function scriptedRecheck(steps: (ResolvedAddress[] | unknown)[]) {
+  let i = 0
+  return async (_hostname: string): Promise<ResolvedAddress[]> => {
+    const step = steps[Math.min(i++, steps.length - 1)]
+    if (Array.isArray(step)) return step as ResolvedAddress[]
+    throw step
+  }
+}
+
+/** 一个 body 可观察是否被 cancel 的响应。 */
+function cancellableResponse(status: number, headers: Record<string, string> = {}) {
+  const state = { cancelled: false }
+  const response = new Response(new ReadableStream({ cancel() { state.cancelled = true } }), { status, headers })
+  return { state, response }
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0))
+const PRE = publicV4('93.184.216.34')
+
+await t('复查抛 SsrfBlocked RESOLVER_UNAVAILABLE（hop 0）：原样重抛同一个错误对象，hop=0；这一跳的响应从未交给 parseResponse，body 被 cancel；onAudit 记录 dnsAnswerChangedDuringProbe=false', async () => {
+  const unavailable = new SsrfBlocked('RESOLVER_UNAVAILABLE', 'DoH request to our own resolver failed: test')
+  const target = cancellableResponse(200)
+  const net = makeFetch({ 'https://example.com/mcp': () => target.response })
+  let parsed = 0
+  let captured: import('./audit.ts').ProbeAuditRecord | undefined
+  let thrown: unknown
+  await guardedFetch('https://example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller',
+    parseResponse: async () => { parsed++; return 'parsed' },
+    fetchImpl: net.impl,
+    resolveAndValidateHostImpl: async () => PRE,
+    resolveHostImpl: scriptedRecheck([unavailable]),
+    onAudit: (record) => { captured = record },
+  }).then(() => assert.fail('guardedFetch must reject'), (e: unknown) => { thrown = e })
+  assert.strictEqual(thrown, unavailable, '重抛的必须是解析器抛出的同一个对象')
+  assert.equal((thrown as SsrfBlocked).code, 'RESOLVER_UNAVAILABLE')
+  assert.equal((thrown as SsrfBlocked).hop, 0)
+  assert.equal(parsed, 0, '复查失败那一跳的响应绝不能被解析')
+  await tick()
+  assert.equal(target.state.cancelled, true, '被丢弃的响应的 body 必须被 cancel')
+  assert.ok(captured)
+  assert.equal(captured!.outcome, 'blocked')
+  assert.equal(captured!.dnsAnswerChangedDuringProbe, false, '没有第二个应答，就没有观察到变化')
+})
+
+await t('GET 跟随一次重定向后，hop 1 的复查抛 RESOLVER_UNAVAILABLE：错误的 hop=1（不是 0，也不是缺失）；hop 1 的响应未被解析且 body 被 cancel', async () => {
+  const unavailable = new SsrfBlocked('RESOLVER_UNAVAILABLE', 'DoH request to our own resolver failed: test')
+  const final = cancellableResponse(200)
+  const net = makeFetch({
+    'https://example.com/a': () => new Response(null, { status: 302, headers: { location: '/b' } }),
+    'https://example.com/b': () => final.response,
+  })
+  let parsed = 0
+  let thrown: unknown
+  await guardedFetch('https://example.com/a', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller',
+    parseResponse: async () => { parsed++; return 'parsed' },
+    fetchImpl: net.impl,
+    resolveAndValidateHostImpl: async () => PRE,
+    resolveHostImpl: scriptedRecheck([PRE, unavailable]),
+  }).then(() => assert.fail('guardedFetch must reject'), (e: unknown) => { thrown = e })
+  assert.deepEqual(net.calls.map((c) => c.url), ['https://example.com/a', 'https://example.com/b'])
+  assert.strictEqual(thrown, unavailable)
+  assert.equal((thrown as SsrfBlocked).hop, 1)
+  assert.equal(parsed, 0)
+  await tick()
+  assert.equal(final.state.cancelled, true)
+})
+
+await t('Q2：复查抛 SsrfBlocked RESOLUTION_FAILED（解析器答了，名字不解析）：仍算「变了」，请求照常成功，dnsAnswerChangedDuringProbe=true', async () => {
+  const net = makeFetch({ 'https://example.com/mcp': () => new Response('ok', { status: 200 }) })
+  const result = await guardedFetch('https://example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller',
+    parseResponse: textParser,
+    fetchImpl: net.impl,
+    resolveAndValidateHostImpl: async () => PRE,
+    resolveHostImpl: scriptedRecheck([new SsrfBlocked('RESOLUTION_FAILED', 'DNS resolution failed with RCODE 3')]),
+  }).catch((e: unknown) => assert.fail(`RESOLUTION_FAILED on the re-check must count as changed, not reject: ${String(e)}`))
+  assert.equal(result.status, 200)
+  assert.equal(result.dnsAnswerChangedDuringProbe, true)
+})
+
+await t('故障安全：复查抛出其它错误——非 SsrfBlocked 的 Error、其它 code 的 SsrfBlocked、只是长得像（code 同为 RESOLVER_UNAVAILABLE 但不是 SsrfBlocked 实例）的对象——一律算「变了」，不重抛', async () => {
+  const lookalike = Object.assign(new Error('lookalike'), { code: 'RESOLVER_UNAVAILABLE' })
+  for (const failure of [new TypeError('boom'), new SsrfBlocked('PRIVATE_USE', '10.0.0.1 is private-use'), lookalike, 'a thrown string']) {
+    const net = makeFetch({ 'https://example.com/mcp': () => new Response('ok', { status: 200 }) })
+    const result = await guardedFetch('https://example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+      callerIdentifier: 'test-caller',
+      parseResponse: textParser,
+      fetchImpl: net.impl,
+      resolveAndValidateHostImpl: async () => PRE,
+      resolveHostImpl: scriptedRecheck([failure]),
+    }).catch((e: unknown) => assert.fail(`re-check failure ${String(failure)} must count as changed, not reject: ${String(e)}`))
+    assert.equal(result.dnsAnswerChangedDuringProbe, true, `re-check failure ${String(failure)} must count as changed`)
+  }
+})
+
+await t('cancel 不能挂住调用、也不能替换原错误：cancel 返回永不 settle 的 promise / 返回 reject 的 promise / body getter 同步抛错——guardedFetch 都立即以原来那个 RESOLVER_UNAVAILABLE 拒绝', async () => {
+  const shapes: [string, () => Response][] = [
+    ['cancel never settles', () => new Response(new ReadableStream({ cancel: () => new Promise<void>(() => {}) }), { status: 200 })],
+    ['cancel rejects', () => new Response(new ReadableStream({ cancel: () => Promise.reject(new Error('cancel failed')) }), { status: 200 })],
+    ['body getter throws', () => ({ status: 200, headers: new Headers(), get body(): never { throw new Error('body getter failed') } }) as unknown as Response],
+  ]
+  for (const [label, make] of shapes) {
+    const unavailable = new SsrfBlocked('RESOLVER_UNAVAILABLE', 'DoH request to our own resolver failed: test')
+    const net = makeFetch({ 'https://example.com/mcp': make })
+    const call = guardedFetch('https://example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+      callerIdentifier: 'test-caller',
+      parseResponse: textParser,
+      fetchImpl: net.impl,
+      resolveAndValidateHostImpl: async () => PRE,
+      resolveHostImpl: scriptedRecheck([unavailable]),
+    }).then(() => 'resolved', (e: unknown) => e)
+    const outcome = await Promise.race([call, new Promise((r) => setTimeout(() => r('hung'), 1000))])
+    assert.strictEqual(outcome, unavailable, `${label}: expected the original RESOLVER_UNAVAILABLE, got ${String(outcome)}`)
+  }
+})
+
+await t('onAudit 在抛错路径上带着更早一跳观察到的变化：hop 0 复查答案不同，hop 1 的 fetch 失败——记录里 dnsAnswerChangedDuringProbe=true', async () => {
+  const net = makeFetch({
+    'https://example.com/a': () => new Response(null, { status: 302, headers: { location: '/b' } }),
+  })
+  let captured: import('./audit.ts').ProbeAuditRecord | undefined
+  await assert.rejects(() =>
+    guardedFetch('https://example.com/a', DEFAULT_PROBE_BUDGET, ALLOW, {
+      callerIdentifier: 'test-caller',
+      parseResponse: textParser,
+      fetchImpl: net.impl, // /b 没有配置：mock fetch 抛错 → UpstreamFetchFailed
+      resolveAndValidateHostImpl: async () => PRE,
+      resolveHostImpl: scriptedRecheck([publicV4('203.0.113.9')]),
+      onAudit: (record) => { captured = record },
+    }),
+  )
+  assert.ok(captured)
+  assert.equal(captured!.outcome, 'network_error')
+  assert.equal(captured!.dnsAnswerChangedDuringProbe, true)
+})
+
 console.log('\nguardedFetch: 可审计记录——成功与失败都要拿到')
 
 await t('成功路径：onAudit 收到 outcome=success 的完整记录', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "@mcpcheckup/checks",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "The single source of truth for check definitions (checks.json) and the checks whose logic doesn't belong duplicated anywhere else, e.g. tool_description_hygiene.",
   "type": "module",

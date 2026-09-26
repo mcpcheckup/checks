@@ -4,7 +4,7 @@ import { resolveAndValidateHost, resolveHost, type ResolvedAddress } from './res
 import { assertRateLimitAllowed, type RateLimitDecision } from './rate-limit.ts'
 import type { ProbeBudget } from './budget.ts'
 import { createSafeResponseHandle, type SafeResponseHandle } from './response-view.ts'
-import { SsrfBlocked, BudgetExceeded, RateLimited } from './errors.ts'
+import { SsrfGuardError, SsrfBlocked, BudgetExceeded, RateLimited, UpstreamFetchFailed } from './errors.ts'
 import type { ProbeAuditRecord, ProbeHopRecord, ProbeOutcome } from './audit.ts'
 
 export interface GuardedFetchOptions<T> {
@@ -108,7 +108,8 @@ function stripAuthorization(headers: Record<string, string>): Record<string, str
 
 /** Never throws — an unparseable Location on a redirect we're declining to follow
  *  doesn't block anything (we're not going there), but per this package's "fail toward
- *  flagging it as evidence" rule (see checkDnsAnswerChanged below), an unparseable
+ *  flagging it as evidence" rule (checkDnsAnswerChanged below applies the same rule to
+ *  every re-resolution outcome except our own resolver giving no answer), an unparseable
  *  target counts as cross-host rather than silently reporting false. */
 function isCrossHostRedirect(location: string, base: URL, currentHostname: string): boolean {
   try {
@@ -126,8 +127,12 @@ function addressSetKey(addresses: ResolvedAddress[]): string {
 }
 
 /** Re-resolves hostname after the real fetch and compares to what we validated before
- *  it. Never throws — a re-resolution failure counts as "changed" (fail toward flagging
- *  it as evidence, not toward silently assuming nothing happened). Does not use the
+ *  it. Throws exactly one thing: SsrfBlocked RESOLVER_UNAVAILABLE, rethrown unchanged —
+ *  our own resolver gave no answer (TODO 591), so there is no second answer to compare
+ *  and nothing was observed to change; the caller discards that hop's response. Every
+ *  other failure counts as "changed" (fail toward flagging it as evidence, not toward
+ *  silently assuming nothing happened) — including RESOLUTION_FAILED, where the resolver
+ *  did answer and its answer differs from the validated set. Does not use the
  *  validating resolver: a post-fetch answer that is itself now bad is exactly the kind
  *  of change we want to surface, not have swallowed by a policy rejection. */
 async function checkDnsAnswerChanged(
@@ -138,8 +143,21 @@ async function checkDnsAnswerChanged(
   try {
     const postAddresses = await resolveHostImpl(hostname)
     return addressSetKey(postAddresses) !== addressSetKey(preAddresses)
-  } catch {
+  } catch (error) {
+    if (error instanceof SsrfBlocked && error.code === 'RESOLVER_UNAVAILABLE') throw error
     return true
+  }
+}
+
+/** Drops a response that will never be read. Fire-and-forget: never awaited, so a
+ *  cancel that never settles cannot hang the call, and every failure (a rejected
+ *  promise or a synchronous throw) is swallowed, so it cannot replace the error the
+ *  caller is about to throw. */
+function discardBody(response: Response): void {
+  try {
+    response.body?.cancel().catch(() => {})
+  } catch {
+    // Ignored on purpose — see above.
   }
 }
 
@@ -176,6 +194,7 @@ export async function guardedFetch<T>(
   let dnsAnswerChanged = false
   let redirectCrossHostObserved = false
   let targetHost = ''
+  let redirectsFollowed = 0
 
   const record: ProbeAuditRecord = {
     triggeredAt: new Date().toISOString(),
@@ -208,7 +227,6 @@ export async function guardedFetch<T>(
     let currentHeaders = validateAndNormalizeHeaders(opts.headers)
 
     let currentUrl = url
-    let redirectsFollowed = 0
     let requestsUsed = 0
 
     for (;;) {
@@ -232,30 +250,41 @@ export async function guardedFetch<T>(
 
       requestsUsed++
       const remainingMs = Math.max(0, deadline - Date.now())
+      // Built before the try below, so that only the fetch call itself sits in it:
+      // anything our own code throws here is never wrapped as UpstreamFetchFailed.
+      const init: RequestInit = {
+        method,
+        headers: currentHeaders,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(remainingMs),
+        // Cast: a known @types/node + lib.dom.d.ts friction point, not a real type
+        // hazard — Uint8Array is a wholly valid BodyInit at runtime (same friction
+        // point already documented in the calling prober's own wire-adapter layer).
+        ...(method === 'POST' && opts.body !== undefined ? { body: opts.body as BodyInit } : {}),
+      }
       let response: Response
       try {
-        response = await fetchImpl(target.url, {
-          method,
-          headers: currentHeaders,
-          redirect: 'manual',
-          signal: AbortSignal.timeout(remainingMs),
-          // Cast: a known @types/node + lib.dom.d.ts friction point, not a real type
-          // hazard — Uint8Array is a wholly valid BodyInit at runtime (same friction
-          // point already documented in the calling prober's own wire-adapter layer).
-          ...(method === 'POST' && opts.body !== undefined ? { body: opts.body as BodyInit } : {}),
-        })
+        response = await fetchImpl(target.url, init)
       } catch (cause) {
         const name = (cause as { name?: string } | undefined)?.name
         if (name === 'TimeoutError' || name === 'AbortError') {
           throw new BudgetExceeded('MAX_DURATION', `probe exceeded its ${budget.maxDurationMs}ms wall-clock budget`)
         }
-        throw cause
+        throw new UpstreamFetchFailed(cause)
       }
 
       hops.push({ hostname: target.hostname, resolvedAddresses: preAddresses, status: response.status })
 
       if (!target.isIpLiteral) {
-        const changed = await checkDnsAnswerChanged(target.hostname, preAddresses, resolveHostImpl)
+        let changed: boolean
+        try {
+          changed = await checkDnsAnswerChanged(target.hostname, preAddresses, resolveHostImpl)
+        } catch (error) {
+          // RESOLVER_UNAVAILABLE only: this hop's response is never parsed or used.
+          // The catch below records `hop` as this hop's index (redirectsFollowed).
+          discardBody(response)
+          throw error
+        }
         if (changed) dnsAnswerChanged = true
       }
 
@@ -338,6 +367,8 @@ export async function guardedFetch<T>(
     record.dnsAnswerChangedDuringProbe = dnsAnswerChanged
     record.redirectCrossHostObserved = redirectCrossHostObserved
     opts.onAudit?.(record)
+    // Which request of this call failed, as a field: a caller never has to read the message.
+    if ((error instanceof SsrfGuardError || error instanceof UpstreamFetchFailed) && error.hop === undefined) error.hop = redirectsFollowed
     throw error
   }
 }

@@ -136,7 +136,19 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  file, then recompute this list. The test asserts both halves: the pinned
  *  list is exactly the closure computed from the working tree, and every
  *  pinned file still hashes to its 2c99377b blob, so no file in the closure
- *  other than the frozen copies differs from 2c99377b. */
+ *  other than the frozen copies differs from 2c99377b.
+ *
+ *  T85 (suite 0.8.0 -> 0.9.0) re-pin — reason: RESOLVER_UNAVAILABLE code change /
+ *  upstream-failure class, plus checks.json's reachability
+ *  cannot_en/zh and docs_version (TODO 571, R13 ⑤); round 2: the guard's hop field, queryOne's DoH body read, registry_version 0.5.0; round 4: resolveHost's A/AAAA precedence; T85 PR-1b: the DoH request timeout (R16), resolve.ts pinned to the PR-1b commit; TODO 591: the post-fetch re-check rethrows RESOLVER_UNAVAILABLE (R20), guarded-fetch.ts pinned to that commit. The six entries marked
+ *  "T85 re-pin" are pinned to the T85 PR-1 blob instead, each the output of
+ *  the `git rev-parse <commit>:<path>` in its comment (the T85 PR-1 commit that
+ *  last changed the file; the blob is the same at the PR-1 head). Why this keeps the
+ *  differential sound rather than freezing them: the frozen 0.7.1 files reach
+ *  ssrf-guard and checks.json only through type-only imports (types.ts,
+ *  registry.ts), which are erased at run time, and every run below passes the
+ *  registry in as input to both sides — so neither change can alter what the
+ *  frozen code computes. Every other entry is still its 2c99377b blob. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
@@ -151,7 +163,7 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '59ccdc81e265410dfaa5e4b36b87e81042719e32',
+  'packages/checks/checks.json': '522fb7042323bc2bd98bf7c8720962e5ca7a198e', // T85 re-pin, round 2 (registry_version 0.5.0) — git rev-parse 962fdc6:packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
@@ -160,13 +172,13 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
   'packages/ssrf-guard/src/dns-wire.ts': '04357f1c08ee2d649a382d2640580903323af222',
-  'packages/ssrf-guard/src/errors.ts': 'e694101026d8de25d4ec47985c88d92b643d2298',
-  'packages/ssrf-guard/src/guarded-fetch.ts': 'dede95b54a508c1e36f7335aaf2e903fa8c040fa',
-  'packages/ssrf-guard/src/index.ts': '2aea81d2da9cdf75ea2cc0b5278dec31f7be9e8f',
+  'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57', // T85 re-pin, round 2 (hop field) — git rev-parse 962fdc6:packages/ssrf-guard/src/errors.ts
+  'packages/ssrf-guard/src/guarded-fetch.ts': '3c96a62e1a4e1f3378ff4a31766f597d59852438', // TODO 591 re-pin (re-check RESOLVER_UNAVAILABLE rethrown, R20) — git rev-parse "$(git log -n1 --format=%h -G'discardBody' -- packages/ssrf-guard/src/guarded-fetch.ts)":packages/ssrf-guard/src/guarded-fetch.ts
+  'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755', // T85 re-pin: git rev-parse 3696518:packages/ssrf-guard/src/index.ts
   'packages/ssrf-guard/src/ip-policy.ts': 'b581241df1a369ee55e780b1450d1997ab2635db',
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
-  'packages/ssrf-guard/src/resolve.ts': '5156ec122f96556bf79a384be8814e248651fc84',
-  'packages/ssrf-guard/src/response-view.ts': '28531083e4a98a4580a3d046d876a81945b4f7e8',
+  'packages/ssrf-guard/src/resolve.ts': '8ba7ae7c4a97c0589fbb8da1166de89f36bdb5d0', // T85 re-pin, PR-1b (DoH timeout, R16) — git rev-parse "$(git log -n1 --format=%h -G'DOH_TIMEOUT_MS' -- packages/ssrf-guard/src/resolve.ts)":packages/ssrf-guard/src/resolve.ts
+  'packages/ssrf-guard/src/response-view.ts': 'b1b0e3e040f6d6acf66700758323b6bfae223d96', // T85 re-pin: git rev-parse 3696518:packages/ssrf-guard/src/response-view.ts
   'packages/ssrf-guard/src/url-target.ts': '46678f430c6534806c014b0265dc408c8fe29705',
 }
 const CLOSURE_071_THIRD_PARTY: string[] = []

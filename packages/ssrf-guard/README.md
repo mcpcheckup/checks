@@ -140,7 +140,12 @@ that hop's hostname via DoH again and compare the address set to what we validat
 before fetching. A mismatch does not, and cannot, stop the connection that already
 happened (see "What is not closed"). What it does is turn a rebind into **evidence**:
 `GuardedFetchResult.dnsAnswerChangedDuringProbe` is set to `true`, and the audit record
-carries the same flag. This product's entire value proposition is publishing evidence
+carries the same flag. If the re-resolution gets no answer from our own resolver, there
+is no second answer to compare: `guardedFetch` throws `RESOLVER_UNAVAILABLE` rather than
+reporting a change, and that hop's response is never passed to `parseResponse` — its
+body is cancelled. A resolver answer that the name does not resolve (`RESOLUTION_FAILED`),
+like any other re-resolution failure, still counts as changed. This product's entire
+value proposition is publishing evidence
 about what was actually observed (`CLAUDE.md`) — a run whose own DNS answer changed
 mid-flight is not evidence anyone should be able to trust, so **the caller must treat
 `dnsAnswerChangedDuringProbe: true` as disqualifying that run from the publish
@@ -307,7 +312,7 @@ in the GET-path stripping specifically (`guarded-fetch.test.ts`), not just relyi
 ```ts
 import {
   guardedFetch, DEFAULT_PROBE_BUDGET, createProbeBudget,
-  assertRateLimitAllowed, SsrfBlocked, BudgetExceeded, RateLimited,
+  assertRateLimitAllowed, SsrfBlocked, BudgetExceeded, RateLimited, UpstreamFetchFailed,
 } from '@mcpcheckup/ssrf-guard'
 
 const result = await guardedFetch(
@@ -340,10 +345,31 @@ port, or a resolved IP failed policy; an unsupported method; a header outside th
 allowlist; a body on a GET request — `.code` and `.detail`/`.message` describe which),
 `BudgetExceeded` (redirects, wall-clock time, request count, or request body size
 exhausted; `.code` says which), or `RateLimited` (no allowing rate-limit decision was
-supplied) before ever calling `parseResponse`. A network failure reaching the target
-(DNS-independent — e.g. connection refused, TLS failure) propagates as whatever error
-`fetch()` itself throws; that is a legitimate observation for the caller's own assertion
-logic to interpret (see `CLAUDE.md`'s `execution_status`), not a guard rejection.
+supplied) before ever calling `parseResponse`.
+
+Two `SsrfBlocked` codes come from name resolution, split by whose side failed:
+`RESOLVER_UNAVAILABLE` means our own DoH resolver could not be asked — the request to it
+failed, it answered with a non-2xx status, or its answer could not be read or decoded, or did not answer within 3 s;
+`RESOLUTION_FAILED` means the resolver answered and the name does not resolve — a
+non-zero RCODE, or no A or AAAA record. Both reject; neither allows anything.
+
+A failure of the request to the target itself — e.g. connection refused, a TLS failure —
+no longer propagates as whatever error `fetch()` throws. It is thrown as
+`UpstreamFetchFailed`, which is not an `SsrfBlocked`: it carries a fixed message and the
+original error as its `cause`, so a caller can tell it apart by class alone and never
+has to read a message. It is raised at exactly two places: around the call to `fetch()`
+for each hop, and around each read of the response body inside `parseResponse`'s handle.
+At both places a `TimeoutError` or `AbortError` — the wall-clock budget running out —
+is thrown as `BudgetExceeded('MAX_DURATION')` instead. That is a legitimate observation
+for the caller's own assertion logic to interpret (see `CLAUDE.md`'s
+`execution_status`), not a guard rejection: nothing about the target's address or the
+request was refused.
+
+Every `SsrfGuardError` and `UpstreamFetchFailed` that leaves `guardedFetch` carries `hop`:
+how many redirects it had followed before the request that failed, 0 being the URL it
+was given. A caller can therefore tell "the URL I asked for did not resolve" from "a
+host it redirected to did not" by a field, without reading a message or comparing URLs.
+Only a GET is ever past hop 0: a non-GET request's redirect is returned, not followed.
 
 ## A note on `global_fetch_strictly_public`
 

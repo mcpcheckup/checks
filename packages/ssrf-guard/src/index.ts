@@ -20,5 +20,5 @@ export type { IpVerdict, IpBlockCode } from './ip-policy.ts'
 export { parseGuardedTarget } from './url-target.ts'
 export type { GuardedTarget } from './url-target.ts'
 
-export { SsrfGuardError, SsrfBlocked, BudgetExceeded, RateLimited } from './errors.ts'
+export { SsrfGuardError, SsrfBlocked, BudgetExceeded, RateLimited, UpstreamFetchFailed } from './errors.ts'
 export const MAX_ENDPOINT_URL_LENGTH = 2048

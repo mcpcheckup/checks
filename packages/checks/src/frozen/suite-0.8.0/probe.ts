@@ -1,19 +1,22 @@
+// FROZEN: packages/checks/src/probe.ts at suite 0.8.0 (b439bc6; unchanged since f923e35), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for the T85 differential (guard-error-classification-differential.test.ts),
+// FROZEN: which checks its git blob id. DO NOT edit or "update" it; it is the 0.8.0 behaviour.
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import type { Assertion } from '@mcpcheckup/attestation-schema'
-import { BudgetExceeded, RateLimited, SsrfBlocked, UpstreamFetchFailed } from '@mcpcheckup/ssrf-guard'
 
 type ExecutionStatus = Assertion['execution_status']
-import { runHygieneCheck } from './hygiene.ts'
-import { createProbeContext, ProbeAborted } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
-import { performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
-import type { CredentialChallenge } from './protocol.ts'
-import { judgeAuthMetadata, judgeAuthMetadataFromGate } from './auth.ts'
-import { judgeErrorTaxonomy } from './error-taxonomy.ts'
-import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from './fingerprint.ts'
-import type { FingerprintVerdict } from './fingerprint.ts'
-import type { CheckDefinition, ChecksRegistry } from './registry.ts'
-import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from './types.ts'
+import { runHygieneCheck } from '../../hygiene.ts'
+import { createProbeContext, ProbeAborted } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
+import { performHandshake, performToolsList, performUnknownToolCall } from '../../protocol.ts'
+import type { CredentialChallenge } from '../../protocol.ts'
+import { judgeAuthMetadata, judgeAuthMetadataFromGate } from '../../auth.ts'
+import { judgeErrorTaxonomy } from '../../error-taxonomy.ts'
+import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from '../../fingerprint.ts'
+import type { FingerprintVerdict } from '../../fingerprint.ts'
+import type { CheckDefinition, ChecksRegistry } from '../../registry.ts'
+import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from '../../types.ts'
 
 /** A name no real business tool would ever use — the protocol-level, non-destructive
  *  way error_taxonomy and auth_metadata trigger a safe error scenario. Never a
@@ -40,53 +43,6 @@ type AssertionBuilder = (
 function classified(failure: Reason | undefined, checkId: string): NonNullable<Reason> {
   if (!failure) throw new Error(`${checkId} is FAILED but protocol.ts classified no reason`)
   return failure
-}
-
-/** Shape a guard code must have before it may enter params (and so a signed
- *  payload and a public page): every code ssrf-guard raises is one of these. */
-const GUARD_CODE_SHAPE = /^[A-Z][A-Z0-9_]{0,63}$/
-
-/** T85 (suite 0.9.0): the reason for an error @mcpcheckup/ssrf-guard
- *  raised on the way to or from the target, read off its class and `.code`
- *  alone. The error's message and cause are never read and never copied: the
- *  only params are `kind` (a fixed word) or `code` (a guard constant), and the
- *  budget numbers come from this run's own budget. Returns undefined for
- *  anything else — our own wrapper errors (the trial host restriction, the
- *  adapter's argument checks), which keep probe_aborted.
- *
- *  Two rules keep a reason from saying something false about the endpoint:
- *  - The keys whose copy names "the endpoint" — reachability_dns_failed and
- *    reachability_unanswered {kind:"timeout"} — hold only at hop 0: the
- *    request guardedFetch was given, before any redirect (the guard's `hop`
- *    field). At hop > 0, or with no hop recorded, they are always
- *    reachability_unanswered {kind:"other"}. Keys that do not name the
- *    endpoint ignore hop.
- *  - Once reachability is settled the endpoint has answered, so a never-ran
- *    row may not say otherwise: a DNS failure or an unanswered request becomes
- *    probe_cascade_incomplete (the 0.8.0 reason), and a guard timeout becomes
- *    probe_budget_exhausted_duration, as wire.ts's own duration abort does. */
-function guardErrorReason(e: unknown, budget: ProbeInput['budget'], reachabilitySettled: boolean): NonNullable<Reason> | undefined {
-  const other = (): NonNullable<Reason> => reachabilitySettled ? { key: 'probe_cascade_incomplete' } : { key: 'reachability_unanswered', params: { kind: 'other' } }
-  if (e instanceof UpstreamFetchFailed) return other()
-  if (e instanceof BudgetExceeded) {
-    if (e.code === 'MAX_DURATION') {
-      if (reachabilitySettled) return { key: 'probe_budget_exhausted_duration', params: { maxDurationMs: budget.maxDurationMs } }
-      return e.hop === 0 ? { key: 'reachability_unanswered', params: { kind: 'timeout' } } : other()
-    }
-    if (e.code === 'MAX_REQUESTS') return { key: 'probe_budget_exhausted_requests', params: { maxRequests: budget.maxRequests } }
-    if (e.code === 'MAX_REDIRECTS') return { key: 'probe_budget_exhausted_redirects', params: { maxRedirects: budget.maxRedirects } }
-    if (e.code === 'MAX_BODY_BYTES') return { key: 'probe_budget_exhausted_body', params: { maxBodyBytes: budget.maxBodyBytes } }
-    return undefined
-  }
-  // Our own rate-limit decision said no — not the target. So only the key, and
-  // never ProbeResult.rateLimited, which means "the target told us to wait".
-  if (e instanceof RateLimited) return { key: 'probe_rate_limited' }
-  if (e instanceof SsrfBlocked) {
-    if (e.code === 'RESOLUTION_FAILED') return e.hop === 0 && !reachabilitySettled ? { key: 'reachability_dns_failed' } : other()
-    if (e.code === 'RESOLVER_UNAVAILABLE') return { key: 'probe_resolver_unavailable' }
-    if (GUARD_CODE_SHAPE.test(e.code)) return { key: 'probe_blocked_by_policy', params: { code: e.code } }
-  }
-  return undefined
 }
 
 function docsVersionFor(registry: ChecksRegistry, checkId: string): string {
@@ -159,11 +115,10 @@ function judgeBaselineCheck(
  *  coherent, honest statement; discarding an already-verified observation would
  *  itself be a form of the same dishonesty this four-state model exists to
  *  avoid (see response-exceeds-budget in the fixture corpus, and the README's
- *  "cascading failure" section). T85 (suite 0.9.0): which reason an exception
- *  gets is decided by its class and code only (guardErrorReason), never by
- *  its message — so the ssrf-guard errors fetchImpl passes through now tell
- *  "the endpoint did not answer" apart from our own policy, resolver and
- *  budget; anything else still gets probe_aborted. */
+ *  "cascading failure" section). This package makes no attempt to distinguish
+ *  "the target is genuinely down" from "our own probe broke" — see README for
+ *  why that distinction isn't safely derivable from a generic FetchLike without
+ *  coupling to ssrf-guard's specific error types. */
 export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   const { target, fetchImpl, budget, now, newId, approvedBaseline, provenance, registry } = input
 
@@ -424,7 +379,6 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     // for an arbitrary thrown error — see that branch.
     let reachabilityReason: Reason
     let cascadeReason: Reason
-    const guardReason = guardErrorReason(e, budget, assertionsByCheckId.has('reachability'))
     if (e instanceof ProbeAborted) {
       // Our own budget-exhaustion abort — e.message is first-party generated
       // Chinese prose (useful for logs/stack traces, see wire.ts), never a
@@ -458,18 +412,10 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       if (e.code === 'RATE_LIMITED') {
         rateLimited = { retryAfterSeconds: e.retryAfterSeconds ?? null }
       }
-    } else if (guardReason !== undefined) {
-      // T85: an ssrf-guard error — classified by class / code, never message
-      // (guardErrorReason). Its params are kind / code / budget numbers only,
-      // bounded, so the cascade carries the same reason, as ProbeAborted's
-      // does above; guardErrorReason already chose one that is true on a
-      // never-ran row, given whether reachability is settled.
-      reachabilityReason = guardReason
-      cascadeReason = reachabilityReason
     } else {
-      // Anything else — in production, one of our own wrapper errors (the
-      // trial host restriction, the adapter's argument checks). Its message is
-      // kept in params as a diagnostic, unlike ProbeAborted above.
+      // Not one of our own budget aborts — a genuine other exception (e.g. a
+      // fetch-level failure). Its message really is third-party/system text,
+      // so it legitimately belongs in params here, unlike ProbeAborted above.
       //
       // Deliberately NOT promoted into cascadeReason, unlike the ProbeAborted
       // branch: `message` is an unbounded third-party/system string, and the

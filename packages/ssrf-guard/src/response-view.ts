@@ -1,4 +1,4 @@
-import { BudgetExceeded } from './errors.ts'
+import { BudgetExceeded, UpstreamFetchFailed } from './errors.ts'
 
 /**
  * Deliberately NOT a Response, and deliberately does not expose the raw ReadableStream
@@ -20,6 +20,17 @@ export interface SafeResponseHandle {
   bytes(): Promise<Uint8Array>
 }
 
+/** A rejection from reading the body, the same split guarded-fetch.ts makes for the
+ *  fetch call itself: the request's timeout signal firing mid-body (TimeoutError /
+ *  AbortError, by name) is the wall-clock budget; anything else is UpstreamFetchFailed. */
+function bodyReadFailure(cause: unknown): Error {
+  const name = (cause as { name?: string } | undefined)?.name
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    return new BudgetExceeded('MAX_DURATION', 'the response body did not arrive within the probe\'s wall-clock budget')
+  }
+  return new UpstreamFetchFailed(cause)
+}
+
 export function createSafeResponseHandle(response: Response, maxBodyBytes: number): SafeResponseHandle {
   let cached: Promise<Uint8Array> | null = null
 
@@ -31,7 +42,15 @@ export function createSafeResponseHandle(response: Response, maxBodyBytes: numbe
       const chunks: Uint8Array[] = []
       let total = 0
       for (;;) {
-        const { done, value } = await reader.read()
+        // Only the read itself is wrapped — not getReader() above, nor the budget
+        // check below, which are ours.
+        let chunk: ReadableStreamReadResult<Uint8Array>
+        try {
+          chunk = await reader.read()
+        } catch (cause) {
+          throw bodyReadFailure(cause)
+        }
+        const { done, value } = chunk
         if (done) break
         total += value.length
         if (total > maxBodyBytes) {

@@ -6,7 +6,7 @@ import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-
 import { CHECKS_REGISTRY } from './registry.ts'
 import { ProbeAborted, createProbeContext } from './wire.ts'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
-import { DEFAULT_PROBE_BUDGET, createProbeBudget } from '@mcpcheckup/ssrf-guard'
+import { DEFAULT_PROBE_BUDGET, createProbeBudget, BudgetExceeded, RateLimited, SsrfBlocked, UpstreamFetchFailed } from '@mcpcheckup/ssrf-guard'
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import { REASON_MESSAGES } from './reason-messages.ts'
 import type { ProbeInput, ProbeResult } from './types.ts'
@@ -168,7 +168,7 @@ for (const [code, details] of PROBE_ABORTED_CASES) {
   })
 }
 
-await t('genuine 的非 ProbeAborted 异常（例如 fetchImpl 自身抛出的网络错误）仍然走 probe_aborted + { message: e.message } —— 这是仍然合法的第三方诊断文本通道，不能回归', async () => {
+await t('既非 ProbeAborted、也非 ssrf-guard 错误类的普通 Error（T85 起：生产上只剩我们自己的包装错误）仍然走 probe_aborted + { message: e.message }，不能回归', async () => {
   const fetchImpl: ProbeInput['fetchImpl'] = async () => { throw new Error('network unreachable') }
   const result = await runProbe(makeInput(fetchImpl))
   const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
@@ -176,6 +176,211 @@ await t('genuine 的非 ProbeAborted 异常（例如 fetchImpl 自身抛出的�
   assert.equal(reachability.assertion_status, 'UNVERIFIED')
   assert.deepEqual(reachability.reason, { key: 'probe_aborted', params: { message: 'network unreachable' } })
 })
+
+// ---- T85 ----
+
+console.log('\nT85（suite 0.9.0）：ssrf-guard 抛出的错误只按类 / code 归类，绝不读 message；params 只有 kind / code（或本轮预算的数字）；级联行复用同一理由')
+
+/** Distinct from DEFAULT_PROBE_BUDGET so a params number can only have come from the run's own budget. */
+const T85_BUDGET = { ...DEFAULT_PROBE_BUDGET, maxRequests: 7, maxRedirects: 2, maxBodyBytes: 12_345 }
+/** Put in every thrown error's message and cause, to show neither reaches the result. */
+const MARKER = 'T85-MARKER-never-in-a-result'
+
+/** modern-baseline-clean, except that request number `position` throws `make()` instead. */
+function throwingAt(position: number, make: () => unknown): ProbeInput['fetchImpl'] {
+  const handler = FIXTURE_CORPUS.find((f) => f.id === 'modern-baseline-clean')!.createHandler()
+  let n = 0
+  return async (input, init) => {
+    if (++n === position) throw make()
+    return handler(input, init)
+  }
+}
+async function runThrowingAt(position: number, make: () => unknown): Promise<ProbeResult> {
+  return runProbe({ ...makeInput(throwingAt(position, make)), budget: T85_BUDGET })
+}
+
+/** What guardedFetch hands on: the error with the `hop` it failed at (0 = the URL it was given). */
+const atHop = <E extends object>(hop: number, e: E): E => Object.assign(e, { hop })
+const upstream = () => atHop(0, new UpstreamFetchFailed(new TypeError(`Network connection lost. ${MARKER}`)))
+type T85Reason = { key: string; params?: Record<string, string | number> }
+/** [label, error, the reason while reachability is unsettled, the never-ran rows' reason once it is settled]. */
+const T85_CASES: [string, () => unknown, T85Reason, T85Reason][] = [
+  ['timeout — guard BudgetExceeded MAX_DURATION', () => atHop(0, new BudgetExceeded('MAX_DURATION', `probe exceeded its 10000ms wall-clock budget ${MARKER}`)), { key: 'reachability_unanswered', params: { kind: 'timeout' } }, { key: 'probe_budget_exhausted_duration', params: { maxDurationMs: T85_BUDGET.maxDurationMs } }],
+  ['dns — SsrfBlocked RESOLUTION_FAILED', () => atHop(0, new SsrfBlocked('RESOLUTION_FAILED', `DNS resolution failed with RCODE 3 ${MARKER}`)), { key: 'reachability_dns_failed' }, { key: 'probe_cascade_incomplete' }],
+  ['policy — SsrfBlocked PRIVATE_USE', () => atHop(0, new SsrfBlocked('PRIVATE_USE', `10.0.0.1 is private-use ${MARKER}`)), { key: 'probe_blocked_by_policy', params: { code: 'PRIVATE_USE' } }, { key: 'probe_blocked_by_policy', params: { code: 'PRIVATE_USE' } }],
+  ['policy — SsrfBlocked CLOUD_METADATA', () => atHop(0, new SsrfBlocked('CLOUD_METADATA', MARKER)), { key: 'probe_blocked_by_policy', params: { code: 'CLOUD_METADATA' } }, { key: 'probe_blocked_by_policy', params: { code: 'CLOUD_METADATA' } }],
+  ['policy — SsrfBlocked NON_HTTPS_SCHEME', () => atHop(0, new SsrfBlocked('NON_HTTPS_SCHEME', MARKER)), { key: 'probe_blocked_by_policy', params: { code: 'NON_HTTPS_SCHEME' } }, { key: 'probe_blocked_by_policy', params: { code: 'NON_HTTPS_SCHEME' } }],
+  ['connect (other) — UpstreamFetchFailed', upstream, { key: 'reachability_unanswered', params: { kind: 'other' } }, { key: 'probe_cascade_incomplete' }],
+  ['resolver — SsrfBlocked RESOLVER_UNAVAILABLE', () => atHop(0, new SsrfBlocked('RESOLVER_UNAVAILABLE', `DoH resolver returned HTTP 503 ${MARKER}`)), { key: 'probe_resolver_unavailable' }, { key: 'probe_resolver_unavailable' }],
+  ['rate limited — guard RateLimited', () => atHop(0, new RateLimited('RATE_LIMITED', MARKER)), { key: 'probe_rate_limited' }, { key: 'probe_rate_limited' }],
+  ['budget — guard MAX_REQUESTS', () => atHop(0, new BudgetExceeded('MAX_REQUESTS', MARKER)), { key: 'probe_budget_exhausted_requests', params: { maxRequests: 7 } }, { key: 'probe_budget_exhausted_requests', params: { maxRequests: 7 } }],
+  ['budget — guard MAX_REDIRECTS', () => atHop(0, new BudgetExceeded('MAX_REDIRECTS', MARKER)), { key: 'probe_budget_exhausted_redirects', params: { maxRedirects: 2 } }, { key: 'probe_budget_exhausted_redirects', params: { maxRedirects: 2 } }],
+  ['budget — guard MAX_BODY_BYTES', () => atHop(0, new BudgetExceeded('MAX_BODY_BYTES', MARKER)), { key: 'probe_budget_exhausted_body', params: { maxBodyBytes: 12_345 } }, { key: 'probe_budget_exhausted_body', params: { maxBodyBytes: 12_345 } }],
+]
+
+for (const [label, make, reason, settledReason] of T85_CASES) {
+  await t(`${label} → reachability ERROR/UNVERIFIED ${JSON.stringify(reason)}; every never-ran row SKIPPED/UNVERIFIED with the same key and params (not probe_cascade_incomplete)`, async () => {
+    const result = await runThrowingAt(1, make)
+    const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
+    assert.equal(reachability.execution_status, 'ERROR')
+    assert.equal(reachability.assertion_status, 'UNVERIFIED')
+    assert.deepEqual(reachability.reason, reason)
+    assert.deepEqual(reachability.unverified_reason, reason)
+    const cascade = result.assertions.filter((a) => a.check_id !== 'reachability' && a.check_id !== 'tls_certificate')
+    assert.equal(cascade.length, CHECKS_REGISTRY.checks.length - 2)
+    for (const a of cascade) {
+      assert.equal(a.execution_status, 'SKIPPED', a.check_id)
+      assert.deepEqual(a.reason, reason, a.check_id)
+      assert.deepEqual(a.unverified_reason, reason, a.check_id)
+    }
+    // Both renderers work with exactly these params — the key and its params travel together.
+    assert.equal(typeof REASON_MESSAGES[reason.key]!.en(reason.params), 'string')
+    assert.equal(typeof REASON_MESSAGES[reason.key]!.zh(reason.params), 'string')
+  })
+
+  await t(`${label}, after the handshake answered: reachability stays COMPLETED/VERIFIED; every never-ran row carries ${JSON.stringify(settledReason)}`, async () => {
+    const result = await runThrowingAt(2, make)
+    const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
+    assert.equal(reachability.assertion_status, 'VERIFIED')
+    assert.equal(reachability.reason, null)
+    const cascade = result.assertions.filter((a) => a.execution_status === 'SKIPPED' && a.check_id !== 'tls_certificate')
+    assert.ok(cascade.some((a) => a.check_id === 'tools_list'))
+    for (const a of cascade) {
+      assert.deepEqual(a.reason, settledReason, a.check_id)
+      assert.deepEqual(a.unverified_reason, settledReason, a.check_id)
+    }
+    assert.equal(typeof REASON_MESSAGES[settledReason.key]!.en(settledReason.params), 'string')
+  })
+
+  await t(`${label}: params hold only kind / code / the run's budget number — the error's message and cause never reach any row, nor anything the result would write`, async () => {
+    const result = await runThrowingAt(1, make)
+    for (const a of result.assertions) {
+      for (const r of [a.reason, a.unverified_reason]) {
+        if (r === null || r.params === undefined) continue
+        assert.ok(Object.keys(r.params).every((k) => ['kind', 'code', 'maxRequests', 'maxRedirects', 'maxBodyBytes', 'maxDurationMs'].includes(k)), `${a.check_id}: ${JSON.stringify(r.params)}`)
+      }
+    }
+    assert.equal(JSON.stringify(result).includes(MARKER), false)
+    assert.equal(JSON.stringify(result).includes('Network connection lost'), false)
+    assert.equal(result.rateLimited, undefined, 'only a target\'s own 429 / 503 + Retry-After sets rateLimited')
+  })
+}
+
+console.log('\nT85：我们自己的包装错误（不是 ssrf-guard 的错误类）仍然是 probe_aborted { message }')
+
+const OWN_ERRORS: [string, () => unknown][] = [
+  ['trial host restriction (the trial-host restriction in the prober)', () => new Error('trial probe declined to fetch "other.example.com": a trial run never leaves the host it was asked to check ("notes-mcp.example.com")')],
+  ['adapter body type (guarded-fetch-adapter.ts normalizeBody)', () => new TypeError('guarded-fetch-adapter: unsupported request body type [object Blob]')],
+  ['adapter timeoutMs (guarded-fetch-adapter.ts)', () => new RangeError('guarded-fetch-adapter: timeoutMs must be a positive number of milliseconds, got 0')],
+]
+for (const [label, make] of OWN_ERRORS) {
+  await t(`${label} → probe_aborted { message }; the cascade keeps probe_cascade_incomplete`, async () => {
+    const result = await runThrowingAt(1, make)
+    const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
+    assert.deepEqual(reachability.reason, { key: 'probe_aborted', params: { message: (make() as Error).message } })
+    assert.deepEqual(result.assertions.find((a) => a.check_id === 'tools_list')!.reason, { key: 'probe_cascade_incomplete' })
+  })
+}
+
+await t('fail toward the old behaviour: a BudgetExceeded code probe.ts does not know, or an SsrfBlocked code that is not identifier-shaped, stays probe_aborted (never a guessed key, never an unbounded code in params)', async () => {
+  for (const make of [() => new BudgetExceeded('MAX_SOMETHING_NEW', 'x'), () => new SsrfBlocked('not a code', 'x'), () => new SsrfBlocked('X'.repeat(65), 'x')]) {
+    const result = await runThrowingAt(1, make)
+    assert.equal(result.assertions.find((a) => a.check_id === 'reachability')!.reason?.key, 'probe_aborted')
+  }
+})
+
+console.log('\nT85 对抗输入（AC5）：只换 message，归类不变；message 模仿别的类也骗不了它')
+
+const ENUMERATED_MESSAGES = [
+  'probe exceeded its 10000ms wall-clock budget',
+  'The operation was aborted due to timeout',
+  'blocked (RESOLUTION_FAILED): DNS resolution failed with RCODE 2',
+  'blocked (PRIVATE_USE): 10.0.0.1 is private-use',
+  'network unreachable',
+  '',
+]
+await t('every guard case keeps its key and params whatever its message says (six messages each, incl. every other case\'s)', async () => {
+  for (const [label, make, reason] of T85_CASES) {
+    for (const message of ENUMERATED_MESSAGES) {
+      const result = await runThrowingAt(1, () => { const e = make() as Error; e.message = message; return e })
+      assert.deepEqual(result.assertions.find((a) => a.check_id === 'reachability')!.reason, reason, `${label} with message ${JSON.stringify(message)}`)
+    }
+  }
+})
+
+await t('a plain Error carrying a guard message — or a guard name and code, duck-typed — is still probe_aborted: class decides, not text or shape', async () => {
+  const lookalikes: (() => unknown)[] = [
+    ...ENUMERATED_MESSAGES.map((m) => () => new Error(m)),
+    () => Object.assign(new Error('x'), { name: 'BudgetExceeded', code: 'MAX_DURATION' }),
+    () => Object.assign(new Error('x'), { name: 'SsrfBlocked', code: 'RESOLUTION_FAILED' }),
+    () => Object.assign(new Error('x'), { name: 'UpstreamFetchFailed' }),
+  ]
+  for (const make of lookalikes) {
+    const result = await runThrowingAt(1, make)
+    assert.equal(result.assertions.find((a) => a.check_id === 'reachability')!.reason?.key, 'probe_aborted')
+  }
+})
+
+console.log('\nT85 R3 结构测试：0.9.0 的 catch 对 guard MAX_DURATION 与 RESOLUTION_FAILED 永不产出 probe_aborted（TimeoutError / AbortError 经真实 guard 的那一半由调用本包的探测器自己的测试覆盖）')
+
+await t('R3: at every request position of a legacy and a modern run, guard MAX_DURATION and RESOLUTION_FAILED never yield probe_aborted on any row', async () => {
+  let runs = 0
+  for (const fixtureId of ['modern-baseline-clean', 'legacy-baseline-clean']) {
+    for (let position = 1; position <= DEFAULT_PROBE_BUDGET.maxRequests; position++) {
+      for (const make of [() => new BudgetExceeded('MAX_DURATION', 'probe exceeded its 10000ms wall-clock budget'), () => new SsrfBlocked('RESOLUTION_FAILED', 'DNS resolution failed with RCODE 2')]) {
+        const handler = FIXTURE_CORPUS.find((f) => f.id === fixtureId)!.createHandler()
+        let n = 0
+        const result = await runProbe(makeInput(async (input, init) => { if (++n === position) throw make(); return handler(input, init) }))
+        runs++
+        assert.ok(result.assertions.every((a) => a.reason?.key !== 'probe_aborted' && a.unverified_reason?.key !== 'probe_aborted'), `${fixtureId} @${position}`)
+      }
+    }
+  }
+  assert.equal(runs, 32)
+})
+
+console.log('\nT85 round 2：点名 endpoint 的键只在 hop 0、且 reachability 未判定时成立')
+
+/** legacy-tools-call-credential-gated: handshake (3), tools/list (4), tools/call answered 401 + resource_metadata (5), then the metadata GET (6). */
+function failingMetadataGet(make: () => unknown): ProbeInput['fetchImpl'] {
+  const handler = FIXTURE_CORPUS.find((f) => f.id === 'legacy-tools-call-credential-gated')!.createHandler()
+  return async (input, init) => {
+    if ((init?.method ?? 'GET').toUpperCase() === 'GET') throw make()
+    return handler(input, init)
+  }
+}
+
+for (const [label, make] of [
+  ['NXDOMAIN at hop 0 of the metadata GET (its own host)', () => atHop(0, new SsrfBlocked('RESOLUTION_FAILED', 'auth.example.net has no A or AAAA records'))],
+  ['NXDOMAIN after the metadata GET followed a cross-host redirect (hop 1)', () => atHop(1, new SsrfBlocked('RESOLUTION_FAILED', 'hop1.example.net has no A or AAAA records'))],
+  ['the metadata GET failing (UpstreamFetchFailed)', () => atHop(0, new UpstreamFetchFailed(new TypeError('Network connection lost.')))],
+] as const) {
+  await t(`R14 (i): auth metadata — ${label} — after reachability is VERIFIED: the never-ran rows get probe_cascade_incomplete, never a key that says the endpoint did not answer`, async () => {
+    const result = await runProbe(makeInput(failingMetadataGet(make)))
+    assert.equal(result.assertions.find((a) => a.check_id === 'reachability')!.assertion_status, 'VERIFIED')
+    const auth = result.assertions.find((a) => a.check_id === 'auth_metadata')!
+    assert.equal(auth.execution_status, 'SKIPPED')
+    assert.deepEqual(auth.reason, { key: 'probe_cascade_incomplete' })
+    assert.deepEqual(auth.unverified_reason, { key: 'probe_cascade_incomplete' })
+    for (const a of result.assertions) assert.ok(a.reason?.key !== 'reachability_dns_failed' && a.reason?.key !== 'reachability_unanswered', a.check_id)
+  })
+}
+
+for (const [label, make] of [
+  ['RESOLUTION_FAILED at hop 1 (a redirect to another host that does not resolve)', () => atHop(1, new SsrfBlocked('RESOLUTION_FAILED', 'hop1.example.net has no A or AAAA records'))],
+  ['guard MAX_DURATION at hop 1', () => atHop(1, new BudgetExceeded('MAX_DURATION', 'probe exceeded its 10000ms wall-clock budget'))],
+  ['RESOLUTION_FAILED with no hop recorded', () => new SsrfBlocked('RESOLUTION_FAILED', 'x')],
+  ['guard MAX_DURATION with no hop recorded', () => new BudgetExceeded('MAX_DURATION', 'x')],
+] as const) {
+  await t(`R14 (ii): while reachability is unsettled, ${label} → reachability_unanswered {kind:"other"} on reachability and every never-ran row, never dns_failed / timeout`, async () => {
+    const result = await runThrowingAt(1, make)
+    const other = { key: 'reachability_unanswered', params: { kind: 'other' } }
+    const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
+    assert.equal(reachability.execution_status, 'ERROR')
+    assert.deepEqual(reachability.reason, other)
+    for (const a of result.assertions.filter((x) => x.execution_status === 'SKIPPED' && x.check_id !== 'tls_certificate')) assert.deepEqual(a.reason, other, a.check_id)
+  })
+}
 
 console.log('\n确定性：同一 fixture + 同一注入时钟/ID 生成器 → 逐字节相同的输出')
 
@@ -563,7 +768,7 @@ await t('四种非 RATE_LIMITED 的 ProbeAborted 逐个验证：都不产出 rat
   }
 })
 
-await t('非 ProbeAborted 的普通异常（fetchImpl 自己抛的网络错误）同样不产出 rateLimited', async () => {
+await t('非 ProbeAborted 的普通异常（fetchImpl 自己抛的普通 Error）同样不产出 rateLimited', async () => {
   const fetchImpl: ProbeInput['fetchImpl'] = async () => { throw new Error('network unreachable') }
   const result = await runProbe(makeInput(fetchImpl))
   assert.equal(result.rateLimited, undefined)
@@ -677,7 +882,8 @@ const CURRENT_MAX_REQUESTS = createProbeBudget({ claimed: false }).maxRequests
  *  刻意不写成"没有 SKIPPED"：tls_certificate 永远 SKIPPED，凭据门与无基线也
  *  各自合法地产出 SKIPPED，那些都不是"没跑完"。 */
 function cascadeCompleted(result: ProbeResult): boolean {
-  const ABORT_KEYS = ['probe_budget_exhausted_requests', 'probe_budget_exhausted_duration', 'probe_budget_exhausted_redirects', 'probe_budget_exhausted_body', 'probe_rate_limited', 'probe_cascade_incomplete', 'probe_aborted']
+  const ABORT_KEYS = ['probe_budget_exhausted_requests', 'probe_budget_exhausted_duration', 'probe_budget_exhausted_redirects', 'probe_budget_exhausted_body', 'probe_rate_limited', 'probe_cascade_incomplete', 'probe_aborted',
+    'reachability_unanswered', 'reachability_dns_failed', 'probe_blocked_by_policy', 'probe_resolver_unavailable']
   return !result.assertions.some((a) => a.unverified_reason !== null && ABORT_KEYS.includes(a.unverified_reason.key))
 }
 

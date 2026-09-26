@@ -1,6 +1,6 @@
 {
   "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
-  "registry_version": "0.4.0",
+  "registry_version": "0.5.0",
   "suite_id": "remote-baseline-v0.1",
   "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
   "groups": [
@@ -39,7 +39,7 @@
   ],
   "checks": [
     {
-      "n": 1, "check_id": "reachability", "group": "reach", "docs_version": "v0.2.0",
+      "n": 1, "check_id": "reachability", "group": "reach", "docs_version": "v0.3.0",
       "predicate_zh": "endpoint 在预算内响应",
       "predicate_en": "endpoint responds within budget",
       "failure_status": null,
@@ -49,8 +49,8 @@
         "what_en": "Whether the endpoint returns a response within the given budget, and the latency distribution.",
         "how_zh": "endpoint 对我们的握手有任何 HTTP 应答即通过。之后的步骤在 8 请求 / 10 s / 2 MB 的硬上限内进行。",
         "how_en": "Passes if the endpoint answers our handshake at all — any HTTP status. Later steps run under a hard cap of 8 requests / 10s / 2MB.",
-        "cannot_zh": "超时不等于你挂了——也可能是我们这边的网络。所以超预算记 UNVERIFIED 而不是 FAILED。",
-        "cannot_en": "A timeout doesn't mean you're down — it could be our network. That's why exceeding budget is UNVERIFIED, not FAILED."
+        "cannot_zh": "超时不等于你挂了——也可能是我们这边的网络。所以超预算记 UNVERIFIED 而不是 FAILED。目录里的在线率口径更严：当天任何一次探测在预算内没有收到完整应答，这一天算未应答。",
+        "cannot_en": "A timeout doesn't mean you're down — it could be our network. That's why exceeding budget is UNVERIFIED, not FAILED. The directory's online rate is stricter: a day on which any probe got no complete answer within its budget counts as unanswered."
       }
     },
     {
