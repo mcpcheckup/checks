@@ -77,6 +77,7 @@ import { sendRequest, createProbeContext } from './wire.ts'
 import type { ProbeContext } from './wire.ts'
 import { classifyCredentialChallenge } from './auth.ts'
 import type { FetchLike, ProbeBudget } from './types.ts'
+import { RUNS_ONCE_ONLY, HAS_FULL_SET, IS_MERGE, keepThisShard, writeShardOut, readShardIns, mergeCountMaps, SHARD_COUNT, SHARD_INDEX } from './differential-shard.ts'
 
 let pass = 0, fail = 0
 async function t(name: string, fn: () => void | Promise<void>) {
@@ -1088,16 +1089,21 @@ const SSE_CT = /text\/event-stream/i
 
 const stageSizes: [string, number][] = []
 const started = Date.now()
+// TODO 441 (CI speed): one continuously-incrementing index shared by every
+// stage below, so packages/checks/scripts/run-tests.mjs can run this file as
+// two concurrent shard processes — see differential-shard.ts's module doc.
+const shardIdx = { n: 0 }
 
 async function runStage(name: string, inputs: Iterable<[string, Script, Resp]>) {
   const t0 = Date.now()
   let n = 0
   for (const [id, script, varied] of inputs) {
+    if (!keepThisShard(shardIdx)) continue
     n++
     await checkInput(`${name} ${id}`, script, varied)
   }
   stageSizes.push([name, n])
-  console.log(`  stage ${name}: ${n} inputs, ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+  console.log(`  stage ${name}: ${n} inputs${SHARD_COUNT > 1 ? ` [shard ${SHARD_INDEX + 1}/${SHARD_COUNT}]` : ''}, ${((Date.now() - t0) / 1000).toFixed(1)}s`)
 }
 
 function* discoverStage(): Generator<[string, Script, Resp]> {
@@ -1234,37 +1240,78 @@ async function fingerprintDirect(): Promise<void> {
 
 console.log('T73b differential invariant：新实现 vs 冻结的 pre-T73b 实现 vs 独立 oracle（五个 check 的 FAILED 原因）')
 
-await runStage('discover', discoverStage())
-await runStage('initialize', initializeStage())
-await runStage('ack', ackStage())
-await runStage('tools/list', toolsListStage())
-await runStage('fingerprint (over the wire)', fingerprintStage())
-await fingerprintDirect()
+type ShardState = {
+  total: number
+  byInvariant: Record<string, number>
+  failures: string[]
+  keyCounts: Record<string, number>
+  statusCounts: Record<string, number>
+  aborted: number
+}
+
+if (!IS_MERGE) {
+  await runStage('discover', discoverStage())
+  await runStage('initialize', initializeStage())
+  await runStage('ack', ackStage())
+  await runStage('tools/list', toolsListStage())
+  await runStage('fingerprint (over the wire)', fingerprintStage())
+}
+// Cheap (~60 cases) and unrelated to sharding the runProbe stages above — run
+// exactly once, same as the RUNS_ONCE_ONLY static checks further down.
+if (RUNS_ONCE_ONLY) await fingerprintDirect()
 
 const total = stageSizes.reduce((n, [, k]) => n + k, 0)
 const seconds = ((Date.now() - started) / 1000).toFixed(1)
 console.log(`  input set: ${stageSizes.map(([n, k]) => `${n}=${k}`).join(' + ')} = ${total} runProbe inputs (+ ${fingerprintDirectCount} tool arrays × 2 fingerprints computed directly); ${aborted} of them aborted (429); ${seconds}s`)
 
-await t(`(a)-(e) hold for all ${total} inputs`, () => {
-  const count = Object.values(byInvariant).reduce((n, k) => n + k, 0)
-  if (count > 0) {
-    throw new Error(`${count} violation(s) — by invariant: ${JSON.stringify(byInvariant)}\n         ${failures.slice(0, 25).join('\n         ')}${failures.length > 25 ? `\n         … and more` : ''}`)
-  }
-})
+if (SHARD_COUNT > 1 && !IS_MERGE) {
+  writeShardOut({
+    total,
+    byInvariant,
+    failures,
+    keyCounts: Object.fromEntries(keyCounts),
+    statusCounts: Object.fromEntries(statusCounts),
+    aborted,
+  } satisfies ShardState)
+}
 
-await t(`fingerprint verdicts computed directly: new = pre-T73b (status and digest), reason = oracle, for all ${fingerprintDirectCount} tool arrays`, () => {
-  if (fingerprintDirectFailures.length > 0) throw new Error(fingerprintDirectFailures.slice(0, 25).join('\n         '))
+let effTotal = total, effByInvariant: Record<string, number> = byInvariant, effFailures = failures
+let effKeyCounts = keyCounts, effStatusCounts = statusCounts, effAborted = aborted
+if (IS_MERGE) {
+  const shards = readShardIns<ShardState>()
+  effTotal = shards.reduce((s, x) => s + x.total, 0)
+  effFailures = shards.flatMap((x) => x.failures).slice(0, 200)
+  effKeyCounts = mergeCountMaps(shards.map((x) => x.keyCounts))
+  effStatusCounts = mergeCountMaps(shards.map((x) => x.statusCounts))
+  effAborted = shards.reduce((s, x) => s + x.aborted, 0)
+  effByInvariant = {}
+  for (const x of shards) for (const [k, v] of Object.entries(x.byInvariant)) effByInvariant[k] = (effByInvariant[k] ?? 0) + v
+  console.log(`  [merge] ${shards.length} shard(s) → total=${effTotal} aborted=${effAborted}`)
+}
+
+if (HAS_FULL_SET) {
+await t(`(a)-(e) hold for all ${effTotal} inputs`, () => {
+  const count = Object.values(effByInvariant).reduce((n, k) => n + k, 0)
+  if (count > 0) {
+    throw new Error(`${count} violation(s) — by invariant: ${JSON.stringify(effByInvariant)}\n         ${effFailures.slice(0, 25).join('\n         ')}${effFailures.length > 25 ? `\n         … and more` : ''}`)
+  }
 })
 
 await t('the input set is not vacuous: every one of the 18 T73b keys is produced, and each check is seen VERIFIED and FAILED', () => {
-  console.log(`       ${T73B_KEYS.map((k) => `${k}=${keyCounts.get(k) ?? 0}`).join(' ')}`)
-  console.log(`       ${[...statusCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
-  for (const k of T73B_KEYS) assert.ok((keyCounts.get(k) ?? 0) > 0, `${k} never produced — the set does not reach that cell`)
+  console.log(`       ${T73B_KEYS.map((k) => `${k}=${effKeyCounts.get(k) ?? 0}`).join(' ')}`)
+  console.log(`       ${[...effStatusCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
+  for (const k of T73B_KEYS) assert.ok((effKeyCounts.get(k) ?? 0) > 0, `${k} never produced — the set does not reach that cell`)
   for (const check of FIVE) {
-    assert.ok((statusCounts.get(`${check}:VERIFIED`) ?? 0) > 0, `${check} never VERIFIED`)
-    assert.ok((statusCounts.get(`${check}:FAILED`) ?? 0) > 0, `${check} never FAILED`)
+    assert.ok((effStatusCounts.get(`${check}:VERIFIED`) ?? 0) > 0, `${check} never VERIFIED`)
+    assert.ok((effStatusCounts.get(`${check}:FAILED`) ?? 0) > 0, `${check} never FAILED`)
   }
-  assert.ok(aborted > 0, 'no aborted (429) input — the abort path is not exercised')
+  assert.ok(effAborted > 0, 'no aborted (429) input — the abort path is not exercised')
+})
+}
+
+if (RUNS_ONCE_ONLY) {
+await t(`fingerprint verdicts computed directly: new = pre-T73b (status and digest), reason = oracle, for all ${fingerprintDirectCount} tool arrays`, () => {
+  if (fingerprintDirectFailures.length > 0) throw new Error(fingerprintDirectFailures.slice(0, 25).join('\n         '))
 })
 
 await t('the oracle agrees with itself on hand-derived anchor cases (guards the oracle, not the implementation)', () => {
@@ -1284,6 +1331,7 @@ await t('the oracle agrees with itself on hand-derived anchor cases (guards the 
   assert.deepStrictEqual(oracleSseData('data: a\r\n\r\ndata:b\ndata: c\n\n: x\n\ndata:\n\n'), ['a', 'b\nc'])
   assert.ok(SSE_CT.test('Text/Event-Stream; charset=utf-8'))
 })
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

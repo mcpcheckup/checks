@@ -11,6 +11,13 @@ async function t(name: string, fn: () => void | Promise<void>) {
   catch (e) { fail++; console.log('  FAIL ' + name + '\n       ' + (e as Error).stack) }
 }
 
+// Captured before any test can have swapped them out (TODO 628 (d)) — the
+// :538 test below wraps globalThis.setTimeout/clearTimeout for its own
+// duration; this pair is the independent proof that it put the originals
+// back, checked by a separate assertion right after that test.
+const REAL_SET_TIMEOUT = globalThis.setTimeout
+const REAL_CLEAR_TIMEOUT = globalThis.clearTimeout
+
 const BUDGET: ProbeBudget = { maxRedirects: 3, maxDurationMs: 10_000, maxBodyBytes: 2_097_152, maxRequests: 8 }
 
 console.log('sendRequest：单次请求')
@@ -538,19 +545,83 @@ await t('截止时间之前开始读 body 时的 body 超限仍是 MAX_BODY_BYTE
 await t('计时器在每条路径上都被清掉：成功 / fetchImpl 抛错 / body 超限 / 429 / 重定向超限 / 截止中止 / 请求前中止之后，没有遗留的 Timeout', async () => {
   const timeouts = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
   const before = timeouts()
-  const paths: [string, FetchLike, ProbeContext, RequestInit][] = [
-    ['成功', async () => new Response('ok'), createProbeContext(Date.now()), {}],
-    ['fetchImpl 抛错', async () => { throw new Error('boom') }, createProbeContext(Date.now()), {}],
-    ['body 超限', async () => new Response('x', { headers: { 'content-length': '99999999' } }), createProbeContext(Date.now()), {}],
-    ['429', async () => new Response('', { status: 429 }), createProbeContext(Date.now()), {}],
-    ['重定向超限', async () => new Response(null, { status: 302, headers: { location: '/again' } }), createProbeContext(Date.now()), { method: 'GET' }],
-    ['截止中止', () => new Promise<Response>(() => {}), ctxWithLeft(20), {}],
-    ['请求前中止', async () => new Response('ok'), ctxWithLeft(0), {}],
+  // ctx 延迟到 sendRequest 调用前一刻才建（Codex 本地第 1 轮 P1）：如果在
+  // 循环开始之前就把所有 ctx 都建好，进程只要在循环走到「截止中止」之前被
+  // 挂起足够久，ctxWithLeft(...) 就已经先过期——sendRequest 在建任何计时器
+  // 之前就同步抛出，ownTimers 全程是空的，这条路径就会空转通过而不是真的
+  // 走到计时器。ctx 工厂和 sendRequest 调用之间不夹一个 await：sendRequest
+  // 同步跑到 withinDeadline 的 setTimeout（已核实——withinDeadline 是
+  // async，但 `let left = leftMs()` 之后到 `timer = setTimeout(...)` 之间
+  // 全是同步代码，中间没有任何 await），所以两者之间只隔同步时间；但这段
+  // 同步时间本身也可能被调度器抢占（本地 Codex 第 2 轮），所以「截止中止」
+  // 用 200 ms 的余量而不是 20 ms——容得下 ctx 工厂调用和计时器真正建立之间
+  // 的一次抢占，这条路径依然是靠自己的计时器到点才结束，不是靠余量耗尽。
+  const paths: [string, FetchLike, () => ProbeContext, RequestInit][] = [
+    ['成功', async () => new Response('ok'), () => createProbeContext(Date.now()), {}],
+    ['fetchImpl 抛错', async () => { throw new Error('boom') }, () => createProbeContext(Date.now()), {}],
+    ['body 超限', async () => new Response('x', { headers: { 'content-length': '99999999' } }), () => createProbeContext(Date.now()), {}],
+    ['429', async () => new Response('', { status: 429 }), () => createProbeContext(Date.now()), {}],
+    ['重定向超限', async () => new Response(null, { status: 302, headers: { location: '/again' } }), () => createProbeContext(Date.now()), { method: 'GET' }],
+    ['截止中止', () => new Promise<Response>(() => {}), () => ctxWithLeft(200), {}],
+    ['请求前中止', async () => new Response('ok'), () => ctxWithLeft(0), {}],
   ]
-  for (const [label, fetchImpl, ctx, init] of paths) {
-    await sendRequest(fetchImpl, 'https://example.com/a', init, BUDGET, ctx).catch(() => {})
-    assert.equal(timeouts(), before, `${label} 之后遗留了计时器`)
+
+  // 只数本测试自己建的计时器（TODO 628）：:411 的 slowBody 测试留下一个尚未
+  // 到期的 sleep 计时器，谁先到期只是运气——它与本测试期间新建的计时器无关，
+  // 却会被下面的全局计数一起数进去。这里包一层 setTimeout/clearTimeout，只
+  // 认本测试期间新建的计时器，逐个记「触发了」还是「清掉了」，两者都不算
+  // 遗留；finally 里换回原生实现。
+  type OwnTimerRecord = { fired: boolean; cleared: boolean }
+  const ownTimers = new Map<ReturnType<typeof setTimeout>, OwnTimerRecord>()
+  const wrappedSetTimeout = ((fn: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+    const record: OwnTimerRecord = { fired: false, cleared: false }
+    const id = REAL_SET_TIMEOUT((...cbArgs: unknown[]) => { record.fired = true; fn(...cbArgs) }, ms, ...rest)
+    ownTimers.set(id, record)
+    return id
+  }) as typeof setTimeout
+  const wrappedClearTimeout = ((id?: Parameters<typeof clearTimeout>[0]) => {
+    if (id !== undefined) {
+      const record = ownTimers.get(id as ReturnType<typeof setTimeout>)
+      if (record) record.cleared = true
+    }
+    return REAL_CLEAR_TIMEOUT(id)
+  }) as typeof clearTimeout
+  globalThis.setTimeout = wrappedSetTimeout
+  globalThis.clearTimeout = wrappedClearTimeout
+  try {
+    for (const [label, fetchImpl, ctxFactory, init] of paths) {
+      ownTimers.clear()
+      await sendRequest(fetchImpl, 'https://example.com/a', init, BUDGET, ctxFactory()).catch(() => {})
+
+      if (label === '截止中止') {
+        const fired = [...ownTimers.values()].some((r) => r.fired)
+        assert.ok(ownTimers.size > 0 && fired, '前提：截止中止 这条路径必须真的建过计时器并由它到点触发（否则是空转通过）')
+      }
+      if (label === '请求前中止') {
+        assert.equal(ownTimers.size, 0, '前提：请求前中止 不应该建任何计时器——ctx 在进入循环体时已经过期')
+      }
+
+      const dangling = [...ownTimers.values()].filter((r) => !r.fired && !r.cleared).length
+      assert.equal(dangling, 0, `${label}：本测试自建的计时器有 ${dangling} 个既没触发也没清掉`)
+
+      // 全局兜底：不经 setTimeout 的泄漏仍要拦。方向必须写对——多了才是
+      // wire.ts 的信号；少了是外来计时器（slowBody 那类）到期，只诊断打印，
+      // 不失败，否则又会把与 wire.ts 无关的方向报红。
+      const after = timeouts()
+      if (after < before) {
+        console.log(`       （诊断：${label} 之后全局 Timeout 计数 before=${before} after=${after}，少了 ${before - after} 个——判定为外来计时器到期，非本测试自建，不计入失败）`)
+      }
+      assert.ok(after <= before, `${label} 之后全局 Timeout 计数多了 ${after - before} 个（before=${before}, after=${after}）`)
+    }
+  } finally {
+    globalThis.setTimeout = REAL_SET_TIMEOUT
+    globalThis.clearTimeout = REAL_CLEAR_TIMEOUT
   }
+})
+
+await t('（还原检查）上一条测试结束后，globalThis.setTimeout / clearTimeout 必须已换回原生实现', () => {
+  assert.equal(globalThis.setTimeout, REAL_SET_TIMEOUT, '上一条测试的 finally 没有把 setTimeout 换回来')
+  assert.equal(globalThis.clearTimeout, REAL_CLEAR_TIMEOUT, '上一条测试的 finally 没有把 clearTimeout 换回来')
 })
 
 console.log('\nparseRetryAfterSeconds：只认 delay-seconds，且只认非负安全整数')

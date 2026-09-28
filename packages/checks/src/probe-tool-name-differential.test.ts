@@ -86,6 +86,7 @@ import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-
 import { createProbeContext } from './wire.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { FetchLike, ProbeResult } from './types.ts'
+import { RUNS_ONCE_ONLY, HAS_FULL_SET, IS_MERGE, keepThisShard, writeShardOut, readShardIns, mergeCountMaps, SHARD_COUNT, SHARD_INDEX } from './differential-shard.ts'
 
 let pass = 0, fail = 0
 async function t(name: string, fn: () => void | Promise<void>) {
@@ -247,6 +248,12 @@ function importClosure071(): { files: string[]; thirdParty: string[] } {
   return { files: [...seen].filter((f) => !f.startsWith(`${FROZEN_071_DIR}/`)).sort(), thirdParty: [...thirdParty].sort() }
 }
 
+// Static/file-hash checks, unaffected by input sharding — run exactly once
+// (shard 0, or the single unsharded process), never in the merge process
+// (which already got them from that one shard) and never in shard 1+ (see
+// differential-shard.ts's own doc for why "exactly once" matters for AC2
+// parity).
+if (RUNS_ONCE_ONLY) {
 for (const [dir, blobs] of [['suite-0.6.0', FROZEN_BLOBS], ['suite-0.7.1', FROZEN_071_BLOBS]] as const)
 await t(`the frozen ${dir} files are the ${dir === 'suite-0.6.0' ? 'a05097e' : '2c99377'} blobs: header dropped, import paths restored, git blob id recomputed`, () => {
   for (const [name, blob] of Object.entries(blobs)) {
@@ -272,6 +279,7 @@ await t('the in-repo import closure of frozen/suite-0.7.1 is exactly the pinned 
     assert.equal(id, blob, `${path} changed since 2c99377b: freeze its 2c99377b version into frozen/suite-0.7.1 first`)
   }
 })
+}
 
 // ---------------------------------------------------------------------------
 // The scripted server — verbatim from failed-reasons-differential.test.ts (T73b).
@@ -918,41 +926,105 @@ function* t86Stage(): Generator<[string, T86Script]> {
 
 console.log('T86 differential invariant：T86 实现（冻结的 0.7.1）vs 冻结的 0.6.0 vs 独立 oracle（保留名 tools/call 发与不发）；同一批输入上再做 T86b：现行实现 vs 冻结的 0.7.1')
 
+type ShardState = {
+  total: number
+  violations: number
+  failures: string[]
+  decisionCounts: Record<string, number>
+  branchCounts: Record<string, number>
+  t86b: { gated: number; notGated: number; oneFewer: number; alsoWithheldBy071: number; status403: number }
+}
+
 const stageSizes: [string, number][] = []
 const started = Date.now()
-for (const [name, inputs] of [['T73b stages', t73bStages()], ['gated handshakes × tools/list corpus', gatedToolsListStage()], ['T86 tools/list bodies × tools/call replies', t86Stage()]] as const) {
-  const t0 = Date.now()
-  let n = 0
-  for (const [id, script] of inputs) {
-    n++
-    await checkInput(`${name} ${id}`, script)
+// TODO 441 (CI speed): SHARD_COUNT/SHARD_INDEX/SHARD_MODE (differential-shard.ts)
+// let packages/checks/scripts/run-tests.mjs run this file's ~154k inputs as
+// two concurrent processes instead of one serial one. Unsharded (the
+// default: `node src/probe-tool-name-differential.test.ts` with no env set)
+// this loop and the assertions after it behave exactly as before this task.
+if (!IS_MERGE) {
+  const shardIdx = { n: 0 }
+  for (const [name, inputs] of [['T73b stages', t73bStages()], ['gated handshakes × tools/list corpus', gatedToolsListStage()], ['T86 tools/list bodies × tools/call replies', t86Stage()]] as const) {
+    const t0 = Date.now()
+    let n = 0
+    for (const [id, script] of inputs) {
+      if (!keepThisShard(shardIdx)) continue
+      n++
+      await checkInput(`${name} ${id}`, script)
+    }
+    stageSizes.push([name, n])
+    console.log(`  stage ${name}: ${n} inputs${SHARD_COUNT > 1 ? ` [shard ${SHARD_INDEX + 1}/${SHARD_COUNT}]` : ''}, ${((Date.now() - t0) / 1000).toFixed(1)}s`)
   }
-  stageSizes.push([name, n])
-  console.log(`  stage ${name}: ${n} inputs, ${((Date.now() - t0) / 1000).toFixed(1)}s`)
 }
 const total = stageSizes.reduce((n, [, k]) => n + k, 0)
 console.log(`  input set: ${stageSizes.map(([n, k]) => `${n}=${k}`).join(' + ')} = ${total}; ${((Date.now() - started) / 1000).toFixed(1)}s`)
-console.log(`  oracle decisions: ${[...decisionCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
-console.log(`  oracle branches: ${[...branchCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
-console.log(`  T86b: not gated ${t86b.notGated} (identical to 0.7.1), gated ${t86b.gated} (${t86b.oneFewer} with exactly one request fewer — the tools/call — and ${t86b.alsoWithheldBy071} that 0.7.1 withheld too); inputs with a 403 at initialize / ack / tools/list: ${t86b.status403}; 0.7.1's auth_metadata on the gate header: ${JSON.stringify(GATE_AUTH)}`)
+if (!IS_MERGE) {
+  console.log(`  oracle decisions: ${[...decisionCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
+  console.log(`  oracle branches: ${[...branchCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
+  console.log(`  T86b: not gated ${t86b.notGated} (identical to 0.7.1), gated ${t86b.gated} (${t86b.oneFewer} with exactly one request fewer — the tools/call — and ${t86b.alsoWithheldBy071} that 0.7.1 withheld too); inputs with a 403 at initialize / ack / tools/list: ${t86b.status403}; 0.7.1's auth_metadata on the gate header: ${JSON.stringify(GATE_AUTH)}`)
+}
+if (SHARD_COUNT > 1 && !IS_MERGE) {
+  // A real shard (not the unsharded whole-set case): hand its slice of the
+  // counters to the merge process instead of asserting on them itself — see
+  // differential-shard.ts's module doc for why the whole-set assertions
+  // below can't safely run against just this shard's half.
+  writeShardOut({
+    total,
+    violations,
+    failures,
+    decisionCounts: Object.fromEntries(decisionCounts),
+    branchCounts: Object.fromEntries(branchCounts),
+    t86b,
+  } satisfies ShardState)
+}
 
-await t(`the invariant holds for all ${total} inputs`, () => {
-  if (violations > 0) throw new Error(`${violations} violation(s)\n         ${failures.slice(0, 25).join('\n         ')}${failures.length > 25 ? '\n         … and more' : ''}`)
+// The whole-input-space assertions: either this process saw the whole thing
+// directly (unsharded), or it's the merge process reconstructing it from
+// every shard's output (SHARD_IN_FILES). Either way, `eff*` below is the
+// FULL input space's counters — same assertions, same wording, same count as
+// before this task (see differential-shard.ts's doc).
+let effTotal = total, effViolations = violations, effFailures = failures
+let effDecisionCounts = decisionCounts, effBranchCounts = branchCounts, effT86b = t86b
+if (IS_MERGE) {
+  const shards = readShardIns<ShardState>()
+  effTotal = shards.reduce((s, x) => s + x.total, 0)
+  effViolations = shards.reduce((s, x) => s + x.violations, 0)
+  effFailures = shards.flatMap((x) => x.failures).slice(0, 200)
+  effDecisionCounts = mergeCountMaps(shards.map((x) => x.decisionCounts))
+  effBranchCounts = mergeCountMaps(shards.map((x) => x.branchCounts))
+  effT86b = {
+    gated: shards.reduce((s, x) => s + x.t86b.gated, 0),
+    notGated: shards.reduce((s, x) => s + x.t86b.notGated, 0),
+    oneFewer: shards.reduce((s, x) => s + x.t86b.oneFewer, 0),
+    alsoWithheldBy071: shards.reduce((s, x) => s + x.t86b.alsoWithheldBy071, 0),
+    status403: shards.reduce((s, x) => s + x.t86b.status403, 0),
+  }
+  console.log(`  [merge] ${shards.length} shard(s) → total=${effTotal} violations=${effViolations}`)
+  console.log(`  [merge] oracle decisions: ${[...effDecisionCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
+  console.log(`  [merge] oracle branches: ${[...effBranchCounts.entries()].sort().map(([k, v]) => `${k}=${v}`).join(' ')}`)
+  console.log(`  [merge] T86b: not gated ${effT86b.notGated}, gated ${effT86b.gated} (${effT86b.oneFewer} one-fewer, ${effT86b.alsoWithheldBy071} also-withheld); 403s ${effT86b.status403}`)
+}
+
+if (HAS_FULL_SET) {
+await t(`the invariant holds for all ${effTotal} inputs`, () => {
+  if (effViolations > 0) throw new Error(`${effViolations} violation(s)\n         ${effFailures.slice(0, 25).join('\n         ')}${effFailures.length > 25 ? '\n         … and more' : ''}`)
 })
 
 await t('the T86b input split is not vacuous: gated inputs where 0.7.1 sent the call and where it withheld it, non-gated inputs, and 403s all occur; every gated input is accounted for', () => {
-  assert.equal(t86b.gated + t86b.notGated, total)
-  assert.equal(t86b.oneFewer + t86b.alsoWithheldBy071, t86b.gated, 'every gated input either drops exactly the tools/call or was withheld by 0.7.1 too')
-  for (const [what, n] of Object.entries(t86b)) assert.ok(n > 0, `${what} never seen`)
+  assert.equal(effT86b.gated + effT86b.notGated, effTotal)
+  assert.equal(effT86b.oneFewer + effT86b.alsoWithheldBy071, effT86b.gated, 'every gated input either drops exactly the tools/call or was withheld by 0.7.1 too')
+  for (const [what, n] of Object.entries(effT86b)) assert.ok(n > 0, `${what} never seen`)
   assert.equal(GATE_AUTH.status, 'UNVERIFIED')
 })
 
 await t('the input set is not vacuous: every oracle branch is reached', () => {
   for (const branch of ['abort (handshake)', 'abort (tools/list)', 'abort (null tool entry)', 'c1 (handshake gated, no readable list)', 'c1 (tools/list gated)', 'a (collision)', 'b (nextCursor)', 'a (collision, handshake gated)', 'b (nextCursor, handshake gated)', 'send (handshake gated, readable, no collision)', 'c2 (tools/list failed)', 'send (complete, no collision)']) {
-    assert.ok((branchCounts.get(branch) ?? 0) > 0, `${branch} never reached`)
+    assert.ok((effBranchCounts.get(branch) ?? 0) > 0, `${branch} never reached`)
   }
 })
+}
 
+if (RUNS_ONCE_ONLY) {
 await t('the oracle agrees with itself on hand-derived anchor cases (guards the oracle, not the implementation)', () => {
   const s = (toolsList: Resp, hs: Omit<Script, 'toolsList'> = T86_HANDSHAKES[0]![1]): Script => ({ ...hs, toolsList })
   const json = (r: string) => resp(200, 'application/json', rpcResult(r))
@@ -970,6 +1042,7 @@ await t('the oracle agrees with itself on hand-derived anchor cases (guards the 
   assert.equal(oracleDecision(s(resp(500, 'text/plain', 'x'), T86_HANDSHAKES[3]![1])), 'send')
   assert.equal(oracleDecision(s(resp(429, null, ''))), 'abort')
 })
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

@@ -52,6 +52,7 @@ import { runProbe } from './probe.ts'
 import { runProbe as frozen080RunProbe } from './frozen/suite-0.8.0/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, FetchLike, GuardSignals, ProbeResult } from './types.ts'
+import { RUNS_ONCE_ONLY, HAS_FULL_SET, IS_MERGE, keepThisShard, writeShardOut, readShardIns, mergeCountMaps, SHARD_COUNT, SHARD_INDEX } from './differential-shard.ts'
 
 let pass = 0, fail = 0
 async function t(name: string, fn: () => void | Promise<void>) {
@@ -179,6 +180,9 @@ function importClosure080(): { files: string[]; thirdParty: string[] } {
   return { files: [...seen].filter((f) => !f.startsWith(`${FROZEN_080_DIR}/`)).sort(), thirdParty: [...thirdParty].sort() }
 }
 
+// Static/file-hash checks, unaffected by input sharding — run exactly once
+// (shard 0, or the single unsharded process). See differential-shard.ts.
+if (RUNS_ONCE_ONLY) {
 await t('the frozen suite-0.8.0 probe.ts is the b439bc6 blob: header dropped, import paths restored, git blob id recomputed', () => {
   const lines = readRepo(`${FROZEN_080_DIR}/probe.ts`).replace(/\r\n/g, '\n').split('\n')
   let header = 0
@@ -194,6 +198,7 @@ await t('the in-repo import closure of frozen/suite-0.8.0 is exactly the pinned 
   assert.deepStrictEqual(closure.thirdParty, CLOSURE_080_THIRD_PARTY, 'the closure reaches a new out-of-repo import')
   for (const [path, blob] of Object.entries(CLOSURE_080_BLOBS)) assert.equal(blobId(readRepo(path)), blob, `${path} changed: freeze its 0.8.0 version into frozen/suite-0.8.0 first`)
 })
+}
 
 // ---------------------------------------------------------------------------
 // Harness — verbatim from credential-gate-withhold-differential.test.ts (T86b),
@@ -355,76 +360,127 @@ function violation(id: string, what: string) {
 }
 const started = Date.now()
 
-let totalA = 0
-for (const fixture of FIXTURE_CORPUS) {
-  for (const [label, v] of variants()) {
-    totalA++
-    const id = `A ${fixture.id} / ${label}`
-    try {
-      const now = await runOnce(runProbe, fixture.createHandler, v)
-      const old = await runOnce(frozen080RunProbe, fixture.createHandler, v)
-      if (!identical(now.result, old.result)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(old.result).slice(0, 400)}`)
-      if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
-    } catch (e) {
-      violation(id, `threw ${(e as Error).message}`)
-    }
-  }
+type ShardState = {
+  totalA: number
+  totalB: number
+  violations: number
+  failures: string[]
+  seen: { thrown: Record<string, number>; notReached: number; remappedRows: number; reachabilityByCatch: Record<string, number>; afterHandshake: Record<string, number> }
 }
 
+let totalA = 0
 let totalB = 0
 const seen = { thrown: new Map<string, number>(), notReached: 0, remappedRows: 0, reachabilityByCatch: new Map<string, number>(), afterHandshake: new Map<string, number>() }
-for (const fixture of FIXTURE_CORPUS) {
-  for (let position = 1; position <= DEFAULT_PROBE_BUDGET.maxRequests; position++) {
-    for (const [label, make, unsettledReason, settledReason] of ERRORS) {
-      totalB++
-      const id = `B ${fixture.id} / ${label} @ request ${position}`
-      const v: Variant = { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make } }
+// TODO 441 (CI speed): each loop gets its own continuously-incrementing shard
+// index — see differential-shard.ts's module doc. Unsharded (no env set)
+// both loops and everything after them behave exactly as before this task.
+if (!IS_MERGE) {
+  const idxA = { n: 0 }
+  for (const fixture of FIXTURE_CORPUS) {
+    for (const [label, v] of variants()) {
+      if (!keepThisShard(idxA)) continue
+      totalA++
+      const id = `A ${fixture.id} / ${label}`
       try {
         const now = await runOnce(runProbe, fixture.createHandler, v)
         const old = await runOnce(frozen080RunProbe, fixture.createHandler, v)
+        if (!identical(now.result, old.result)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(old.result).slice(0, 400)}`)
         if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
-        if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
-        if (!now.threw) { seen.notReached++ }
-        else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
-        // Settled when the error landed = 0.8.0 did not write reachability from its catch.
-        const settled = old.result.assertions.find((a) => a.check_id === 'reachability')!.execution_status !== 'ERROR'
-        const reason = settled ? settledReason : unsettledReason
-        const expected = now.threw && reason !== null ? remapped(old.result, reason) : old.result
-        if (!identical(now.result, expected)) violation(id, `ProbeResult is not 0.8.0's ${reason === null || !now.threw ? 'unchanged' : 'with the one remap'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
-        if (now.threw && reason !== null) {
-          seen.remappedRows += now.result.assertions.filter((a) => identical(a.reason, reason)).length
-          const reach = now.result.assertions.find((a) => a.check_id === 'reachability')!
-          const bucket = reach.execution_status === 'ERROR' ? seen.reachabilityByCatch : seen.afterHandshake
-          bucket.set(label, (bucket.get(label) ?? 0) + 1)
-          if (now.result.assertions.some((a) => a.reason?.key === 'probe_aborted')) violation(id, 'a guard error still produced probe_aborted')
-          if (reason.key !== 'probe_cascade_incomplete' && now.result.assertions.some((a) => a.reason?.key === 'probe_cascade_incomplete')) violation(id, 'a guard error still produced probe_cascade_incomplete')
-          if (settled && now.result.assertions.some((a) => a.reason?.key === 'reachability_dns_failed' || a.reason?.key === 'reachability_unanswered')) violation(id, 'a never-ran row says the endpoint did not answer, after it had')
-        }
       } catch (e) {
         violation(id, `threw ${(e as Error).message}`)
       }
     }
   }
+
+  const idxB = { n: 0 }
+  for (const fixture of FIXTURE_CORPUS) {
+    for (let position = 1; position <= DEFAULT_PROBE_BUDGET.maxRequests; position++) {
+      for (const [label, make, unsettledReason, settledReason] of ERRORS) {
+        if (!keepThisShard(idxB)) continue
+        totalB++
+        const id = `B ${fixture.id} / ${label} @ request ${position}`
+        const v: Variant = { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make } }
+        try {
+          const now = await runOnce(runProbe, fixture.createHandler, v)
+          const old = await runOnce(frozen080RunProbe, fixture.createHandler, v)
+          if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
+          if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
+          if (!now.threw) { seen.notReached++ }
+          else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
+          // Settled when the error landed = 0.8.0 did not write reachability from its catch.
+          const settled = old.result.assertions.find((a) => a.check_id === 'reachability')!.execution_status !== 'ERROR'
+          const reason = settled ? settledReason : unsettledReason
+          const expected = now.threw && reason !== null ? remapped(old.result, reason) : old.result
+          if (!identical(now.result, expected)) violation(id, `ProbeResult is not 0.8.0's ${reason === null || !now.threw ? 'unchanged' : 'with the one remap'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
+          if (now.threw && reason !== null) {
+            seen.remappedRows += now.result.assertions.filter((a) => identical(a.reason, reason)).length
+            const reach = now.result.assertions.find((a) => a.check_id === 'reachability')!
+            const bucket = reach.execution_status === 'ERROR' ? seen.reachabilityByCatch : seen.afterHandshake
+            bucket.set(label, (bucket.get(label) ?? 0) + 1)
+            if (now.result.assertions.some((a) => a.reason?.key === 'probe_aborted')) violation(id, 'a guard error still produced probe_aborted')
+            if (reason.key !== 'probe_cascade_incomplete' && now.result.assertions.some((a) => a.reason?.key === 'probe_cascade_incomplete')) violation(id, 'a guard error still produced probe_cascade_incomplete')
+            if (settled && now.result.assertions.some((a) => a.reason?.key === 'reachability_dns_failed' || a.reason?.key === 'reachability_unanswered')) violation(id, 'a never-ran row says the endpoint did not answer, after it had')
+          }
+        } catch (e) {
+          violation(id, `threw ${(e as Error).message}`)
+        }
+      }
+    }
+  }
+
+  console.log(`  A: ${FIXTURE_CORPUS.length} fixtures × ${[...variants()].length} variants = ${totalA}${SHARD_COUNT > 1 ? ` [shard ${SHARD_INDEX + 1}/${SHARD_COUNT}]` : ''}`)
+  console.log(`  B: ${FIXTURE_CORPUS.length} fixtures × ${DEFAULT_PROBE_BUDGET.maxRequests} positions × ${ERRORS.length} errors = ${totalB}${SHARD_COUNT > 1 ? ` [shard ${SHARD_INDEX + 1}/${SHARD_COUNT}]` : ''} (request reached: ${totalB - seen.notReached}; not reached: ${seen.notReached}); rows remapped: ${seen.remappedRows}; ${((Date.now() - started) / 1000).toFixed(1)}s`)
+  for (const [label] of ERRORS) console.log(`    ${label}: thrown ${seen.thrown.get(label) ?? 0}; reachability written by the catch ${seen.reachabilityByCatch.get(label) ?? '-'}; after the handshake ${seen.afterHandshake.get(label) ?? '-'}`)
 }
 
-console.log(`  A: ${FIXTURE_CORPUS.length} fixtures × ${[...variants()].length} variants = ${totalA}`)
-console.log(`  B: ${FIXTURE_CORPUS.length} fixtures × ${DEFAULT_PROBE_BUDGET.maxRequests} positions × ${ERRORS.length} errors = ${totalB} (request reached: ${totalB - seen.notReached}; not reached: ${seen.notReached}); rows remapped: ${seen.remappedRows}; ${((Date.now() - started) / 1000).toFixed(1)}s`)
-for (const [label] of ERRORS) console.log(`    ${label}: thrown ${seen.thrown.get(label) ?? 0}; reachability written by the catch ${seen.reachabilityByCatch.get(label) ?? '-'}; after the handshake ${seen.afterHandshake.get(label) ?? '-'}`)
+if (SHARD_COUNT > 1 && !IS_MERGE) {
+  writeShardOut({
+    totalA,
+    totalB,
+    violations,
+    failures,
+    seen: {
+      thrown: Object.fromEntries(seen.thrown),
+      notReached: seen.notReached,
+      remappedRows: seen.remappedRows,
+      reachabilityByCatch: Object.fromEntries(seen.reachabilityByCatch),
+      afterHandshake: Object.fromEntries(seen.afterHandshake),
+    },
+  } satisfies ShardState)
+}
 
-await t(`0.9.0 vs frozen 0.8.0: identical off the catch path, and on it differs only by the classified reason: all ${totalA + totalB} inputs`, () => {
-  if (violations > 0) throw new Error(`${violations} violation(s)\n         ${failures.slice(0, 25).join('\n         ')}${failures.length > 25 ? '\n         … and more' : ''}`)
+let effTotalA = totalA, effTotalB = totalB, effViolations = violations, effFailures = failures
+let effThrown = seen.thrown, effNotReached = seen.notReached
+let effReachabilityByCatch = seen.reachabilityByCatch, effAfterHandshake = seen.afterHandshake
+if (IS_MERGE) {
+  const shards = readShardIns<ShardState>()
+  effTotalA = shards.reduce((s, x) => s + x.totalA, 0)
+  effTotalB = shards.reduce((s, x) => s + x.totalB, 0)
+  effViolations = shards.reduce((s, x) => s + x.violations, 0)
+  effFailures = shards.flatMap((x) => x.failures).slice(0, 200)
+  effThrown = mergeCountMaps(shards.map((x) => x.seen.thrown))
+  effNotReached = shards.reduce((s, x) => s + x.seen.notReached, 0)
+  effReachabilityByCatch = mergeCountMaps(shards.map((x) => x.seen.reachabilityByCatch))
+  effAfterHandshake = mergeCountMaps(shards.map((x) => x.seen.afterHandshake))
+  console.log(`  [merge] ${shards.length} shard(s) → totalA=${effTotalA} totalB=${effTotalB} violations=${effViolations}`)
+}
+
+if (HAS_FULL_SET) {
+await t(`0.9.0 vs frozen 0.8.0: identical off the catch path, and on it differs only by the classified reason: all ${effTotalA + effTotalB} inputs`, () => {
+  if (effViolations > 0) throw new Error(`${effViolations} violation(s)\n         ${effFailures.slice(0, 25).join('\n         ')}${effFailures.length > 25 ? '\n         … and more' : ''}`)
 })
 
 await t('the input set is not vacuous: every error is thrown, and every guard error lands both before the handshake (reachability by the catch) and after it', () => {
   assert.ok(FIXTURE_CORPUS.length >= 74, `fixture corpus shrank to ${FIXTURE_CORPUS.length}`)
   for (const [label, , reason] of ERRORS) {
-    assert.ok((seen.thrown.get(label) ?? 0) > 0, `${label} never thrown`)
+    assert.ok((effThrown.get(label) ?? 0) > 0, `${label} never thrown`)
     if (reason === null) continue
-    assert.ok((seen.reachabilityByCatch.get(label) ?? 0) > 0, `${label} never before the handshake`)
-    assert.ok((seen.afterHandshake.get(label) ?? 0) > 0, `${label} never after the handshake`)
+    assert.ok((effReachabilityByCatch.get(label) ?? 0) > 0, `${label} never before the handshake`)
+    assert.ok((effAfterHandshake.get(label) ?? 0) > 0, `${label} never after the handshake`)
   }
-  assert.ok(seen.notReached > 0)
+  assert.ok(effNotReached > 0)
 })
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0
