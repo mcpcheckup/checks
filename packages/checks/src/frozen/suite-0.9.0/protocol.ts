@@ -1,6 +1,10 @@
-import { sendRequest } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
-import type { FetchLike, ProbeBudget } from './types.ts'
+// FROZEN: packages/checks/src/protocol.ts at suite 0.9.0 (16941d1), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for the T96 differentials (discover-fallback-differential.test.ts
+// FROZEN: and others), which check its git blob id. DO NOT edit or "update" it; it is the 0.9.0 behaviour.
+import { sendRequest } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
+import type { FetchLike, ProbeBudget } from '../../types.ts'
 import { classifyCredentialChallenge } from './auth.ts'
 
 const CLIENT_INFO = { name: 'mcp-checkup-prober', version: '0.1.0' }
@@ -88,13 +92,11 @@ export function parseJsonRpcBody(bodyText: string, contentType?: string | null):
 }
 
 /** The three error codes the 2026-07-28 Streamable HTTP spec allocates for a
- *  modern server rejecting a request (HeaderMismatch,
- *  MissingRequiredClientCapability, UnsupportedProtocolVersion, in that order;
- *  the spec pairs them with HTTP 400). Seeing one of these in a server/discover
- *  answer — 2xx or 4xx alike (T96) — means "this server IS modern but rejected
- *  this particular request"; any other answer that is not a usable discover
- *  result means "this server doesn't recognize modern requests at all," which
- *  is the fallback-to-initialize signal (see performHandshake). */
+ *  modern server rejecting a request at the HTTP 400 level (HeaderMismatch,
+ *  MissingRequiredClientCapability, UnsupportedProtocolVersion, in that order).
+ *  Seeing one of these at 400 means "this server IS modern but rejected this
+ *  particular request" — anything else at 400 means "this server doesn't
+ *  recognize modern requests at all," which is the fallback-to-initialize signal. */
 export const RECOGNIZED_MODERN_ERROR_CODES: ReadonlySet<number> = new Set([-32020, -32021, -32022])
 
 function modernMeta(protocolVersion: string) {
@@ -160,15 +162,12 @@ async function sendModern(
  *  at each failing return from the same `parsed` the verdict used, never from
  *  a second parse. PARAMS ARE EVIDENCE AND GO INTO THE SIGNED RECORD: only
  *  `status` (the HTTP status integer) and `jsonrpc_error_code` (a safe
- *  integer, on the *_jsonrpc_error keys and discover_rejected only) —
+ *  integer, on the three *_jsonrpc_error keys and discover_rejected only) —
  *  never response text. */
 export type FailureReason<K extends string> = { key: K; params?: Record<string, number> }
 
 type HandshakeFailureKey =
-  // T96: handshake_discover_{not_jsonrpc,jsonrpc_error,no_supported_versions}
-  // are no longer produced (each now falls back); they survive only on rows
-  // recorded by suite <= 0.9.0, which reason-messages.ts still renders.
-  | `handshake_discover_${'rejected' | 'http_error'}`
+  | `handshake_discover_${'not_jsonrpc' | 'jsonrpc_error' | 'no_supported_versions' | 'rejected' | 'http_error'}`
   | `handshake_initialize_${'http_error' | 'not_jsonrpc' | 'jsonrpc_error' | 'no_protocol_version'}`
   | 'handshake_ack_http_error'
 
@@ -186,6 +185,14 @@ function failure<K extends string>(key: K, params: Record<string, number> = {}):
 function jsonRpcErrorCode(parsed: ParsedJsonRpc): Record<string, number> {
   const code = parsed.error?.code
   return Number.isSafeInteger(code) ? { jsonrpc_error_code: code === 0 ? 0 : (code as number) } : {}
+}
+
+/** A 200 discover answer without a usable supportedVersions, split by what
+ *  the parsed message actually was. */
+function discoverFailure(parsed: ParsedJsonRpc): FailureReason<HandshakeFailureKey> {
+  if (!parsed.isJsonRpc) return failure('handshake_discover_not_jsonrpc')
+  if (parsed.error) return failure('handshake_discover_jsonrpc_error', jsonRpcErrorCode(parsed))
+  return failure('handshake_discover_no_supported_versions')
 }
 
 function initializeFailure(status: number, parsed: ParsedJsonRpc): FailureReason<HandshakeFailureKey> {
@@ -247,37 +254,24 @@ function credentialChallengeFrom(status: number, headers: Headers): { credential
   return challenge ? { credentialChallenge: challenge } : {}
 }
 
-/** T96 rule: the statuses whose server/discover answer is judged
- *  by its body — every 2xx, exactly like 200. The single place to narrow it. */
-function discoverAnswered(status: number): boolean {
-  return status >= 200 && status < 300
-}
-
 /** Implements the 2026-07-28 spec's own backward-compatibility detection
- *  algorithm: try a modern server/discover first, then read its answer —
- *  a 2xx carrying a usable discover result means a modern server; a
- *  recognized modern error, at 2xx or 4xx, means this IS a modern server
- *  rejecting the specific request (not a fallback trigger); anything else at
- *  2xx or 4xx means "doesn't speak modern MCP," so fall back to the legacy
- *  initialize handshake. 3xx and 5xx fall back to nothing. This is
+ *  algorithm: try a modern server/discover first; on ANY 4xx, inspect the body
+ *  — a recognized modern error means this IS a modern server rejecting the
+ *  specific request (not a fallback trigger); anything else means "doesn't
+ *  speak modern MCP," so fall back to the legacy initialize handshake. This is
  *  the concrete mechanism behind checks.json's discovery_handshake
  *  p0_note_zh: judging the newest implementation by whether it passes THIS
  *  algorithm, not by whether it happens to support the old initialize flow.
  *
- *  The rule is the versioning page's own, which names no HTTP status
- *  (modelcontextprotocol.io/specification/2026-07-28/basic/versioning
- *  #compatibility-matrix): "a recognized modern JSON-RPC error ... identifies
- *  a modern server ... Anything else identifies a legacy server." The
- *  "Dual-era client / Legacy server" row illustrates the 4xx case ("the
- *  modern request returns a `4xx` without a recognized modern error body, and
- *  the client falls back to `initialize`"); T96 applies the same sentence to
- *  a 2xx answer. A 2xx that is not a discover result cannot come from a
- *  compliant modern server: it MUST implement server/discover, and MUST answer
- *  a method it does not implement with 404 + -32601 (Streamable HTTP). Until
- *  suite 0.9.0 only a 4xx fell back, so a server answering `200 + -32601`
- *  was recorded FAILED without initialize ever being tried.
- *
- *  The 4xx range (not just 400) is deliberate: a real observed case
+ *  The 4xx range (not just 400) is deliberate, not a generalization we made
+ *  up: the Streamable HTTP transport page's own backward-compatibility note
+ *  only illustrates the 400 case, but
+ *  modelcontextprotocol.io/specification/2026-07-28/basic/versioning
+ *  #compatibility-matrix is explicit — the "Dual-era client / Legacy server"
+ *  row says "the modern request returns a `4xx` without a recognized modern
+ *  error body, and the client falls back to `initialize`", and the paragraph
+ *  above it: "a recognized modern JSON-RPC error ... identifies a modern
+ *  server ... Anything else identifies a legacy server." A real observed case
  *  (droproom/mcp, 2026-08-30 fp investigation) returns 401 Unauthorized
  *  (non-JSON-RPC `{"error":"unauthorized"}` body) to `server/discover` — a
  *  perfectly ordinary legacy server whose catch-all for an unrecognized
@@ -295,29 +289,39 @@ export async function performHandshake(opts: {
   const { fetchImpl, endpoint, budget, ctx, newId } = opts
 
   const discover = await sendModern(fetchImpl, endpoint, budget, ctx, 'server/discover', newId(), {}, MODERN_PROBE_VERSION)
-  const answered = discoverAnswered(discover.status)
 
-  if (answered || (discover.status >= 400 && discover.status < 500)) {
+  if (discover.status === 200) {
     const parsed = parseJsonRpcBody(discover.bodyText, discover.headers.get('content-type'))
-    // Only a 2xx carries a discover result; a result body on a 4xx never did.
-    const result = answered && parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
+    const result = parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
     // DiscoverResult's field is `supportedVersions` (modelcontextprotocol.io/specification/2026-07-28/server/discover#data-types),
     // not `protocolVersions`. `serverInfo` lives under `_meta['io.modelcontextprotocol/serverInfo']` and is spec-SHOULD, not
     // MUST ("Servers SHOULD include this field") — it must not gate handshake success.
     const supportedVersions = result?.supportedVersions
-    if (Array.isArray(supportedVersions) && typeof supportedVersions[0] === 'string') {
-      // No credentialChallenge attachment: classifyCredentialChallenge
-      // requires status === 401 (the handshake-layer credential-gate rule's
-      // explicit red line), and a 2xx can never classify as credential-gated.
-      return { mode: 'modern', handshakeOk: true, protocolVersionDeclared: supportedVersions[0], currentEndpoint: discover.finalUrl }
+    const ok = parsed.isJsonRpc && Array.isArray(supportedVersions) && typeof supportedVersions[0] === 'string'
+    // No credentialChallenge attachment here, even when ok is false: this
+    // whole branch only runs when discover.status === 200, and
+    // classifyCredentialChallenge requires status === 401 (the
+    // handshake-layer credential-gate rule's explicit red line) — a 200 response can
+    // never classify as credential-gated no matter what headers it carries,
+    // so a credentialChallengeFrom(discover.status, ...) call here would be
+    // permanently dead code, not a live check (Lead finding B2, round 2).
+    return {
+      mode: 'modern',
+      handshakeOk: !!ok,
+      protocolVersionDeclared: ok ? (supportedVersions as string[])[0]! : null,
+      currentEndpoint: discover.finalUrl,
+      ...(ok ? {} : { failure: discoverFailure(parsed) }),
     }
+  }
+
+  if (discover.status >= 400 && discover.status < 500) {
+    const parsed = parseJsonRpcBody(discover.bodyText, discover.headers.get('content-type'))
     if (parsed.isJsonRpc && parsed.error && RECOGNIZED_MODERN_ERROR_CODES.has(parsed.error.code)) {
       // A modern server exists but rejected our probe for a specific reason we
       // didn't work around (e.g. header mismatch). Not a legacy server — don't
-      // fall back. Fixtures handshake-discover-rejected (400),
-      // handshake-discover-rejected-200 and recognized-modern-error-code-*
-      // exercise it. Deliberately no credentialChallenge here even if this
-      // happened to be a 401 with a valid WWW-Authenticate — a recognized modern error identifies a real
+      // fall back. No fixture currently exercises this branch. Deliberately no
+      // credentialChallenge here even if this happened to be a 401 with a
+      // valid WWW-Authenticate — a recognized modern error identifies a real
       // client/server mismatch, not a credential gate (the handshake-layer
       // credential-gate rule: "走既有 modern 分支，不变" — no exemption).
       return {
@@ -331,14 +335,20 @@ export async function performHandshake(opts: {
     return performLegacyHandshake(fetchImpl, discover.finalUrl, budget, ctx, newId)
   }
 
-  // Only reached when discover.status is neither a 2xx nor a 4xx (e.g. an
-  // unfollowed 3xx, a 5xx) — no fallback. No credentialChallenge attachment:
-  // 401 is inside [400,500), so it is always intercepted by the branch above
-  // (either recognized as a modern error, or routed into the legacy
-  // fallback) and can never fall through to here; whatever status DOES land
-  // here can never satisfy classifyCredentialChallenge's status===401
-  // requirement, so a credentialChallengeFrom(...) call here would always
-  // evaluate to no-op {} — dead code, not a live check.
+  // No credentialChallenge attachment here either, for the same reason as
+  // the discover.status===200 branch above but from the other direction:
+  // this line is only reached when discover.status is NOT 200 and NOT in
+  // [400,500) (both of those cases return earlier). 401 is inside [400,500),
+  // so it is always intercepted by the branch above — either recognized as
+  // a modern error, or routed into the legacy fallback — and can never fall
+  // through to here. Whatever status DOES land here (e.g. an unfollowed
+  // 3xx, a 5xx) can never satisfy classifyCredentialChallenge's
+  // status===401 requirement either, so a credentialChallengeFrom(...) call
+  // here would, like the 200 branch's, always evaluate to no-op {} — dead
+  // code, not a live check (Lead finding B2, round 2).
+  //
+  // T73b: a 2xx other than 200 (e.g. 202, 204) lands here too — it is neither
+  // the 200 a discovery result needs nor a 4xx.
   return {
     mode: 'modern',
     handshakeOk: false,

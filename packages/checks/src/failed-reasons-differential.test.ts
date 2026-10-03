@@ -5,9 +5,14 @@
  *
  * Three parties, deliberately not sharing code:
  *
- *   1. The implementation: performHandshake / performToolsList (./protocol.ts)
- *      and compute*Fingerprint (./fingerprint.ts) called directly, plus
- *      runProbe (./probe.ts) end to end on the same scripted server.
+ *   1. The implementation: performHandshake / performToolsList and
+ *      compute*Fingerprint (./fingerprint.ts) called directly, plus runProbe
+ *      end to end on the same scripted server. Since T96 (suite 0.10.0)
+ *      changed which 2xx discover answers fall back, protocol.ts and probe.ts
+ *      are the suite 0.9.0 ones, ./frozen/suite-0.9.0/ (blob-checked by
+ *      discover-fallback-differential.test.ts, which carries live vs 0.9.0):
+ *      this file keeps pinning the T73b change, and the ORACLE below keeps
+ *      stating the 0.9.0 handshake rule.
  *   2. FROZEN_PRE_T73b — a verbatim copy, from `git show 70618ee:…`, of
  *      performHandshake / performLegacyHandshake / performToolsList and every
  *      protocol.ts piece they use (the JSON-RPC parser included), both
@@ -58,8 +63,10 @@
  *       stage's input body. Named exemptions, all fixed protocol tokens the
  *       approved sentences share with a body by construction: windows lying
  *       inside the two field names the sentences name (supportedVersions,
- *       protocolVersion) and inside the SSE framing line `event: message`
- *       (vs. the sentences' "JSON-RPC message"). Third-party text positions
+ *       protocolVersion), inside the SSE framing line `event: message`
+ *       (vs. the sentences' "JSON-RPC message"), and inside the corpus's own
+ *       JSON-RPC method name `notifications/progress` (vs. "specification" in
+ *       the T96 reason sentences: both contain "ificatio"). Third-party text positions
  *       carry the canary instead, and the canary is never exempt.
  */
 import assert from 'node:assert'
@@ -67,10 +74,10 @@ import { readFileSync } from 'node:fs'
 import { digest, projectToolset, projectSchemas } from '@mcpcheckup/canonicalizer'
 import { DEFAULT_PROBE_BUDGET } from '@mcpcheckup/ssrf-guard'
 import type { Assertion } from '@mcpcheckup/attestation-schema'
-import { performHandshake, performToolsList } from './protocol.ts'
-import type { HandshakeResult, ToolsListResult } from './protocol.ts'
+import { performHandshake, performToolsList } from './frozen/suite-0.9.0/protocol.ts'
+import type { HandshakeResult, ToolsListResult } from './frozen/suite-0.9.0/protocol.ts'
 import { computeToolsetFingerprint, computeSchemaFingerprint } from './fingerprint.ts'
-import { runProbe } from './probe.ts'
+import { runProbe } from './frozen/suite-0.9.0/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import { REASON_MESSAGES } from './reason-messages.ts'
 import { sendRequest, createProbeContext } from './wire.ts'
@@ -785,7 +792,7 @@ function paramProblems(key: string, params: Record<string, string | number> | un
 
 const BANNED = ['certified', 'secure', 'safe', 'trusted', '评分', '健康度']
 const WINDOW = 8
-const NAMED_FIELDS = ['supportedVersions', 'protocolVersion', 'event: message']
+const NAMED_FIELDS = ['supportedVersions', 'protocolVersion', 'event: message', 'notifications/progress']
 const windowCache = new Map<string, Set<string>>()
 function bodyWindows(body: string): Set<string> {
   let set = windowCache.get(body)

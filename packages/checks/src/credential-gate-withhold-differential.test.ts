@@ -8,7 +8,10 @@
  *
  * Two parties, both the real orchestrator:
  *
- *   1. The implementation: runProbe (./probe.ts).
+ *   1. The implementation: runProbe as of suite 0.9.0. Since T96 (suite
+ *      0.10.0) changed which 2xx discover answers fall back, that is
+ *      ./frozen/suite-0.9.0/probe.ts (blob-checked by
+ *      discover-fallback-differential.test.ts, which carries live vs 0.9.0).
  *   2. FROZEN 0.7.1 — ./frozen/suite-0.7.1/{probe,protocol,auth,error-taxonomy}.ts,
  *      byte for byte the suite 0.7.1 (2c99377) files apart from a four-line
  *      `// FROZEN:` header and `../../` import paths (the first test
@@ -38,7 +41,7 @@ import { readFileSync } from 'node:fs'
 import { DEFAULT_PROBE_BUDGET } from '@mcpcheckup/ssrf-guard'
 import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
-import { runProbe } from './probe.ts'
+import { runProbe } from './frozen/suite-0.9.0/probe.ts'
 import { runProbe as frozen071RunProbe } from './frozen/suite-0.7.1/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, FetchLike, GuardSignals, ProbeResult } from './types.ts'

@@ -2,6 +2,10 @@ import assert from 'node:assert'
 import { runProbe } from './probe.ts'
 import { runProbe as frozenRunProbe } from './frozen/suite-0.6.0/probe.ts'
 import { runProbe as frozen071RunProbe } from './frozen/suite-0.7.1/probe.ts'
+// T96: the T86 / T86b corpus-wide invariants below pin those changes, so their
+// 'now' side is the suite 0.9.0 code (frozen; blob-checked by
+// discover-fallback-differential.test.ts, which carries live vs 0.9.0).
+import { runProbe as frozen090RunProbe } from './frozen/suite-0.9.0/probe.ts'
 import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-0.7.1/auth.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import { ProbeAborted, createProbeContext } from './wire.ts'
@@ -471,9 +475,6 @@ const FAILED_REASON_CHECKS = ['discovery_handshake', 'protocol_revision', 'tools
  *  fixture that quietly stops pinning its key turns red here, while swapping a
  *  declared key turns exactly that fixture's test red. */
 const T73B_DEDICATED: Record<string, [fixtureId: string, checkId: string]> = {
-  handshake_discover_not_jsonrpc: ['handshake-discover-not-jsonrpc', 'discovery_handshake'],
-  handshake_discover_jsonrpc_error: ['handshake-discover-jsonrpc-error', 'discovery_handshake'],
-  handshake_discover_no_supported_versions: ['handshake-discover-no-supported-versions', 'discovery_handshake'],
   handshake_discover_rejected: ['handshake-discover-rejected', 'discovery_handshake'],
   handshake_discover_http_error: ['handshake-discover-http-error', 'discovery_handshake'],
   handshake_initialize_http_error: ['handshake-initialize-http-error', 'discovery_handshake'],
@@ -490,6 +491,12 @@ const T73B_DEDICATED: Record<string, [fixtureId: string, checkId: string]> = {
   fingerprint_tool_missing_name: ['fingerprint-tool-missing-name', 'toolset_fingerprint'],
   fingerprint_canonicalize_failed: ['fingerprint-canonicalize-failed', 'schema_fingerprint'],
 }
+
+/** T96 (suite 0.10.0): a 2xx server/discover answer that is neither a usable
+ *  discover result nor a recognized modern error now falls back to initialize,
+ *  so these three keys are no longer produced. They stay in REASON_MESSAGES:
+ *  rows recorded by suite <= 0.9.0 still carry them. */
+const T96_RETIRED = ['handshake_discover_not_jsonrpc', 'handshake_discover_jsonrpc_error', 'handshake_discover_no_supported_versions']
 
 const failedReasonCells: string[] = []
 for (const fixture of FIXTURE_CORPUS) {
@@ -526,10 +533,15 @@ await t('没有漏网：五个 check 上实际产出的每一格 FAILED 都在�
   assert.deepEqual([...failedReasonCells].sort(), observed.sort())
 })
 
-await t('T73b 的 18 个 key 各有一条专属 fixture：key 都在 REASON_MESSAGES 里，fixture 两两不同且都在语料里，且专属那一格在 fixture 里声明为 FAILED', () => {
+await t('T73b 的 18 个 key：T96 之后仍会产出的 15 个各有一条专属 fixture（key 都在 REASON_MESSAGES 里，fixture 两两不同且都在语料里，且专属那一格在 fixture 里声明为 FAILED）；T96 退役的 3 个仍在 REASON_MESSAGES 里，但语料里没有任何 run 再产出它们', () => {
   const entries = Object.entries(T73B_DEDICATED)
-  assert.equal(entries.length, 18)
-  assert.equal(new Set(entries.map(([, [id]]) => id)).size, 18)
+  assert.equal(entries.length, 15)
+  assert.equal(new Set(entries.map(([, [id]]) => id)).size, 15)
+  assert.equal(new Set([...entries.map(([key]) => key), ...T96_RETIRED]).size, 18)
+  for (const key of T96_RETIRED) {
+    assert.ok(key in REASON_MESSAGES, key)
+    assert.ok(corpusResults.every((r) => r.assertions.every((a) => a.reason?.key !== key)), `${key}: T96 之后不应再被产出`)
+  }
   for (const [key, [id, checkId]] of entries) {
     assert.ok(key in REASON_MESSAGES, key)
     const fixture = FIXTURE_CORPUS.find((f) => f.id === id)
@@ -1101,12 +1113,16 @@ for (const fixture of FIXTURE_CORPUS) {
 await t('T86 没有漏网：语料里实际带 T86 key 的每一格都在上面那组里（反之亦然）；与 0.6.0 结果不同的 fixture 恰好是这些再加上 T86b 门控下不发调用的那些（error_taxonomy 记 credential_required）；其余每条 fixture 的 ProbeResult 与 0.6.0 逐字段相同', async () => {
   assert.equal(corpusResults.length, FIXTURE_CORPUS.length, 'corpus-conformance 循环没有为每条 fixture 留下结果')
   const observed: string[] = []
+  // T96: the declarations above describe the live code (observed); the 0.6.0
+  // differential runs the 0.9.0 code, whose own T86 cells are observed090.
+  const observed090: string[] = []
   const differs: string[] = []
   const gated: string[] = []
   for (const [i, fixture] of FIXTURE_CORPUS.entries()) {
-    const now = corpusResults[i]!
+    for (const a of corpusResults[i]!.assertions) if (a.reason && T86_KEYS.includes(a.reason.key)) observed.push(`${fixture.id}/${a.check_id}`)
+    const now = await frozen090RunProbe(makeInput(fixture.createHandler()))
     for (const a of now.assertions) {
-      if (a.reason && T86_KEYS.includes(a.reason.key)) observed.push(`${fixture.id}/${a.check_id}`)
+      if (a.reason && T86_KEYS.includes(a.reason.key)) observed090.push(`${fixture.id}/${a.check_id}`)
       if (a.check_id === 'error_taxonomy' && a.reason?.key === 'credential_required') gated.push(fixture.id)
     }
     const then = await frozenRunProbe(makeInput(fixture.createHandler()))
@@ -1118,7 +1134,7 @@ await t('T86 没有漏网：语料里实际带 T86 key 的每一格都在上面�
     }
   }
   assert.deepStrictEqual([...t86Cells].sort(), observed.sort())
-  assert.deepStrictEqual([...new Set([...t86Cells.map((c) => c.split('/')[0]!), ...gated])].sort(), differs.sort())
+  assert.deepStrictEqual([...new Set([...observed090.map((c) => c.split('/')[0]!), ...gated])].sort(), differs.sort())
   assert.ok(differs.length >= 3, `只有 ${differs.length} 条 fixture 走到不发的分支`)
   assert.ok(gated.length >= 9, `只有 ${gated.length} 条 fixture 走到 T86b 的门控分支`)
 })
@@ -1177,7 +1193,7 @@ const toolsCalls = (xs: Exchange[]) => xs.filter((x) => x.label === 'tools/call'
 
 for (const fixture of FIXTURE_CORPUS) {
   await t(`${fixture.id}：T86b 对冻结 0.7.1 的差分（非门控逐字段相同；门控不发 tools/call）`, async () => {
-    const now = await runExchanges(fixture.id, runProbe)
+    const now = await runExchanges(fixture.id, frozen090RunProbe)
     const then = await runExchanges(fixture.id, frozen071RunProbe)
     const gated = row(then.result, 'tools_list').reason?.key === 'credential_required'
     if (!gated) {

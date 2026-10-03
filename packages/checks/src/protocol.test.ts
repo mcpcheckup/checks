@@ -159,6 +159,75 @@ await t('legacy-everything-requires-auth-still-fails：放宽到 4xx 触发回�
   assert.equal(r.protocolVersionDeclared, null)
 })
 
+console.log('\nT96（suite 0.10.0）：server/discover 的 2xx 回答既不是可用的 discover 结果、也不是已识别的现代错误码 ⇒ 回退 initialize（规范原句 "Anything else identifies a legacy server."）；4xx / 3xx / 5xx 不变')
+
+/** A server whose server/discover answer is `discover()` and whose legacy
+ *  handshake succeeds; records the JSON-RPC method of every request. */
+function t96Server(discover: () => Response): { fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>; methods: string[] } {
+  const methods: string[] = []
+  const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const method = String((JSON.parse(String(init?.body)) as { method?: unknown }).method)
+    methods.push(method)
+    if (method === 'server/discover') return discover()
+    if (method === 'initialize') {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18', capabilities: {} } }), { status: 200, headers: { 'content-type': 'application/json', 'mcp-session-id': 's-1' } })
+    }
+    if (method === 'notifications/initialized') return new Response(null, { status: 202 })
+    return new Response('', { status: 404 })
+  }
+  return { fetchImpl, methods }
+}
+
+const json = (status: number, body: unknown) => () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+async function t96Handshake(discover: () => Response) {
+  const server = t96Server(discover)
+  const r = await performHandshake({ fetchImpl: server.fetchImpl, endpoint: 'https://notes-mcp.example.com/mcp', budget: BUDGET, ctx: createProbeContext(Date.now()), newId })
+  return { r, methods: server.methods }
+}
+
+for (const [label, discover] of [
+  ['200 + JSON-RPC error -32601（Method not found）', json(200, { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Method not found' } })],
+  ['200 + JSON-RPC result 但没有 supportedVersions', json(200, { jsonrpc: '2.0', id: 1, result: { capabilities: {} } })],
+  ['200 + text/html（不是 JSON）', () => new Response('<html><body>MCP</body></html>', { status: 200, headers: { 'content-type': 'text/html' } })],
+  ['200 + error 对象缺字符串 message（解析器不当它是 JSON-RPC，即便 code 是 -32022）', json(200, { jsonrpc: '2.0', id: 1, error: { code: -32022 } })],
+  ['202 + 空 body（T96：每个 2xx 都按 200 的新规则判）', () => new Response(null, { status: 202 })],
+] as const) {
+  await t(`T96 红证：discover 回 ${label} ⇒ 发出 initialize 与 notifications/initialized，mode=legacy，握手成功`, async () => {
+    const { r, methods } = await t96Handshake(discover)
+    assert.deepStrictEqual(methods, ['server/discover', 'initialize', 'notifications/initialized'])
+    assert.deepStrictEqual(r, { mode: 'legacy', handshakeOk: true, protocolVersionDeclared: '2025-06-18', sessionId: 's-1', currentEndpoint: 'https://notes-mcp.example.com/mcp' })
+  })
+}
+
+for (const code of [...RECOGNIZED_MODERN_ERROR_CODES]) {
+  await t(`T96 红证：discover 回 200 + 已识别的现代错误码 ${code} ⇒ 不发 initialize，key 为 handshake_discover_rejected {status:200}`, async () => {
+    const { r, methods } = await t96Handshake(json(200, { jsonrpc: '2.0', id: 1, error: { code, message: 'rejected' } }))
+    assert.deepStrictEqual(methods, ['server/discover'])
+    assert.deepStrictEqual(r, { mode: 'modern', handshakeOk: false, protocolVersionDeclared: null, currentEndpoint: 'https://notes-mcp.example.com/mcp', failure: { key: 'handshake_discover_rejected', params: { status: 200, jsonrpc_error_code: code } } })
+  })
+}
+
+await t('T96：200 以外的 2xx 带可用的 discover 结果 ⇒ 同 200 一样判 modern 成功，不发 initialize', async () => {
+  const { r, methods } = await t96Handshake(json(202, { jsonrpc: '2.0', id: 1, result: { supportedVersions: ['2026-07-28'] } }))
+  assert.deepStrictEqual(methods, ['server/discover'])
+  assert.deepStrictEqual(r, { mode: 'modern', handshakeOk: true, protocolVersionDeclared: '2026-07-28', currentEndpoint: 'https://notes-mcp.example.com/mcp' })
+})
+
+await t('T96 不变：4xx 带「可用的 discover 结果」仍不是 modern，照旧回退 initialize', async () => {
+  const { r, methods } = await t96Handshake(json(400, { jsonrpc: '2.0', id: 1, result: { supportedVersions: ['2026-07-28'] } }))
+  assert.deepStrictEqual(methods, ['server/discover', 'initialize', 'notifications/initialized'])
+  assert.equal(r.mode, 'legacy')
+})
+
+for (const status of [500, 503, 302]) {
+  await t(`T96 不变：discover 回 ${status}（3xx / 5xx）⇒ 不回退，handshake_discover_http_error {status:${status}}`, async () => {
+    const { r, methods } = await t96Handshake(() => new Response(null, { status, headers: status === 302 ? { location: 'https://elsewhere.example.com/' } : {} }))
+    assert.deepStrictEqual(methods, ['server/discover'])
+    assert.deepStrictEqual(r.failure, { key: 'handshake_discover_http_error', params: { status } })
+  })
+}
+
 console.log('\nperformToolsList：针对真实 fixture handler')
 
 await t('modern-baseline-clean：拿到合法工具数组', async () => {

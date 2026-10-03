@@ -825,29 +825,38 @@ function modernDiscoverFails(
   }
 }
 
+/** T96: the modern handler answers the fallback `initialize` it now receives
+ *  with its catch-all -32601 at HTTP 200 (shared.ts createModernHandler), so a
+ *  FAILED keyed on initialize is the proof that initialize was sent. */
+const T96_FALLBACK_GUARD =
+  'T96（suite 0.10.0）推翻 0.9.0 的决定：server/discover 的 2xx 回答既不是可用的 discover 结果、也不是已识别的现代错误码' +
+  '（-32020/-32021/-32022）时，同 4xx 一样回退 initialize——规范原句（modelcontextprotocol.io/specification/' +
+  '2026-07-28/basic/versioning）："Anything else identifies a legacy server."本条的 modern 服务器不认得 initialize，' +
+  '按兜底回 200 + -32601，所以握手记 handshake_initialize_jsonrpc_error：原因落在 initialize 上，就是 initialize 真的' +
+  '发出去了的证据。若 2xx 分支不再回退，这里会变回 handshake_discover_* 而变红。'
+
 export const handshakeDiscoverNotJsonrpc = modernDiscoverFails(
   'handshake-discover-not-jsonrpc',
-  '一个服务器对 server/discover 返回 HTTP 200 + 一张 text/html 页面；其余请求按 modern 正常应答。',
-  '本条钉住 200 分支的第一类：响应体根本读不成 JSON-RPC 消息。',
+  '一个服务器对 server/discover 返回 HTTP 200 + 一张 text/html 页面；其余请求按 modern 正常应答，initialize 除外（兜底 -32601）。',
+  T96_FALLBACK_GUARD + '本条是「200 + 读不成 JSON-RPC 消息」那一格（0.9.0 记 handshake_discover_not_jsonrpc，不回退）。',
   () => rawResponse(200, { 'content-type': 'text/html' }, HTML_PAGE),
-  failedWith('discovery_handshake', 'handshake_discover_not_jsonrpc'),
-)
-
-export const handshakeDiscoverJsonrpcError = modernDiscoverFails(
-  'handshake-discover-jsonrpc-error',
-  '一个 legacy 风格的服务器对 server/discover 返回 HTTP 200 + JSON-RPC error -32601（Method not found）。',
-  '本条钉住 200 分支的第二类，也是 TODO 209 那 41 条要回答的形状：200 + JSON-RPC error 不触发回退（回退只在 4xx），' +
-    '记下安全整数 error code。若分类器把它并进「不是 JSON-RPC」或「没有 supportedVersions」，这里会红。',
-  (rpcId) => jsonRpcError(rpcId, -32601, 'Method not found'),
-  failedWith('discovery_handshake', 'handshake_discover_jsonrpc_error', { jsonrpc_error_code: -32601 }),
+  failedWith('discovery_handshake', 'handshake_initialize_jsonrpc_error', { jsonrpc_error_code: -32601 }),
 )
 
 export const handshakeDiscoverNoSupportedVersions = modernDiscoverFails(
   'handshake-discover-no-supported-versions',
-  '一个服务器对 server/discover 返回 HTTP 200 + JSON-RPC result，但 supportedVersions 是空数组。',
-  '本条钉住 200 分支的第三类：是 JSON-RPC result，只是没有可用的 supportedVersions（空数组的第一项不是字符串）。',
+  '一个服务器对 server/discover 返回 HTTP 200 + JSON-RPC result，但 supportedVersions 是空数组；initialize 走兜底 -32601。',
+  T96_FALLBACK_GUARD + '本条是「200 + JSON-RPC result 但没有可用 supportedVersions」那一格（0.9.0 记 handshake_discover_no_supported_versions，不回退）。',
   (rpcId) => jsonRpcResult(rpcId, { resultType: 'complete', supportedVersions: [], capabilities: { tools: {} } }),
-  failedWith('discovery_handshake', 'handshake_discover_no_supported_versions'),
+  failedWith('discovery_handshake', 'handshake_initialize_jsonrpc_error', { jsonrpc_error_code: -32601 }),
+)
+
+export const handshakeDiscover202FallsBack = modernDiscoverFails(
+  'handshake-discover-202-falls-back',
+  '一个服务器对 server/discover 返回 HTTP 202 且没有 body；其余请求按 modern 正常应答，initialize 除外（兜底 -32601）。',
+  T96_FALLBACK_GUARD + '本条是 200 以外的 2xx（T96：每个 2xx 都按 200 的新规则判）；0.9.0 记 handshake_discover_http_error {status:202}，不回退。',
+  () => rawResponse(202, {}, null),
+  failedWith('discovery_handshake', 'handshake_initialize_jsonrpc_error', { jsonrpc_error_code: -32601 }),
 )
 
 export const handshakeDiscoverRejected = modernDiscoverFails(
@@ -858,12 +867,23 @@ export const handshakeDiscoverRejected = modernDiscoverFails(
   failedWith('discovery_handshake', 'handshake_discover_rejected', { status: 400, jsonrpc_error_code: -32022 }),
 )
 
+export const handshakeDiscoverRejected200 = modernDiscoverFails(
+  'handshake-discover-rejected-200',
+  '一个 modern 服务器对 server/discover 返回 HTTP 200 + 已识别的现代错误码 -32022（UnsupportedProtocolVersion）；其余请求正常。',
+  'T96：已识别的现代错误码在 2xx 上同样表明「这是 modern 服务器、拒绝了这次请求」——不回退，记 handshake_discover_rejected ' +
+    '{status:200}，与 4xx 同一个 key（0.9.0 记 handshake_discover_jsonrpc_error，同样不回退）。若 2xx 的新回退把已识别码也' +
+    '卷进去，这里会变成 handshake_initialize_* 而变红。',
+  (rpcId) => jsonRpcError(rpcId, -32022, 'UnsupportedProtocolVersionError'),
+  failedWith('discovery_handshake', 'handshake_discover_rejected', { status: 200, jsonrpc_error_code: -32022 }),
+)
+
 export const handshakeDiscoverHttpError = modernDiscoverFails(
   'handshake-discover-http-error',
-  '一个服务器对 server/discover 返回 HTTP 202 且没有 body；其余请求按 modern 正常应答。',
-  '本条钉住「既不是 200 也不是 4xx」那一支里最容易被漏看的一格：200 以外的 2xx 也落在这里，而不是被当成成功。',
-  () => rawResponse(202, {}, null),
-  failedWith('discovery_handshake', 'handshake_discover_http_error', { status: 202 }),
+  '一个服务器对 server/discover 返回 HTTP 500 且没有 body；其余请求按 modern 正常应答。',
+  '本条钉住「既不是 2xx 也不是 4xx」那一支：5xx 不回退（T96 只改 2xx，5xx 与 3xx 逐字节不变）。' +
+    'T96 之前本条用的是 202——那一格如今回退，改由 handshake-discover-202-falls-back 钉住。',
+  () => rawResponse(500, {}, null),
+  failedWith('discovery_handshake', 'handshake_discover_http_error', { status: 500 }),
 )
 
 function legacyInitializeFails(

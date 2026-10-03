@@ -58,8 +58,10 @@
  *     have sent the call; an aborting reply there would cascade rows the new
  *     code legitimately judges, so the comparison fixes a non-aborting one).
  *
- * T86b invariant, for the same inputs (runProbe, ./probe.ts, vs the frozen
- * 0.7.1 run above). A credential gate is what T86b's ORACLE (t86bGated) reads
+ * T86b invariant, for the same inputs (runProbe as of suite 0.9.0 vs the
+ * frozen 0.7.1 run above; since T96, suite 0.10.0, changed which 2xx discover
+ * answers fall back, that is ./frozen/suite-0.9.0/probe.ts, blob-checked by
+ * discover-fallback-differential.test.ts, which carries live vs 0.9.0). A credential gate is what T86b's ORACLE (t86bGated) reads
  * off the script: the handshake credential-gated, or a completed handshake
  * whose tools/list is a 401 carrying the valid challenge, with no 429 / 503 +
  * Retry-After before the decision.
@@ -79,7 +81,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { posix } from 'node:path'
 import ts from 'typescript'
 import { DEFAULT_PROBE_BUDGET } from '@mcpcheckup/ssrf-guard'
-import { runProbe } from './probe.ts'
+import { runProbe } from './frozen/suite-0.9.0/probe.ts'
 import { runProbe as frozenRunProbe } from './frozen/suite-0.6.0/probe.ts'
 import { runProbe as frozen071RunProbe } from './frozen/suite-0.7.1/probe.ts'
 import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-0.7.1/auth.ts'
@@ -164,7 +166,7 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '522fb7042323bc2bd98bf7c8720962e5ca7a198e', // T85 re-pin, round 2 (registry_version 0.5.0) — git rev-parse 962fdc6:packages/checks/checks.json
+  'packages/checks/checks.json': '5526f2a2fffed0b937c3a110492b7a999fb2c016', // T96 re-pin (registry_version 0.6.0, discovery_handshake docs_version v0.3.0; same type-only reach as the T85 re-pins) — git rev-parse "$(git log -n1 --format=%h -G'registry_version' -- packages/checks/checks.json)":packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
@@ -575,7 +577,7 @@ async function checkInput(id: string, s: T86Script): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// T86b: runProbe (./probe.ts) against the frozen 0.7.1 run of the same input.
+// T86b: runProbe (suite 0.9.0, frozen) against the frozen 0.7.1 run of the same input.
 // ---------------------------------------------------------------------------
 
 /** T86b ORACLE: is the run behind a credential gate when the call would be

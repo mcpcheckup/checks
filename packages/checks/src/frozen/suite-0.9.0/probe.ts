@@ -1,19 +1,23 @@
+// FROZEN: packages/checks/src/probe.ts at suite 0.9.0 (16941d1), verbatim except that
+// FROZEN: imports of files outside this directory go through ../../ instead of ./ .
+// FROZEN: Test-only baseline for the T96 differentials (discover-fallback-differential.test.ts
+// FROZEN: and others), which check its git blob id. DO NOT edit or "update" it; it is the 0.9.0 behaviour.
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import type { Assertion } from '@mcpcheckup/attestation-schema'
 import { BudgetExceeded, RateLimited, SsrfBlocked, UpstreamFetchFailed } from '@mcpcheckup/ssrf-guard'
 
 type ExecutionStatus = Assertion['execution_status']
-import { runHygieneCheck } from './hygiene.ts'
-import { createProbeContext, ProbeAborted } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
+import { runHygieneCheck } from '../../hygiene.ts'
+import { createProbeContext, ProbeAborted } from '../../wire.ts'
+import type { ProbeContext } from '../../wire.ts'
 import { performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
 import type { CredentialChallenge } from './protocol.ts'
 import { judgeAuthMetadata, judgeAuthMetadataFromGate } from './auth.ts'
 import { judgeErrorTaxonomy } from './error-taxonomy.ts'
-import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from './fingerprint.ts'
-import type { FingerprintVerdict } from './fingerprint.ts'
-import type { CheckDefinition, ChecksRegistry } from './registry.ts'
-import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from './types.ts'
+import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from '../../fingerprint.ts'
+import type { FingerprintVerdict } from '../../fingerprint.ts'
+import type { CheckDefinition, ChecksRegistry } from '../../registry.ts'
+import type { DriftEvent, EvidenceProvenance, ProbeInput, ProbeResult } from '../../types.ts'
 
 /** A name no real business tool would ever use — the protocol-level, non-destructive
  *  way error_taxonomy and auth_metadata trigger a safe error scenario. Never a
@@ -329,8 +333,8 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       //
       // Lead finding B6 (round 3): requires handshake.handshakeOk explicitly
       // — without it this branch also fires when the handshake itself
-      // FAILED (e.g. a recognized modern JSON-RPC error in the discover
-      // answer, or a legacy initialize that failed after the fallback) and tools/list
+      // FAILED (e.g. the discover.status===200-but-malformed-supportedVersions
+      // shape, or a recognized modern JSON-RPC error) and tools/list
       // separately happens to be 401-challenged, which is one condition
       // wider than this rule's approved scope ("握手成功但 tools/list 响应
       // 满足判据"). A 401-challenged tools/list is arguably just as honestly

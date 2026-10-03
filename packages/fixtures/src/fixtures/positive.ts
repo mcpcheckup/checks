@@ -1,5 +1,5 @@
 import type { Fixture, ExpectedAssertion, FetchHandler } from '../types.ts'
-import { jsonRpcResult, rawResponse } from '../helpers.ts'
+import { jsonRpcError, jsonRpcResult, rawResponse } from '../helpers.ts'
 import {
   CLEAN_TOOLS,
   PROBE_RESERVED_TOOL_NAME,
@@ -134,6 +134,36 @@ export const legacyDiscover401Unauthorized: Fixture = {
   createHandler: () =>
     createLegacyHandler(CLEAN_TOOLS, {
       discoverProbeResponse: () => rawResponse(401, {}, JSON.stringify({ error: 'unauthorized' })),
+    }),
+  sampleRun: (handler) => legacySampleRun(handler),
+  expectedAssertions: cleanBaselineAssertions(),
+}
+
+// T96 (suite 0.10.0) overturns the 0.9.0 decision this fixture used to pin as
+// a negative (protocol-negatives.ts, "200 + JSON-RPC error does not trigger
+// the fallback; the fallback is 4xx only"). The spec's own rule names no HTTP
+// status: "a recognized modern JSON-RPC error ... identifies a modern server
+// ... Anything else identifies a legacy server."
+// (modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
+export const handshakeDiscoverJsonrpcError: Fixture = {
+  id: 'handshake-discover-jsonrpc-error',
+  description:
+    '一个完全合规的 legacy（2025-06-18）实现：对它不认识的 server/discover 按经典 JSON-RPC-over-HTTP 惯例返回 ' +
+    'HTTP 200 + JSON-RPC error -32601（Method not found）；随后 initialize / notifications/initialized / tools/list ' +
+    '全部按规范正常完成。',
+  protocolRevision: '2025-06-18',
+  kind: 'positive',
+  guardsAgainst:
+    'T96 推翻 0.9.0 的决定：本条此前是负例，钉住「200 + JSON-RPC error 不触发回退（回退只在 4xx）」，于是一台只懂旧握手的 ' +
+    'server 连 initialize 都没被试过就记了握手 FAILED、protocol_revision 缺失、整轮无法签名。' +
+    '规范原句（modelcontextprotocol.io/specification/2026-07-28/basic/versioning）：' +
+    '"a recognized modern JSON-RPC error ... identifies a modern server ... Anything else identifies a legacy server."' +
+    '——不看 HTTP 状态码；两个官方 SDK 的 dual-era 客户端也都按响应体判断、对 200 + -32601 回退 initialize。' +
+    '若 2xx 分支不再回退，本条的握手会退回某个 handshake_discover_* 的 FAILED 而变红。',
+  tools: CLEAN_TOOLS,
+  createHandler: () =>
+    createLegacyHandler(CLEAN_TOOLS, {
+      discoverProbeResponse: (id) => jsonRpcError(id, -32601, 'Method not found'),
     }),
   sampleRun: (handler) => legacySampleRun(handler),
   expectedAssertions: cleanBaselineAssertions(),

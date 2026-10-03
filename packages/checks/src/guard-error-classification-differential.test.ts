@@ -81,7 +81,16 @@ const FROZEN_080_PROBE_BLOB = '9264f8730e0582158f80fb0a6a019e596e691cee'
  *  type-only imports (types.ts, registry.ts), erased at run time, and every
  *  run below passes the registry in as input to both sides. If this test goes
  *  red for any other file, freeze its 0.8.0 version into frozen/suite-0.8.0
- *  first. */
+ *  first.
+ *
+ *  T96 (suite 0.10.0) re-pins protocol.ts to its T96 blob, and unlike the
+ *  re-pins above that one DOES change what the frozen file computes (which
+ *  2xx discover answers fall back to initialize). It stays a differential of
+ *  probe.ts alone: both parties import the same live protocol.ts at run time
+ *  (./probe.ts, and frozen/suite-0.8.0/probe.ts through ../../protocol.ts),
+ *  so the change reaches both sides identically. Freezing protocol.ts here
+ *  would have meant editing the frozen probe.ts's imports. T96's own change
+ *  is carried by discover-fallback-differential.test.ts (live vs frozen 0.9.0). */
 const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
@@ -96,12 +105,12 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '522fb7042323bc2bd98bf7c8720962e5ca7a198e', // T85 round 2 (registry_version 0.5.0) — git rev-parse 962fdc6:packages/checks/checks.json
+  'packages/checks/checks.json': '5526f2a2fffed0b937c3a110492b7a999fb2c016', // T96 (registry_version 0.6.0, discovery_handshake docs_version v0.3.0; type-only reach) — git rev-parse "$(git log -n1 --format=%h -G'registry_version' -- packages/checks/checks.json)":packages/checks/checks.json
   'packages/checks/src/auth.ts': 'f8b78f074b997b38e39319d97ec93807f73a0c65',
   'packages/checks/src/error-taxonomy.ts': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
-  'packages/checks/src/protocol.ts': 'e66f8fdddbd0e945bd30487e1b23a3d17aa56745',
+  'packages/checks/src/protocol.ts': '2d39fd28a93a21000b6cc008336971bd1080d030', // T96 (2xx discover fallback; see above) — git rev-parse "$(git log -n1 --format=%h -G'T96 rule: the statuses' -- packages/checks/src/protocol.ts)":packages/checks/src/protocol.ts
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
   'packages/checks/src/types.ts': '59d38f860a3cd07989421fc2e6b97b60cabedd10',
   'packages/checks/src/wire.ts': 'c0ab8b30a92e22457c20acb21bc166b6c1336e56',

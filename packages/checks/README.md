@@ -302,7 +302,7 @@ handshake attempt can produce:
   server is actively rejecting this specific request rather than asking for
   credentials, and it stays `FAILED` (see the
   `recognized-modern-error-code-401-not-exempted` fixture). This body test
-  lives in `performHandshake`'s 4xx branch and nowhere else, because the
+  lives in `performHandshake`'s 2xx/4xx branch and nowhere else, because the
   question it answers — "is this a modern server rejecting my probe, or a
   legacy server I should retry against?" — only arises at `server/discover`.
   `performLegacyHandshake` and `performToolsList` never inspect the body for
@@ -468,12 +468,6 @@ made — the guard can only observe the DNS mismatch after the fact, not prevent
   of anything (`jwks-multiple-keys-not-flagged` in the fixture corpus exists
   specifically to prove this package doesn't misjudge that) — so fetching it would only
   spend probe request budget without changing any verdict.
-- **The `RECOGNIZED_MODERN_ERROR_CODES` branch of the handshake algorithm** — a modern
-  server's `server/discover` returning 400 with one of the three spec-defined modern
-  error codes (`HeaderMismatch`/`MissingRequiredClientCapability`/
-  `UnsupportedProtocolVersion`) — is implemented per the 2026-07-28 spec's own text, but
-  no fixture in the current corpus exercises it. It's untested against a real handler,
-  only against the spec's written description of the behavior.
 - **`error_taxonomy`'s "protocol-level safe error scenario"** is implemented
   specifically as "call `tools/call` with the name we reserve for a tool that should not exist," matching what
   the fixture corpus itself models (and what `@mcpcheckup/fixtures`' shared handler

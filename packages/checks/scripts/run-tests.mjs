@@ -35,7 +35,8 @@ function findTestFiles(dir, base = '') {
 const SHARD_PLAN = {
   'probe-tool-name-differential.test.ts': { pinned: 154262, total: (s) => s.total },
   'failed-reasons-differential.test.ts': { pinned: 88347, total: (s) => s.total },
-  'guard-error-classification-differential.test.ts': { pinned: 11766, total: (s) => s.totalA + s.totalB },
+  // T96: 76 fixtures x 159 inputs each (was 74; +handshake-discover-rejected-200, +handshake-discover-202-falls-back).
+  'guard-error-classification-differential.test.ts': { pinned: 12084, total: (s) => s.totalA + s.totalB },
 }
 
 /** Runs one file as a single, unsharded process — today's behavior, used for

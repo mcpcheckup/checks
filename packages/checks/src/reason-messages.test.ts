@@ -233,8 +233,8 @@ async function main() {
       zh: '我们发送了 server/discover 请求。服务器返回 HTTP 200，但响应体无法按 JSON-RPC 消息读取。',
     },
     handshake_discover_jsonrpc_error: {
-      en: 'We sent a server/discover request. The server answered HTTP 200 with a JSON-RPC error instead of a discovery result. We only try the older initialize handshake after a 4xx answer, so it was not tried.',
-      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 200，内容是 JSON-RPC error，而不是 discover 结果。我们只在收到 4xx 时才改用旧版 initialize 握手，所以没有改用。',
+      en: 'We sent a server/discover request. The server answered HTTP 200 with a JSON-RPC error instead of a discovery result. At the time, our probe tried the older initialize handshake only after a 4xx answer, so it was not tried. From suite 0.10.0 on, the probe tries it in this situation unless the error is a protocol error defined by the current MCP specification.',
+      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 200，内容是 JSON-RPC error，而不是 discover 结果。当时我们的探测器只在收到 4xx 时才改用旧版 initialize 握手，所以没有改用。从套件 0.10.0 起，这种情况下探测器会改用，除非这个错误是当前 MCP 规范定义的协议错误。',
     },
     handshake_discover_no_supported_versions: {
       en: 'We sent a server/discover request. The server answered HTTP 200 with a JSON-RPC result, but its supportedVersions field is missing, is not an array, or does not start with a version string.',
@@ -245,24 +245,24 @@ async function main() {
       zh: '我们发送了 server/discover 请求。服务器返回 HTTP 503，附带当前 MCP 规范定义的协议错误，拒绝了这次请求；因此我们没有改用旧版 initialize 握手。',
     },
     handshake_discover_http_error: {
-      en: 'We sent a server/discover request. The server answered HTTP 503 — neither the 200 a discovery result needs nor a 4xx that could lead us to try the older initialize handshake.',
-      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 503——既不是 discover 结果所需的 200，也不是可能让我们改用旧版 initialize 握手的 4xx。',
+      en: 'We sent a server/discover request. The server answered HTTP 503. The probe version that ran this check did not treat that status as a discovery result or as a reason to try the older initialize handshake, so the handshake stopped there.',
+      zh: '我们发送了 server/discover 请求。服务器返回 HTTP 503。运行这次检查的探测器版本既没有把这个状态当作 discover 结果，也没有据此改用旧版 initialize 握手，所以握手到此为止。',
     },
     handshake_initialize_http_error: {
-      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 503 instead of 200.',
-      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 503，而不是 200。',
+      en: 'Our server/discover request got neither a discovery result we could use nor a protocol error defined by the current MCP specification, so we tried the older initialize handshake. The server answered initialize with HTTP 503 instead of 200.',
+      zh: '我们的 server/discover 请求既没有得到可用的 discover 结果，也没有得到当前 MCP 规范定义的协议错误，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 503，而不是 200。',
     },
     handshake_initialize_not_jsonrpc: {
-      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200, but with a body we could not read as a JSON-RPC message.',
-      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，但响应体无法按 JSON-RPC 消息读取。',
+      en: 'Our server/discover request got neither a discovery result we could use nor a protocol error defined by the current MCP specification, so we tried the older initialize handshake. The server answered initialize with HTTP 200, but with a body we could not read as a JSON-RPC message.',
+      zh: '我们的 server/discover 请求既没有得到可用的 discover 结果，也没有得到当前 MCP 规范定义的协议错误，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，但响应体无法按 JSON-RPC 消息读取。',
     },
     handshake_initialize_jsonrpc_error: {
-      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC error instead of an initialize result.',
-      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，内容是 JSON-RPC error，而不是 initialize 结果。',
+      en: 'Our server/discover request got neither a discovery result we could use nor a protocol error defined by the current MCP specification, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC error instead of an initialize result.',
+      zh: '我们的 server/discover 请求既没有得到可用的 discover 结果，也没有得到当前 MCP 规范定义的协议错误，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200，内容是 JSON-RPC error，而不是 initialize 结果。',
     },
     handshake_initialize_no_protocol_version: {
-      en: 'server/discover was answered with a 4xx, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC result that has no protocolVersion string.',
-      zh: 'server/discover 收到 4xx，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200 和 JSON-RPC result，但其中没有字符串类型的 protocolVersion。',
+      en: 'Our server/discover request got neither a discovery result we could use nor a protocol error defined by the current MCP specification, so we tried the older initialize handshake. The server answered initialize with HTTP 200 and a JSON-RPC result that has no protocolVersion string.',
+      zh: '我们的 server/discover 请求既没有得到可用的 discover 结果，也没有得到当前 MCP 规范定义的协议错误，因此我们改用旧版 initialize 握手。服务器对 initialize 返回 HTTP 200 和 JSON-RPC result，但其中没有字符串类型的 protocolVersion。',
     },
     handshake_ack_http_error: {
       en: 'The server accepted our initialize request (older handshake), but answered the notifications/initialized message that completes the handshake with HTTP 503 instead of a 2xx.',
