@@ -40,9 +40,9 @@ handful of wire calls, and several checks read from the same call:
    `revision_matrix`, never a hardcoded copy of it). A stale-but-well-formed version
    string can make `protocol_revision` FAILED while `discovery_handshake` stays
    VERIFIED — see `stale-protocol-version` in the fixture corpus.
-2. Once the handshake succeeds: `transport_type` and `latency_profile` are recorded
-   (both trivially VERIFIED at this point in the current remote-only implementation —
-   see "What's out of scope" below).
+2. Once the handshake requests have returned a complete HTTP response: `transport_type`
+   and `latency_profile` are recorded (both trivially VERIFIED at this point in the
+   current remote-only implementation — see "What's out of scope" below).
 3. **`tools/list`** → `tools_list` (a determinate structural fact: is `result.tools` an
    array). If it is, the raw tool list feeds three more checks in parallel:
    `toolset_fingerprint` / `schema_fingerprint` (via `@mcpcheckup/canonicalizer`'s
@@ -100,7 +100,12 @@ handful of wire calls, and several checks read from the same call:
    the endpoint has answered with a complete HTTP response, whatever its status
    (`200`, `401`, `403`, any `4xx`, any `5xx`). That is the whole question this check
    asks (`checks.json`'s predicate: "endpoint responds within budget", with no status
-   condition), and it is settled before anything later in the run can go wrong. It used
+   condition), and it is settled before anything later in the run can go wrong. It is
+   judged only at that moment: if the handshake exchange itself stops first (the endpoint
+   asks us to back off with a `429`, or a `503` carrying `Retry-After`; a response is over
+   the body limit; the connection fails; or a budget runs out), `reachability` is
+   `UNVERIFIED` with that reason even when the endpoint had already answered an earlier
+   request of the same exchange. It used
    to be judged *last of all*, meaning "the whole probe completed within budget" — see
    the cascading-failure section below for why that was changed in T6.9-F.
 8. **`tls_certificate`** is set first and unconditionally, before anything else runs —
@@ -458,10 +463,21 @@ made — the guard can only observe the DNS mismatch after the fact, not prevent
   with a reason naming this as a scope boundary, and never calls `fetchImpl` at all. All
   16 corpus fixtures are remote servers, so this path is exercised by its own dedicated
   test (`probe-scope.test.ts`), not by the shared corpus test.
-- **`transport_type`'s `OBSERVED_RISK` path** (declared transport doesn't match observed
-  transport) is currently a pass-through: given remote-only scope, if the probe reaches
-  this point at all, transport is trivially "remote, as declared." No fixture in the
-  current corpus models a transport mismatch.
+- **`transport_type` compares nothing, and does not say the handshake succeeded.** It
+  has no `OBSERVED_RISK` path: nothing in this package reads a transport the server
+  declares (`checks.json` declares its `failure_status` as `null`, and its `explain` text
+  says so). `probe.ts` records it `VERIFIED` at the same point it records
+  `latency_profile`: once `performHandshake` has returned, i.e. once the handshake
+  exchange over the transport the probe used has finished with an HTTP response from the
+  endpoint. The predicate is exactly that ("the endpoint answered our handshake request
+  over the transport used"), not "the handshake completed": it does not depend on how
+  the handshake itself concluded. A credential-gated or `FAILED` handshake still leaves
+  `transport_type` `VERIFIED`, and `discovery_handshake` carries the handshake's own
+  verdict. If the probe stops before the exchange finishes (a `429`, or a `503` carrying
+  `Retry-After`; a response over the body limit; a budget running out), `performHandshake`
+  throws, `transport_type` is `SKIPPED`/`UNVERIFIED` and carries the abort's reason. A
+  comparison against a declared transport would need that declaration to be recorded per
+  target first; no fixture in the current corpus models a transport mismatch.
 - **`auth_metadata` does not follow `jwks_uri`** even when a resource-metadata document
   declares one. No predicate this package currently implements depends on JWKS
   contents — a multi-key JWKS is a normal key-rotation transition window, not evidence

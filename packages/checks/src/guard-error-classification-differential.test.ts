@@ -105,7 +105,7 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '5526f2a2fffed0b937c3a110492b7a999fb2c016', // T96 (registry_version 0.6.0, discovery_handshake docs_version v0.3.0; type-only reach) — git rev-parse "$(git log -n1 --format=%h -G'registry_version' -- packages/checks/checks.json)":packages/checks/checks.json
+  'packages/checks/checks.json': '7ed504eeb401b6431e886884377f36d9ada554be', // transport_type honest copy (registry_version 0.7.0, transport_type docs_version v0.2.0, reachability docs_version v0.4.0, failure_status null; type-only reach, no frozen file computes from it) — git rev-parse HEAD:packages/checks/checks.json after that commit
   'packages/checks/src/auth.ts': 'f8b78f074b997b38e39319d97ec93807f73a0c65',
   'packages/checks/src/error-taxonomy.ts': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',

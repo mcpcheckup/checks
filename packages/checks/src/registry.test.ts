@@ -57,5 +57,59 @@ t('每个 group 的 description_en 与 description_zh 都存在', () => {
   }
 })
 
+t('failure_status 为 null 的 check：predicate / what / how 不得声称会记 OBSERVED_RISK 或 FAILED（说明文字不许承诺代码没有的结论）', () => {
+  for (const def of CHECKS_REGISTRY.checks) {
+    if (def.failure_status !== null) continue
+    for (const k of ['predicate_zh', 'predicate_en'] as const) assert.doesNotMatch(def[k], /OBSERVED_RISK|FAILED/, `${def.check_id}.${k}`)
+    for (const k of ['what_zh', 'what_en', 'how_zh', 'how_en'] as const) assert.doesNotMatch(def.explain[k], /OBSERVED_RISK|FAILED/, `${def.check_id}.explain.${k}`)
+  }
+})
+
+t('transport_type：说明如实——不与声明的传输比对，也不声称握手成功；握手结果与 VERIFIED 无关（那是 discovery_handshake 的判定）', () => {
+  const def = CHECKS_REGISTRY.checks.find((c) => c.check_id === 'transport_type')!
+  assert.equal(def.failure_status, null)
+  // predicate / what / how 都不得说「握手完成」（probe.ts 在握手失败、被凭据门控时同样记 VERIFIED），也不得承诺比对。
+  for (const text of [def.predicate_zh, def.predicate_en, def.explain.what_zh, def.explain.what_en, def.explain.how_zh, def.explain.how_en]) {
+    assert.doesNotMatch(text, /handshake (completed|completes|is completed)|握手[^，。；（]{0,8}完成/i, `transport_type 声称握手完成：${text}`)
+  }
+  for (const text of [def.predicate_zh, def.predicate_en, def.explain.what_zh, def.explain.what_en]) {
+    assert.doesNotMatch(text, /matches (the )?declar|compared against|符合声明|做比对/i, `transport_type 仍承诺比对：${text}`)
+  }
+  assert.match(def.explain.how_en, /VERIFIED/)
+  assert.match(def.explain.how_en, /whether or not the handshake itself succeeds/)
+  assert.match(def.explain.how_en, /not compared against any transport the server declares/)
+  assert.match(def.explain.how_zh, /VERIFIED/)
+  assert.match(def.explain.how_zh, /无论握手本身是否成功/)
+  assert.match(def.explain.how_zh, /不会与 server 声明的传输做比对/)
+})
+
+// R8 / R9 (approved copy): the four `how` strings pinned verbatim. Each states what probe.ts does on every branch —
+// VERIFIED once performHandshake returns (whatever the handshake's own verdict), and on any stop before that the
+// catch block writes reachability ERROR/UNVERIFIED and cascades the rest SKIPPED/UNVERIFIED with the abort's reason.
+const how = (id: string) => CHECKS_REGISTRY.checks.find((c) => c.check_id === id)!.explain
+
+t('transport_type.how_en 与签字原文逐字相同', () => {
+  assert.equal(how('transport_type').how_en, `Recorded as VERIFIED when our handshake exchange over that transport finishes with an HTTP response from the endpoint, whether or not the handshake itself succeeds — that is discovery_handshake's verdict. If the probe stops before the exchange finishes — for example because the endpoint asks us to back off, a response is over the probe's size limit, or one of the probe's budgets runs out — this check is not recorded as VERIFIED, and the reason is recorded with it. It is not compared against any transport the server declares.`)
+})
+
+t('transport_type.how_zh 与签字原文逐字相同', () => {
+  assert.equal(how('transport_type').how_zh, `我们经该传输的握手交换以端点的 HTTP 回应结束时，记 VERIFIED，无论握手本身是否成功（那由 discovery_handshake 判定）。如果探测在交换结束前停下——例如端点要求我们稍后再来、某个回应超出探测的大小上限、或探测的某项预算用尽——本项不记 VERIFIED，并同时记下原因。不会与 server 声明的传输做比对。`)
+})
+
+t('reachability.how_en 与签字原文逐字相同', () => {
+  assert.equal(how('reachability').how_en, `Recorded as VERIFIED when our handshake exchange finishes with an HTTP response from the endpoint, whatever its status. If the probe stops before the exchange finishes — for example because the endpoint asks us to back off (429, or 503 with Retry-After), a response is over the size limit, the connection fails, or one of the probe's budgets runs out — this check is UNVERIFIED, with that reason, even if the endpoint had already answered an earlier request. The whole probe, handshake included, runs under hard caps: 8 requests and 10s in total, and 2MB per response.`)
+})
+
+t('reachability.how_zh 与签字原文逐字相同', () => {
+  assert.equal(how('reachability').how_zh, `我们的握手交换以 endpoint 的 HTTP 回应结束时（任何状态码都算），记 VERIFIED。如果探测在交换结束前停下——例如 endpoint 要求我们稍后再来（429，或带 Retry-After 的 503）、某个回应超出大小上限、连接出错、或探测的某项预算用尽——本项记 UNVERIFIED 并附上原因，即使 endpoint 已经答复过之前的请求。整次探测（含握手）都在硬上限内进行：总共 8 个请求、10 s，每个回应 2 MB。`)
+})
+
+t('reachability.how 里写的预算数字等于 checks.json 的 budget 字段（文案不许和合同数字漂移）', () => {
+  const b = CHECKS_REGISTRY.budget
+  assert.equal(b.max_requests, 8)
+  assert.equal(b.max_duration_ms, 10_000)
+  assert.equal(b.max_body_bytes, 2 * 1024 * 1024)
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

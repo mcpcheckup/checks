@@ -1,6 +1,6 @@
 {
   "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
-  "registry_version": "0.6.0",
+  "registry_version": "0.7.0",
   "suite_id": "remote-baseline-v0.1",
   "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
   "groups": [
@@ -39,7 +39,7 @@
   ],
   "checks": [
     {
-      "n": 1, "check_id": "reachability", "group": "reach", "docs_version": "v0.3.0",
+      "n": 1, "check_id": "reachability", "group": "reach", "docs_version": "v0.4.0",
       "predicate_zh": "endpoint 在预算内响应",
       "predicate_en": "endpoint responds within budget",
       "failure_status": null,
@@ -47,8 +47,8 @@
       "explain": {
         "what_zh": "endpoint 在给定预算内是否返回响应，并记录延迟分布。",
         "what_en": "Whether the endpoint returns a response within the given budget, and the latency distribution.",
-        "how_zh": "endpoint 对我们的握手有任何 HTTP 应答即通过。之后的步骤在 8 请求 / 10 s / 2 MB 的硬上限内进行。",
-        "how_en": "Passes if the endpoint answers our handshake at all — any HTTP status. Later steps run under a hard cap of 8 requests / 10s / 2MB.",
+        "how_zh": "我们的握手交换以 endpoint 的 HTTP 回应结束时（任何状态码都算），记 VERIFIED。如果探测在交换结束前停下——例如 endpoint 要求我们稍后再来（429，或带 Retry-After 的 503）、某个回应超出大小上限、连接出错、或探测的某项预算用尽——本项记 UNVERIFIED 并附上原因，即使 endpoint 已经答复过之前的请求。整次探测（含握手）都在硬上限内进行：总共 8 个请求、10 s，每个回应 2 MB。",
+        "how_en": "Recorded as VERIFIED when our handshake exchange finishes with an HTTP response from the endpoint, whatever its status. If the probe stops before the exchange finishes — for example because the endpoint asks us to back off (429, or 503 with Retry-After), a response is over the size limit, the connection fails, or one of the probe's budgets runs out — this check is UNVERIFIED, with that reason, even if the endpoint had already answered an earlier request. The whole probe, handshake included, runs under hard caps: 8 requests and 10s in total, and 2MB per response.",
         "cannot_zh": "超时不等于你挂了——也可能是我们这边的网络。所以超预算记 UNVERIFIED 而不是 FAILED。目录里的在线率口径更严：当天任何一次探测在预算内没有收到完整应答，这一天算未应答。",
         "cannot_en": "A timeout doesn't mean you're down — it could be our network. That's why exceeding budget is UNVERIFIED, not FAILED. The directory's online rate is stricter: a day on which any probe got no complete answer within its budget counts as unanswered."
       }
@@ -70,16 +70,16 @@
       }
     },
     {
-      "n": 2, "check_id": "transport_type", "group": "proto", "docs_version": "v0.1.0",
-      "predicate_zh": "传输类型可识别且符合声明",
-      "predicate_en": "transport type identifiable and matches declaration",
-      "failure_status": "OBSERVED_RISK",
+      "n": 2, "check_id": "transport_type", "group": "proto", "docs_version": "v0.2.0",
+      "predicate_zh": "端点经所用传输回应了握手请求",
+      "predicate_en": "the endpoint answered our handshake request over the transport used",
+      "failure_status": null,
       "requires_baseline": false,
       "explain": {
-        "what_zh": "实际使用的传输类型，并与 server 自己声明的做比对。",
-        "what_en": "The transport actually used, compared against what the server declares.",
-        "how_zh": "不一致记 OBSERVED_RISK，不是 FAILED——可能是有意的兼容层。",
-        "how_en": "A mismatch is recorded as OBSERVED_RISK, not FAILED — it may be an intentional compatibility layer.",
+        "what_zh": "本次探测所用的传输类型，以及端点是否经该传输作出回应。",
+        "what_en": "The transport this probe used to reach the server, and whether the endpoint answered over it.",
+        "how_zh": "我们经该传输的握手交换以端点的 HTTP 回应结束时，记 VERIFIED，无论握手本身是否成功（那由 discovery_handshake 判定）。如果探测在交换结束前停下——例如端点要求我们稍后再来、某个回应超出探测的大小上限、或探测的某项预算用尽——本项不记 VERIFIED，并同时记下原因。不会与 server 声明的传输做比对。",
+        "how_en": "Recorded as VERIFIED when our handshake exchange over that transport finishes with an HTTP response from the endpoint, whether or not the handshake itself succeeds — that is discovery_handshake's verdict. If the probe stops before the exchange finishes — for example because the endpoint asks us to back off, a response is over the probe's size limit, or one of the probe's budgets runs out — this check is not recorded as VERIFIED, and the reason is recorded with it. It is not compared against any transport the server declares.",
         "cannot_zh": "不能说明传输实现有没有 bug。",
         "cannot_en": "This cannot tell you whether the transport implementation has bugs."
       }
