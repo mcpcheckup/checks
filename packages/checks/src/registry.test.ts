@@ -111,5 +111,15 @@ t('reachability.how 里写的预算数字等于 checks.json 的 budget 字段（
   assert.equal(b.max_body_bytes, 2 * 1024 * 1024)
 })
 
+t('no_baseline_reason：两项基线检查的「没有基线」原因逐字固定，且不把「未认领」当作原因（已认领但未确认基线的 target 也走这条）', () => {
+  const withReason = CHECKS_REGISTRY.checks.filter((c) => c.no_baseline_reason_en !== undefined || c.no_baseline_reason_zh !== undefined)
+  assert.deepEqual(withReason.map((c) => c.check_id).sort(), ['schema_unchanged_vs_approved', 'toolset_unchanged_vs_approved'])
+  for (const c of withReason) {
+    assert.equal(c.no_baseline_reason_en, 'No approved baseline exists for this target.', c.check_id)
+    assert.equal(c.no_baseline_reason_zh, '该 target 没有已批准基线', c.check_id)
+    assert.doesNotMatch(`${c.no_baseline_reason_en} ${c.no_baseline_reason_zh}`, /unclaimed|未认领|未被认领/i, c.check_id)
+  }
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

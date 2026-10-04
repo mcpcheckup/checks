@@ -101,8 +101,7 @@ const FROZEN_090_BLOBS: Record<string, string> = {
 /** The in-repo import closure of frozen/suite-0.9.0 outside that directory
  *  (importClosure090; imports read off the TypeScript AST), each file pinned
  *  to `git rev-parse 16941d1:<path>`, except checks.json, pinned to its
- *  transport_type-copy blob (registry_version 0.7.0, transport_type docs_version
- *  v0.2.0, failure_status null; T96 had re-pinned it at 0.6.0).
+ *  no-baseline-reason-copy blob (registry_version 0.8.0; earlier pins were 0.7.0 and 0.6.0).
  *  That change cannot alter what the frozen files compute: they reach
  *  checks.json only through type-only imports (types.ts, registry.ts), erased
  *  at run time, and every run below passes the registry in as input to both
@@ -122,7 +121,7 @@ const CLOSURE_090_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '7ed504eeb401b6431e886884377f36d9ada554be', // transport_type honest copy (registry_version 0.7.0, transport_type docs_version v0.2.0, reachability docs_version v0.4.0, failure_status null; type-only reach, no frozen file computes from it) — git rev-parse HEAD:packages/checks/checks.json after that commit
+  'packages/checks/checks.json': '64ecf38d8c667af4058dbb62c441230f2bc5e880', // no-baseline reason copy (registry_version 0.8.0; the two no_baseline_reason texts only, same type-only reach as the transport_type copy pin, no frozen file computes from it) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',

@@ -467,7 +467,7 @@ t('v0.1 形状的样例（reason/unverified_reason 为裸字符串）通过 v0.1
   // 若从 v0.3 派生，这条断言就变成在测 additionalProperties，而不是在测 reason 的形状。
   const v01Sample = deepClone(sampleV02)
   v01Sample.assertions[1].unverified_reason = 'auth metadata endpoint returned no WWW-Authenticate challenge'
-  v01Sample.assertions[2].reason = '该 target 未被认领，不存在已批准基线'
+  v01Sample.assertions[2].reason = '该 target 没有已批准基线'
   const ok = validate(v01Sample)
   if (!ok) console.error(validate.errors)
   assert.equal(ok, true)
@@ -569,7 +569,7 @@ t('每个 payloadType 派发出的 schema，收下本版本的样例、拒绝另
   // v0.1 样例：v0.2 的形状，但 reason/unverified_reason 退回裸字符串（v0.1 时代的写法）。
   const sampleV01 = deepClone(sampleV02)
   sampleV01.assertions[1].unverified_reason = 'auth metadata endpoint returned no WWW-Authenticate challenge'
-  sampleV01.assertions[2].reason = '该 target 未被认领，不存在已批准基线'
+  sampleV01.assertions[2].reason = '该 target 没有已批准基线'
 
   const cases: Array<[string, unknown]> = [
     ['application/vnd.mcpcheckup.attestation+json;version=0.1', sampleV01],

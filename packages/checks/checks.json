@@ -1,6 +1,6 @@
 {
   "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
-  "registry_version": "0.7.0",
+  "registry_version": "0.8.0",
   "suite_id": "remote-baseline-v0.1",
   "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
   "groups": [
@@ -249,8 +249,8 @@
       "failure_status": "FAILED",
       "requires_baseline": true,
       "no_baseline_status": "UNVERIFIED",
-      "no_baseline_reason_zh": "该 target 未被认领，不存在已批准基线",
-      "no_baseline_reason_en": "This target is unclaimed; no approved baseline exists.",
+      "no_baseline_reason_zh": "该 target 没有已批准基线",
+      "no_baseline_reason_en": "No approved baseline exists for this target.",
       "explain": {
         "what_zh": "当前工具集与**你批准过的那次发布**是否一致。",
         "what_en": "Whether the current toolset matches the release you approved.",
@@ -267,8 +267,8 @@
       "failure_status": "FAILED",
       "requires_baseline": true,
       "no_baseline_status": "UNVERIFIED",
-      "no_baseline_reason_zh": "该 target 未被认领，不存在已批准基线",
-      "no_baseline_reason_en": "This target is unclaimed; no approved baseline exists.",
+      "no_baseline_reason_zh": "该 target 没有已批准基线",
+      "no_baseline_reason_en": "No approved baseline exists for this target.",
       "explain": {
         "what_zh": "每个 tool 的 canonical schema 与已批准基线是否一致。",
         "what_en": "Whether each tool's canonical schema matches the approved baseline.",
