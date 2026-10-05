@@ -25,7 +25,7 @@ protocol-contract checks MCP Checkup runs against MCP servers, the
 canonicalizer and schema its signed attestations use, and an offline verifier
 for those attestations.
 
-This repository is published as snapshots of a private monorepo. Apart from the first commit, which added the license, each commit here is one snapshot of the `packages/` directories listed below, at the same paths and as the same git tree objects they have in the monorepo. No commit of the monorepo is included in this history.
+This repository is published as snapshots of a private monorepo. Apart from the first commit, which added the license, each commit here is one snapshot of the `packages/` directories listed below, at the same paths and as the same git tree objects they have in the monorepo. No commit of the monorepo is included in this history. The `keys/` directory holds a copy of the published key document; see "Verifying a signed attestation" below.
 
 ## Packages
 
@@ -55,9 +55,22 @@ A payload that carries a `suite_commit` but was signed before the probe began na
 
 ## Verifying a signed attestation
 
+The published key document is available from two places:
+
+- the live document at `https://mcpcheckup.com/.well-known/mcpcheckup-keys.json`;
+- the copy in this repository, `keys/mcpcheckup-keys.json`.
+
+With the live document:
+
 ```sh
 curl -fsS https://mcpcheckup.com/.well-known/mcpcheckup-keys.json -o keys.json
 node packages/verifier/verify-attestation.mjs --envelope <file> --keys keys.json
+```
+
+Offline, with the copy in this repository:
+
+```sh
+node packages/verifier/verify-attestation.mjs --envelope <file> --keys keys/mcpcheckup-keys.json
 ```
 
 This needs Node.js 22.18 or later on the 22 line, or Node.js 24 or later; there is no install step.
@@ -68,6 +81,16 @@ revoked, and that the payload's `observed_at` lies within the key's `valid_from`
 `--pubkey <key>` checks against one Ed25519 public key, SPKI-encoded and base64 (or a
 path to a file containing it), and requires every `keyid` to equal the first 16 hex
 characters of sha256 over that key's SPKI bytes.
+
+### Comparing the two copies
+
+The copy in this repository is written from the same key list the live document serves. When a key is added, retired or revoked, the copy is regenerated and published with the next snapshot, so until then the live document can be newer than the copy in your clone. To compare them:
+
+```sh
+curl -fsS https://mcpcheckup.com/.well-known/mcpcheckup-keys.json | cmp - keys/mcpcheckup-keys.json
+```
+
+`cmp` prints nothing and exits 0 when the two are byte for byte the same. If it reports a difference, the two are not the same list. Update your clone first, since the live document changes before the snapshot does. If a difference remains, look at what differs: a key that appears, or gains a `valid_until` or `revoked_at`, only in the live document is a change the next snapshot will carry. Any other difference is worth reporting; see [SECURITY.md](SECURITY.md) for how.
 
 ## License
 
