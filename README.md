@@ -56,13 +56,18 @@ A payload that carries a `suite_commit` but was signed before the probe began na
 ## Verifying a signed attestation
 
 ```sh
-node packages/verifier/verify-attestation.mjs --envelope <file> --pubkey <key>
+curl -fsS https://mcpcheckup.com/.well-known/mcpcheckup-keys.json -o keys.json
+node packages/verifier/verify-attestation.mjs --envelope <file> --keys keys.json
 ```
 
 This needs Node.js 22.18 or later on the 22 line, or Node.js 24 or later; there is no install step.
-`<key>` is the
-Ed25519 public key, SPKI-encoded and base64, or a path to a file containing
-it. The signing public key is not published yet.
+`keys.json` is the published key document. The verifier makes no network request itself.
+For every signature it checks that the `keyid` is in the document, that the key is not
+revoked, and that the payload's `observed_at` lies within the key's `valid_from` and
+`valid_until` (both ends inclusive). It also rejects a `payloadType` it does not know.
+`--pubkey <key>` checks against one Ed25519 public key, SPKI-encoded and base64 (or a
+path to a file containing it), and requires every `keyid` to equal the first 16 hex
+characters of sha256 over that key's SPKI bytes.
 
 ## License
 

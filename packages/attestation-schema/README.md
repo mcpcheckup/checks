@@ -62,23 +62,76 @@ output.
 available in Node, browsers, and Cloudflare Workers.
 
 **Public key format.** This package never exports or imports keys itself —
-`signDsseEnvelope`/`verifyDsseEnvelope` take a `CryptoKey` you already have.
-But whatever eventually publishes signing keys (a future `/keys` page) has to
-pick *some* byte format, and a verifier needs to know which one to expect.
-The recommendation is **raw** (`crypto.subtle.exportKey('raw', publicKey)`):
-for Ed25519 this is exactly the 32-byte public key with no wrapping, the
-smallest and simplest of WebCrypto's export formats, and trivial to import
-back:
+`signDsseEnvelope`/`verifyDsseEnvelope` take a `CryptoKey` you already have. Keys
+are published as **SPKI**: the DER-encoded SubjectPublicKeyInfo, which for
+Ed25519 is exactly 44 bytes (the 12-byte header `30 2a 30 05 06 03 2b 65 70 03 21
+00` followed by the 32-byte key), written as standard base64 (not URL-safe). It
+is the format `packages/verifier` takes and the format of the published key
+document below:
 
 ```ts
-const rawBytes = await crypto.subtle.exportKey('raw', publicKey) // 32 bytes — publish base64Encode(new Uint8Array(rawBytes))
-const trustedPublicKey = await crypto.subtle.importKey('raw', base64Decode(publishedBase64), { name: 'Ed25519' }, true, ['verify'])
+const spkiBytes = await crypto.subtle.exportKey('spki', publicKey) // 44 bytes — publish standard base64 of them
+const publishedKey = await crypto.subtle.importKey('spki', base64Decode(publishedBase64), { name: 'Ed25519' }, true, ['verify'])
 ```
 
-If a future `/keys` page ends up publishing a different format (`spki`, or a
-JWK), that page is the one source of truth for it — this note only fixes the
-recommendation *this package's own docs/examples* use, so there's at least
-one concrete, tested answer instead of an open question.
+**The published key document.** The keys that verify our signatures are
+published at `/.well-known/mcpcheckup-keys.json`
+(`https://mcpcheckup.com/.well-known/mcpcheckup-keys.json`), with a page for
+people at `/keys`:
+
+```json
+{
+  "format_version": 1,
+  "keys": [
+    {
+      "key_id": "<first 16 characters of spki_sha256>",
+      "algorithm": "Ed25519",
+      "spki": "<standard base64 of the 44-byte DER SPKI>",
+      "spki_sha256": "<64 lowercase hex characters>",
+      "valid_from": "<RFC 3339 UTC time ending in Z>",
+      "valid_until": null,
+      "revoked_at": null
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `format_version` | `1`. A verifier rejects any other value. |
+| `key_id` | The `keyid` that envelope signatures carry: always the first 16 lowercase hex characters of `spki_sha256`, never a label. |
+| `algorithm` | Always `"Ed25519"`. |
+| `spki` | The public key: standard base64 of the 44-byte DER SPKI. |
+| `spki_sha256` | sha256 over those 44 bytes, 64 lowercase hex characters. |
+| `valid_from` | The earliest `observed_at` an envelope signed with this key can carry. |
+| `valid_until` | `null` while the key is current; otherwise the end of its normal retirement. |
+| `revoked_at` | `null` unless the key was revoked, which means it was compromised. |
+
+Times are RFC 3339 in UTC with a literal `Z`. `valid_until` and `revoked_at` are
+always present, `null` when empty, never omitted. A retired or revoked key stays
+in the list, so envelopes signed with it can still be checked.
+
+The verifier script validates every entry before using any of them: `spki`
+must decode to 44 bytes starting with the Ed25519 header above, `spki_sha256`
+must be the sha256 of those bytes, `key_id` must equal its first 16 characters,
+`algorithm` must be `Ed25519`, `format_version` must be 1, and both nullable fields
+must be present. A violation is an error, not a skipped entry. It then finds the
+key named by each signature's `keyid` and applies three rules, comparing the
+payload's signed `observed_at` (the envelope carries no signing time, so this is
+the one signed instant there is) with the key's times as RFC 3339 instants at
+millisecond precision:
+
+- `revoked_at` is not `null`: the envelope fails, whatever its `observed_at`.
+- `observed_at` is before `valid_from`: the envelope fails. Equal passes.
+- `valid_until` is not `null` and `observed_at` is after it: the envelope fails. Equal
+  passes. An envelope whose `observed_at` is at or before `valid_until` stays valid
+  after the key retires.
+
+A missing or unparseable `observed_at` fails too. A `keyid` that is not in the
+document fails. The script reads the file you downloaded and makes no network
+request; with `--pubkey` instead of `--keys` it checks one key and requires each
+signature's `keyid` to equal the first 16 hex characters of sha256 over that key's
+SPKI bytes.
 
 **On the envelope's own strictness:** the DSSE spec explicitly says
 "Producers … MAY add additional fields. Consumers MUST ignore unrecognized
@@ -252,6 +305,9 @@ directly — see `digest()` in `@mcpcheckup/canonicalizer`.)
    band — this package doesn't do key discovery or trust decisions, only the
    cryptographic check):
    `Ed25519.verify(pubkey, envelope.signatures[i].sig, PAE(envelope.payloadType, SERIALIZED_BODY))`.
+   For an MCP Checkup envelope, take the key from the published key document
+   described above and apply its `revoked_at`, `valid_from` and `valid_until` to the
+   payload's `observed_at` as described there.
    Reject if `envelope.payloadType` isn't one of the payload types this
    package has ever signed —
    `"application/vnd.mcpcheckup.attestation+json;version=0.3"` (current),
