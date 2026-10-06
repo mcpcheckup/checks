@@ -126,6 +126,13 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     en: () => 'Our own DNS resolver did not answer — later checks did not run.',
     zh: () => '我们自己的 DNS 解析器没有应答——后续检查未运行。',
   },
+  // Suite 0.11.0: a host other than the endpoint's (a redirect hop, a
+  // resource_metadata URL) that the run declined to contact. Deliberately names
+  // neither the host nor why it was declined, and renders no params.
+  probe_declined_other_host: {
+    en: () => 'Our probe did not connect to another host the server pointed to — later checks did not run.',
+    zh: () => '我们的探测器没有连接该服务器指向的另一个主机——后续检查未运行。',
+  },
   check_not_implemented: {
     en: (p) => `This prober has not implemented check_id=${requireParam(p, 'check_id')} — this is an implementation gap, not a probe result.`,
     zh: (p) => `本探测器未实现 check_id=${requireParam(p, 'check_id')}，这是实现缺口，不是探测结果`,

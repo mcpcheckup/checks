@@ -1,0 +1,588 @@
+import { sendRequest } from './wire.ts'
+import type { ProbeContext } from './wire.ts'
+import type { FetchLike, ProbeBudget } from './types.ts'
+import { classifyCredentialChallenge } from './auth.ts'
+
+const CLIENT_INFO = { name: 'mcp-checkup-prober', version: '0.1.0' }
+const MODERN_PROBE_VERSION = '2026-07-28'
+const LEGACY_PROBE_VERSION = '2025-06-18'
+
+export interface ParsedJsonRpc {
+  isJsonRpc: boolean
+  id?: unknown
+  result?: unknown
+  error?: { code: number; message: string; data?: unknown }
+}
+
+/** Exported for error-taxonomy.ts, which must classify over exactly the
+ *  candidates the verdict saw (see jsonRpcCandidates below). */
+export function isSseContentType(contentType?: string | null): boolean {
+  return (contentType ?? '').toLowerCase().includes('text/event-stream')
+}
+
+/** SSE frames each message as one or more `data:` lines within a blank-line-delimited
+ *  "event" block (html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation).
+ *  The 2025-06-18 Streamable HTTP spec's "Sending Messages to the Server" §5 lets the
+ *  server answer ANY POST this way instead of a plain JSON body: "the server MUST
+ *  either return Content-Type: text/event-stream, to initiate an SSE stream, or
+ *  Content-Type: application/json, to return one JSON object. The client MUST support
+ *  both these cases." Real observed case: DeepWiki's legacy `initialize` response
+ *  (Task Y) — content-type text/event-stream despite being a one-shot POST reply, not
+ *  a long-lived push channel. */
+function extractSseDataPayloads(bodyText: string): string[] {
+  return bodyText
+    .split(/\r?\n\r?\n/)
+    .map((eventBlock) =>
+      eventBlock
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice('data:'.length).replace(/^ /, ''))
+        .join('\n'),
+    )
+    .filter((payload) => payload.length > 0)
+}
+
+function parseJsonRpcText(bodyText: string): ParsedJsonRpc {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(bodyText)
+  } catch {
+    return { isJsonRpc: false }
+  }
+  if (typeof parsed !== 'object' || parsed === null) return { isJsonRpc: false }
+  const obj = parsed as Record<string, unknown>
+  if (obj.jsonrpc !== '2.0') return { isJsonRpc: false }
+  if ('result' in obj) return { isJsonRpc: true, id: obj.id, result: obj.result }
+  if (
+    typeof obj.error === 'object' &&
+    obj.error !== null &&
+    typeof (obj.error as Record<string, unknown>).code === 'number' &&
+    typeof (obj.error as Record<string, unknown>).message === 'string'
+  ) {
+    return { isJsonRpc: true, id: obj.id, error: obj.error as { code: number; message: string; data?: unknown } }
+  }
+  return { isJsonRpc: false }
+}
+
+/** The texts parseJsonRpcBody tries, in order: an SSE-framed body's `data:`
+ *  payloads (possibly none at all), otherwise the whole body as one candidate.
+ *  Exported so error-taxonomy.ts classifies over exactly these candidates and
+ *  no others (T73): one definition, so a verdict and its recorded
+ *  classification can never be computed over two different readings of the
+ *  same response. */
+export function jsonRpcCandidates(bodyText: string, contentType?: string | null): string[] {
+  return isSseContentType(contentType) ? extractSseDataPayloads(bodyText) : [bodyText]
+}
+
+/** Never throws — an unparseable or non-JSON-RPC body is data (isJsonRpc: false), not
+ *  an exception, exactly like fixtures' own parseJsonRpcCall on the server side.
+ *  contentType is optional for callers that only ever see application/json (and for
+ *  the direct unit tests below); pass it whenever it's available so an SSE-framed body
+ *  (see extractSseDataPayloads) gets unwrapped before the JSON-RPC parse. */
+export function parseJsonRpcBody(bodyText: string, contentType?: string | null): ParsedJsonRpc {
+  for (const candidate of jsonRpcCandidates(bodyText, contentType)) {
+    const parsed = parseJsonRpcText(candidate)
+    if (parsed.isJsonRpc) return parsed
+  }
+  return { isJsonRpc: false }
+}
+
+/** The three error codes the 2026-07-28 Streamable HTTP spec allocates for a
+ *  modern server rejecting a request (HeaderMismatch,
+ *  MissingRequiredClientCapability, UnsupportedProtocolVersion, in that order;
+ *  the spec pairs them with HTTP 400). Seeing one of these in a server/discover
+ *  answer — 2xx or 4xx alike (T96) — means "this server IS modern but rejected
+ *  this particular request"; any other answer that is not a usable discover
+ *  result means "this server doesn't recognize modern requests at all," which
+ *  is the fallback-to-initialize signal (see performHandshake). */
+export const RECOGNIZED_MODERN_ERROR_CODES: ReadonlySet<number> = new Set([-32020, -32021, -32022])
+
+function modernMeta(protocolVersion: string) {
+  return {
+    'io.modelcontextprotocol/protocolVersion': protocolVersion,
+    'io.modelcontextprotocol/clientInfo': CLIENT_INFO,
+    'io.modelcontextprotocol/clientCapabilities': {},
+  }
+}
+
+function modernHeaders(protocolVersion: string, mcpMethod: string, mcpName?: string): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+    'mcp-protocol-version': protocolVersion,
+    'mcp-method': mcpMethod,
+    ...(mcpName ? { 'mcp-name': mcpName } : {}),
+  }
+}
+
+/** The 2025-06-18 Streamable HTTP transport spec's "Sending Messages to the
+ *  Server" §2 requires the client to send an Accept header listing both
+ *  application/json and text/event-stream on every POST — and the spec's own
+ *  "Backwards Compatibility" section extends this to the first InitializeRequest
+ *  itself, not just subsequent requests
+ *  (modelcontextprotocol.io/specification/2025-06-18/basic/transports#sending-messages-to-the-server).
+ *  A real compliant legacy server (mcp.deepwiki.com/mcp) 406-rejects a legacy
+ *  fallback that omits this — Task Y. */
+function legacyHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+    ...extra,
+  }
+}
+
+async function sendModern(
+  fetchImpl: FetchLike,
+  endpoint: string,
+  budget: ProbeBudget,
+  ctx: ProbeContext,
+  method: string,
+  id: unknown,
+  extraParams: Record<string, unknown>,
+  protocolVersion: string,
+  mcpName?: string,
+) {
+  return sendRequest(
+    fetchImpl,
+    endpoint,
+    {
+      method: 'POST',
+      headers: modernHeaders(protocolVersion, method, mcpName),
+      body: JSON.stringify({ jsonrpc: '2.0', id, method, params: { ...extraParams, _meta: modernMeta(protocolVersion) } }),
+    },
+    budget,
+    ctx,
+  )
+}
+
+/** T73b: why a handshake or tools/list attempt failed, as a bounded reason ref
+ *  that probe.ts forwards unchanged into the signed FAILED assertion. Derived
+ *  at each failing return from the same `parsed` the verdict used, never from
+ *  a second parse. PARAMS ARE EVIDENCE AND GO INTO THE SIGNED RECORD: only
+ *  `status` (the HTTP status integer) and `jsonrpc_error_code` (a safe
+ *  integer, on the *_jsonrpc_error keys and discover_rejected only) —
+ *  never response text. */
+export type FailureReason<K extends string> = { key: K; params?: Record<string, number> }
+
+type HandshakeFailureKey =
+  // T96: handshake_discover_{not_jsonrpc,jsonrpc_error,no_supported_versions}
+  // are no longer produced (each now falls back); they survive only on rows
+  // recorded by suite <= 0.9.0, which reason-messages.ts still renders.
+  | `handshake_discover_${'rejected' | 'http_error'}`
+  | `handshake_initialize_${'http_error' | 'not_jsonrpc' | 'jsonrpc_error' | 'no_protocol_version'}`
+  | 'handshake_ack_http_error'
+
+type ToolsListFailureKey = `tools_list_${'challenge_after_failed_handshake' | 'not_jsonrpc' | 'jsonrpc_error' | 'not_array'}`
+
+/** Omits params entirely when there are none, like every other param-free
+ *  reason ref (e.g. probe.ts's { key: 'fingerprint_baseline_mismatch' }). */
+function failure<K extends string>(key: K, params: Record<string, number> = {}): FailureReason<K> {
+  return Object.keys(params).length > 0 ? { key, params } : { key }
+}
+
+/** Only a safe integer is recorded. `code === 0 ? 0 : code` folds -0 into 0:
+ *  the canonicalizer already signs -0 as "0", so the in-memory value must say
+ *  the same thing (same rule as error-taxonomy.ts). */
+function jsonRpcErrorCode(parsed: ParsedJsonRpc): Record<string, number> {
+  const code = parsed.error?.code
+  return Number.isSafeInteger(code) ? { jsonrpc_error_code: code === 0 ? 0 : (code as number) } : {}
+}
+
+function initializeFailure(status: number, parsed: ParsedJsonRpc): FailureReason<HandshakeFailureKey> {
+  if (status !== 200) return failure('handshake_initialize_http_error', { status })
+  if (!parsed.isJsonRpc) return failure('handshake_initialize_not_jsonrpc')
+  if (parsed.error) return failure('handshake_initialize_jsonrpc_error', jsonRpcErrorCode(parsed))
+  return failure('handshake_initialize_no_protocol_version')
+}
+
+export interface HandshakeResult {
+  mode: 'modern' | 'legacy'
+  handshakeOk: boolean
+  /** T73b: set on every handshakeOk:false return (including the 401 ones
+   *  probe.ts turns into credential_required, where it goes unused). */
+  failure?: FailureReason<HandshakeFailureKey>
+  /** null when we never got a structurally usable version string at all. */
+  protocolVersionDeclared: string | null
+  /** legacy mode only. */
+  sessionId?: string
+  /** Where subsequent requests (tools/list, tools/call) should go — may differ
+   *  from the endpoint we started with if the handshake itself redirected. */
+  currentEndpoint: string
+  /** Set only when handshakeOk is false, derived from classifyCredentialChallenge
+   *  against the FINAL response of this handshake attempt — the modern
+   *  server/discover response for a modern-branch return, or (after a legacy
+   *  fallback) the legacy initialize/notifications-initialized response for a
+   *  legacy-branch return. Never set on the RECOGNIZED_MODERN_ERROR_CODES
+   *  return — a recognized modern JSON-RPC error is a real client/server
+   *  mismatch, not a credential gate (see the handshake- and tools-list-layer
+   *  credential-gate rules below). */
+  credentialChallenge?: CredentialChallenge
+}
+
+/** T86b: a response classifyCredentialChallenge accepted, as runProbe needs
+ *  it. `scheme` is the one part that goes into a Reason (and so into the
+ *  stored, possibly signed, assertion). `status` (always 401, since
+ *  classifyCredentialChallenge accepts nothing else) and `wwwAuthenticate`
+ *  (the header value exactly as `Headers.get` returned it) exist only so
+ *  auth_metadata can judge this challenge (judgeAuthMetadataFromGate); they
+ *  must never be copied into a Reason. No body. */
+export interface CredentialChallenge {
+  scheme: string
+  status: number
+  wwwAuthenticate: string
+}
+
+/** classifyCredentialChallenge plus the status and header it accepted. */
+function gateChallenge(status: number, headers: Headers): CredentialChallenge | null {
+  const challenge = classifyCredentialChallenge(status, headers)
+  const wwwAuthenticate = headers.get('www-authenticate')
+  return challenge && wwwAuthenticate !== null ? { scheme: challenge.scheme, status, wwwAuthenticate } : null
+}
+
+/** Attaches credentialChallenge only when classifyCredentialChallenge finds one —
+ *  exactOptionalPropertyTypes means the property must be entirely absent, not
+ *  present-with-undefined, when there's nothing to report. */
+function credentialChallengeFrom(status: number, headers: Headers): { credentialChallenge: CredentialChallenge } | Record<string, never> {
+  const challenge = gateChallenge(status, headers)
+  return challenge ? { credentialChallenge: challenge } : {}
+}
+
+/** T96 rule: the statuses whose server/discover answer is judged
+ *  by its body — every 2xx, exactly like 200. The single place to narrow it. */
+function discoverAnswered(status: number): boolean {
+  return status >= 200 && status < 300
+}
+
+/** Implements the 2026-07-28 spec's own backward-compatibility detection
+ *  algorithm: try a modern server/discover first, then read its answer —
+ *  a 2xx carrying a usable discover result means a modern server; a
+ *  recognized modern error, at 2xx or 4xx, means this IS a modern server
+ *  rejecting the specific request (not a fallback trigger); anything else at
+ *  2xx or 4xx means "doesn't speak modern MCP," so fall back to the legacy
+ *  initialize handshake. 3xx and 5xx fall back to nothing. This is
+ *  the concrete mechanism behind checks.json's discovery_handshake
+ *  p0_note_zh: judging the newest implementation by whether it passes THIS
+ *  algorithm, not by whether it happens to support the old initialize flow.
+ *
+ *  The rule is the versioning page's own, which names no HTTP status
+ *  (modelcontextprotocol.io/specification/2026-07-28/basic/versioning
+ *  #compatibility-matrix): "a recognized modern JSON-RPC error ... identifies
+ *  a modern server ... Anything else identifies a legacy server." The
+ *  "Dual-era client / Legacy server" row illustrates the 4xx case ("the
+ *  modern request returns a `4xx` without a recognized modern error body, and
+ *  the client falls back to `initialize`"); T96 applies the same sentence to
+ *  a 2xx answer. A 2xx that is not a discover result cannot come from a
+ *  compliant modern server: it MUST implement server/discover, and MUST answer
+ *  a method it does not implement with 404 + -32601 (Streamable HTTP). Until
+ *  suite 0.9.0 only a 4xx fell back, so a server answering `200 + -32601`
+ *  was recorded FAILED without initialize ever being tried.
+ *
+ *  The 4xx range (not just 400) is deliberate: a real observed case
+ *  (droproom/mcp, 2026-08-30 fp investigation) returns 401 Unauthorized
+ *  (non-JSON-RPC `{"error":"unauthorized"}` body) to `server/discover` — a
+ *  perfectly ordinary legacy server whose catch-all for an unrecognized
+ *  modern-only method happens to be 401, not 400 — and a legacy `initialize`
+ *  against the same endpoint succeeds outright. Checking only `=== 400` here
+ *  left every such legacy server stuck at handshakeOk:false with no fallback
+ *  attempt ever made — a self-inflicted false positive, not a target defect. */
+export async function performHandshake(opts: {
+  fetchImpl: FetchLike
+  endpoint: string
+  budget: ProbeBudget
+  ctx: ProbeContext
+  newId: () => string
+}): Promise<HandshakeResult> {
+  const { fetchImpl, endpoint, budget, ctx, newId } = opts
+
+  const discover = await sendModern(fetchImpl, endpoint, budget, ctx, 'server/discover', newId(), {}, MODERN_PROBE_VERSION)
+  const answered = discoverAnswered(discover.status)
+
+  if (answered || (discover.status >= 400 && discover.status < 500)) {
+    const parsed = parseJsonRpcBody(discover.bodyText, discover.headers.get('content-type'))
+    // Only a 2xx carries a discover result; a result body on a 4xx never did.
+    const result = answered && parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
+    // DiscoverResult's field is `supportedVersions` (modelcontextprotocol.io/specification/2026-07-28/server/discover#data-types),
+    // not `protocolVersions`. `serverInfo` lives under `_meta['io.modelcontextprotocol/serverInfo']` and is spec-SHOULD, not
+    // MUST ("Servers SHOULD include this field") — it must not gate handshake success.
+    const supportedVersions = result?.supportedVersions
+    if (Array.isArray(supportedVersions) && typeof supportedVersions[0] === 'string') {
+      // No credentialChallenge attachment: classifyCredentialChallenge
+      // requires status === 401 (the handshake-layer credential-gate rule's
+      // explicit red line), and a 2xx can never classify as credential-gated.
+      return { mode: 'modern', handshakeOk: true, protocolVersionDeclared: supportedVersions[0], currentEndpoint: discover.finalUrl }
+    }
+    if (parsed.isJsonRpc && parsed.error && RECOGNIZED_MODERN_ERROR_CODES.has(parsed.error.code)) {
+      // A modern server exists but rejected our probe for a specific reason we
+      // didn't work around (e.g. header mismatch). Not a legacy server — don't
+      // fall back. Fixtures handshake-discover-rejected (400),
+      // handshake-discover-rejected-200 and recognized-modern-error-code-*
+      // exercise it. Deliberately no credentialChallenge here even if this
+      // happened to be a 401 with a valid WWW-Authenticate — a recognized modern error identifies a real
+      // client/server mismatch, not a credential gate (the handshake-layer
+      // credential-gate rule: "走既有 modern 分支，不变" — no exemption).
+      return {
+        mode: 'modern',
+        handshakeOk: false,
+        protocolVersionDeclared: null,
+        currentEndpoint: discover.finalUrl,
+        failure: failure('handshake_discover_rejected', { status: discover.status, jsonrpc_error_code: parsed.error.code }),
+      }
+    }
+    return performLegacyHandshake(fetchImpl, discover.finalUrl, budget, ctx, newId)
+  }
+
+  // Only reached when discover.status is neither a 2xx nor a 4xx (e.g. an
+  // unfollowed 3xx, a 5xx) — no fallback. No credentialChallenge attachment:
+  // 401 is inside [400,500), so it is always intercepted by the branch above
+  // (either recognized as a modern error, or routed into the legacy
+  // fallback) and can never fall through to here; whatever status DOES land
+  // here can never satisfy classifyCredentialChallenge's status===401
+  // requirement, so a credentialChallengeFrom(...) call here would always
+  // evaluate to no-op {} — dead code, not a live check.
+  return {
+    mode: 'modern',
+    handshakeOk: false,
+    protocolVersionDeclared: null,
+    currentEndpoint: discover.finalUrl,
+    failure: failure('handshake_discover_http_error', { status: discover.status }),
+  }
+}
+
+async function performLegacyHandshake(
+  fetchImpl: FetchLike,
+  endpoint: string,
+  budget: ProbeBudget,
+  ctx: ProbeContext,
+  newId: () => string,
+): Promise<HandshakeResult> {
+  const initRes = await sendRequest(
+    fetchImpl,
+    endpoint,
+    {
+      method: 'POST',
+      headers: legacyHeaders(),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: newId(),
+        method: 'initialize',
+        params: { protocolVersion: LEGACY_PROBE_VERSION, capabilities: {}, clientInfo: CLIENT_INFO },
+      }),
+    },
+    budget,
+    ctx,
+  )
+
+  const parsed = parseJsonRpcBody(initRes.bodyText, initRes.headers.get('content-type'))
+  const result = parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
+  const protocolVersion = result?.protocolVersion
+  // Session ID assignment is the server's choice, not a requirement — 2025-06-18 spec,
+  // "Session Management" §1: "A server ... MAY assign a session ID at initialization
+  // time." A compliant legacy server may issue none at all (observed: mcp.deepwiki.com,
+  // Task Y) — only forward it downstream (§2: "MUST include it ... on all of their
+  // subsequent HTTP requests") when the server actually sent one.
+  const sessionId = initRes.headers.get('mcp-session-id') ?? undefined
+
+  if (initRes.status !== 200 || typeof protocolVersion !== 'string') {
+    return {
+      mode: 'legacy',
+      handshakeOk: false,
+      protocolVersionDeclared: null,
+      currentEndpoint: initRes.finalUrl,
+      failure: initializeFailure(initRes.status, parsed),
+      ...credentialChallengeFrom(initRes.status, initRes.headers),
+    }
+  }
+
+  const ackRes = await sendRequest(
+    fetchImpl,
+    initRes.finalUrl,
+    {
+      method: 'POST',
+      headers: legacyHeaders(sessionId ? { 'mcp-session-id': sessionId } : undefined),
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    },
+    budget,
+    ctx,
+  )
+  if (ackRes.status < 200 || ackRes.status >= 300) {
+    return {
+      mode: 'legacy',
+      handshakeOk: false,
+      protocolVersionDeclared: protocolVersion,
+      ...(sessionId ? { sessionId } : {}),
+      currentEndpoint: ackRes.finalUrl,
+      failure: failure('handshake_ack_http_error', { status: ackRes.status }),
+      ...credentialChallengeFrom(ackRes.status, ackRes.headers),
+    }
+  }
+
+  return { mode: 'legacy', handshakeOk: true, protocolVersionDeclared: protocolVersion, ...(sessionId ? { sessionId } : {}), currentEndpoint: ackRes.finalUrl }
+}
+
+export interface ToolsListResult {
+  ok: boolean
+  tools: unknown[] | null
+  currentEndpoint: string
+  /** Derived from classifyCredentialChallenge against this single
+   *  tools/list response — status and headers only, never its body
+   *  (the tools-list-layer credential-gate rule). Still only ever
+   *  present when `ok` is false, but the causality is now the other way
+   *  round: a challenge here FORCES `ok` false. See performToolsList. */
+  credentialChallenge?: CredentialChallenge
+  /** T73b: set whenever `ok` is false, except the handshakeOk + challenge
+   *  cell probe.ts's tools-list-layer credential-gate rule records as
+   *  UNVERIFIED — so on every cell it judges tools_list FAILED (and, unused,
+   *  when the handshake itself was credential-gated). See toolsListFailure. */
+  failure?: FailureReason<ToolsListFailureKey>
+  /** T86: present, as `true`, only on an `ok` list whose result carries a
+   *  `nextCursor` that is neither null nor undefined ("" and non-strings
+   *  count): `tools` may then be only the first page. We never fetch the
+   *  next one; probe.ts reads this to decide whether its reserved tool name
+   *  could be one of the server's tools. */
+  hasNextCursor?: true
+}
+
+/** Order: a challenge first — it vetoes `ok` whatever the body says (the body
+ *  can even be a valid tools array), and it only reaches FAILED when the
+ *  handshake failed (finding B6) — then what the parsed body was. */
+function toolsListFailure(
+  ok: boolean,
+  challenge: { scheme: string } | null,
+  handshakeOk: boolean,
+  status: number,
+  parsed: ParsedJsonRpc,
+): { failure: FailureReason<ToolsListFailureKey> } | Record<string, never> {
+  if (ok || (challenge && handshakeOk)) return {}
+  if (challenge) return { failure: failure('tools_list_challenge_after_failed_handshake') }
+  if (!parsed.isJsonRpc) return { failure: failure('tools_list_not_jsonrpc', { status }) }
+  if (parsed.error) return { failure: failure('tools_list_jsonrpc_error', { status, ...jsonRpcErrorCode(parsed) }) }
+  return { failure: failure('tools_list_not_array', { status }) }
+}
+
+export async function performToolsList(opts: {
+  fetchImpl: FetchLike
+  budget: ProbeBudget
+  ctx: ProbeContext
+  newId: () => string
+  handshake: HandshakeResult
+}): Promise<ToolsListResult> {
+  const { fetchImpl, budget, ctx, newId, handshake } = opts
+  const endpoint = handshake.currentEndpoint
+
+  const res =
+    handshake.mode === 'modern'
+      ? await sendModern(fetchImpl, endpoint, budget, ctx, 'tools/list', newId(), {}, handshake.protocolVersionDeclared ?? MODERN_PROBE_VERSION)
+      : await sendRequest(
+          fetchImpl,
+          endpoint,
+          {
+            method: 'POST',
+            headers: legacyHeaders({
+              'mcp-protocol-version': handshake.protocolVersionDeclared ?? LEGACY_PROBE_VERSION,
+              ...(handshake.sessionId ? { 'mcp-session-id': handshake.sessionId } : {}),
+            }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: newId(), method: 'tools/list', params: {} }),
+          },
+          budget,
+          ctx,
+        )
+
+  // Codex PR#19 P2 (round 9): classify the credential
+  // challenge from status + headers BEFORE the body is looked at, and let it
+  // veto `ok`. Previously the challenge was only attached in the `!ok` arm,
+  // so a response that was HTTP 401 with a structurally valid
+  // WWW-Authenticate challenge but whose body happened to carry a well-formed
+  // `result.tools` array came back ok=true with NO challenge — probe.ts then
+  // fell through to its `else if (toolsList.ok)` arm, recorded tools_list
+  // VERIFIED, and computed (and on a signed run published) toolset and schema
+  // fingerprints from a response the server had marked 401. Not hypothetical:
+  // a misconfigured auth proxy stamping 401 onto an otherwise successful
+  // upstream response produces exactly this shape.
+  //
+  // Governing principle: "A 401 is the server declaring the response
+  // unauthorized; signed evidence must never be derived from a response the
+  // server itself disowned." Nulling `tools` at the source is what makes that
+  // unconditional — it closes the cell probe.ts's credential_required branch
+  // cannot reach, namely !handshakeOk (finding B6 scopes that branch to
+  // handshakeOk, and the tools-list-layer credential-gate rule is unchanged
+  // here) plus a challenged 401 carrying a tools array. With `ok` false, that
+  // cell lands on probe.ts's final `else` — tools_list FAILED,
+  // skipToolsDerivedChecks — instead of on the fingerprint-computing arm. No
+  // branch in probe.ts needed reordering.
+  //
+  // This also brings the code into line with the criterion the credential-gate
+  // rule states (status + headers; it never mentioned the body) and with the
+  // published tools_list.cannot_* copy, which has no body condition either.
+  // The code was narrower than both; no copy changes.
+  const challenge = gateChallenge(res.status, res.headers)
+  const parsed = parseJsonRpcBody(res.bodyText, res.headers.get('content-type'))
+  const result = parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
+  const tools = result?.tools
+  const ok = Array.isArray(tools) && challenge === null
+  // T86: `ok` implies `result` is the object `tools` was read from.
+  const hasNextCursor = ok && Object.hasOwn(result!, 'nextCursor') && result!.nextCursor !== null && result!.nextCursor !== undefined
+  return {
+    ok,
+    tools: ok ? (tools as unknown[]) : null,
+    currentEndpoint: res.finalUrl,
+    ...(challenge ? { credentialChallenge: challenge } : {}),
+    ...toolsListFailure(ok, challenge, handshake.handshakeOk, res.status, parsed),
+    ...(hasNextCursor ? { hasNextCursor: true as const } : {}),
+  }
+}
+
+export interface ProbeCallResult {
+  status: number
+  headers: Headers
+  bodyText: string
+  currentEndpoint: string
+}
+
+/** Calls the name reserved for a tool that should not exist, the protocol-level
+ *  way of triggering an error scenario (checks.json's error_taxonomy /
+ *  auth_metadata both read this same response when it is sent — never a
+ *  business tool). A server can still define that name, so runProbe withholds
+ *  this call when the tool list names it or could not be read in full (T86),
+ *  and on both credential-gated branches (T86b), where auth_metadata reads the
+ *  gate's own 401 challenge instead. */
+export async function performUnknownToolCall(opts: {
+  fetchImpl: FetchLike
+  budget: ProbeBudget
+  ctx: ProbeContext
+  newId: () => string
+  handshake: HandshakeResult
+  toolName: string
+}): Promise<ProbeCallResult> {
+  const { fetchImpl, budget, ctx, newId, handshake, toolName } = opts
+  const endpoint = handshake.currentEndpoint
+
+  const res =
+    handshake.mode === 'modern'
+      ? await sendModern(
+          fetchImpl,
+          endpoint,
+          budget,
+          ctx,
+          'tools/call',
+          newId(),
+          { name: toolName, arguments: {} },
+          handshake.protocolVersionDeclared ?? MODERN_PROBE_VERSION,
+          toolName,
+        )
+      : await sendRequest(
+          fetchImpl,
+          endpoint,
+          {
+            method: 'POST',
+            headers: legacyHeaders({
+              'mcp-protocol-version': handshake.protocolVersionDeclared ?? LEGACY_PROBE_VERSION,
+              ...(handshake.sessionId ? { 'mcp-session-id': handshake.sessionId } : {}),
+            }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: newId(), method: 'tools/call', params: { name: toolName, arguments: {} } }),
+          },
+          budget,
+          ctx,
+        )
+
+  return { status: res.status, headers: res.headers, bodyText: res.bodyText, currentEndpoint: res.finalUrl }
+}

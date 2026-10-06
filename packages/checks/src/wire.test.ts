@@ -148,6 +148,68 @@ await t('跨主机重定向：跟随并标记 redirectCrossHostObserved = true',
   assert.equal(ctx.redirectCrossHostObserved, true)
 })
 
+console.log('\nsendRequest：跨主机的那一跳不带凭据头（authorization / proxy-authorization / cookie），同主机的跳保留；一旦去掉，后面每一跳都不再带')
+
+/** A GET chain `hops` (URL -> Location; the last answers 200), recording each
+ *  request's URL and its headers as a plain lowercase record. */
+function recordingChain(hops: Record<string, string>) {
+  const seen: { url: string; headers: Record<string, string> }[] = []
+  const fetchImpl: FetchLike = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    const headers: Record<string, string> = {}
+    new Headers(init?.headers).forEach((value, key) => { headers[key] = value })
+    seen.push({ url, headers })
+    const next = hops[url]
+    return next === undefined ? new Response('final', { status: 200 }) : new Response(null, { status: 302, headers: { location: next } })
+  }
+  return { fetchImpl, seen }
+}
+
+await t('GET 带 authorization，302 到另一个主机：下一跳没有 authorization（其余头照旧）', async () => {
+  const chain = recordingChain({ 'https://a.example.com/start': 'https://b.example.com/next' })
+  const ctx = createProbeContext(Date.now())
+  await sendRequest(chain.fetchImpl, 'https://a.example.com/start', { method: 'GET', headers: { authorization: 'Bearer <REDACTED>', accept: 'application/json' } }, BUDGET, ctx)
+  assert.deepEqual(chain.seen.map((s) => s.url), ['https://a.example.com/start', 'https://b.example.com/next'])
+  assert.equal(chain.seen[0]!.headers.authorization, 'Bearer <REDACTED>', '第一跳是我们要访问的主机，凭据照常带上')
+  assert.equal(chain.seen[1]!.headers.authorization, undefined, '跨主机的那一跳绝不能带 authorization')
+  assert.equal(chain.seen[1]!.headers.accept, 'application/json', '只去掉凭据头，其余头不受影响')
+})
+
+await t('cookie 与 proxy-authorization 同样在跨主机那一跳被去掉；Headers 实例与 [name, value][] 两种 HeadersInit 都一样', async () => {
+  for (const headers of [
+    new Headers({ Cookie: 'session=<REDACTED>', 'Proxy-Authorization': 'Basic <REDACTED>', accept: '*/*' }),
+    [['cookie', 'session=<REDACTED>'], ['proxy-authorization', 'Basic <REDACTED>'], ['accept', '*/*']] as [string, string][],
+  ]) {
+    const chain = recordingChain({ 'https://a.example.com/start': 'https://b.example.com/next' })
+    await sendRequest(chain.fetchImpl, 'https://a.example.com/start', { method: 'GET', headers }, BUDGET, createProbeContext(Date.now()))
+    assert.equal(chain.seen[0]!.headers.cookie, 'session=<REDACTED>')
+    assert.deepEqual(chain.seen[1]!.headers, { accept: '*/*' })
+  }
+})
+
+await t('同主机的跳保留 authorization；A -> A -> B -> A：跨主机之后（含回到 A）都不再带', async () => {
+  const chain = recordingChain({
+    'https://a.example.com/1': 'https://a.example.com/2',
+    'https://a.example.com/2': 'https://b.example.com/3',
+    'https://b.example.com/3': 'https://a.example.com/4',
+  })
+  await sendRequest(chain.fetchImpl, 'https://a.example.com/1', { method: 'GET', headers: { authorization: 'Bearer <REDACTED>' } }, BUDGET, createProbeContext(Date.now()))
+  assert.deepEqual(chain.seen.map((s) => s.headers.authorization), ['Bearer <REDACTED>', 'Bearer <REDACTED>', undefined, undefined])
+})
+
+await t('没有凭据头的请求：跨主机那一跳收到的是同一个 init 对象（原样转交，不重建）', async () => {
+  const inits: (RequestInit | undefined)[] = []
+  const fetchImpl: FetchLike = async (input, init) => {
+    inits.push(init)
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    return url === 'https://a.example.com/start' ? new Response(null, { status: 302, headers: { location: 'https://b.example.com/next' } }) : new Response('final', { status: 200 })
+  }
+  const init: RequestInit = { method: 'GET', headers: { accept: 'application/json' } }
+  await sendRequest(fetchImpl, 'https://a.example.com/start', init, BUDGET, createProbeContext(Date.now()))
+  assert.equal(inits.length, 2)
+  assert.ok(inits[0] === init && inits[1] === init)
+})
+
 await t('相对 Location 相对当前跳的 URL 解析，而不是相对原始 URL', async () => {
   const fetchImpl: FetchLike = async (input) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url

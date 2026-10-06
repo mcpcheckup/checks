@@ -696,6 +696,94 @@ await t('POST 收到同主机 302：同样不跟随（默认不跟，不区分�
   assert.equal(net.calls.length, 1)
 })
 
+console.log('\nguardedFetch: followRedirects: false —— GET 的 3xx 与非 GET 一样原样返回，由调用方自己逐跳跟随')
+
+/** One GET that answers `status` with `location`, through the real orchestration, with
+ *  the audit record captured. `followRedirects` undefined = the option is absent. */
+async function getOnce(location: string, followRedirects: boolean | undefined, budget = DEFAULT_PROBE_BUDGET, status = 302) {
+  const dns = makeValidatingResolver({ 'public.example.com': [publicV4('93.184.216.34')], 'other.example.com': [publicV4('203.0.113.5')] })
+  const net = makeFetch({
+    'https://public.example.com/a': () => new Response('moved', { status, headers: { location } }),
+    'https://public.example.com/b': () => new Response('same-host target', { status: 200 }),
+    'https://other.example.com/c': () => new Response('other-host target', { status: 200 }),
+  })
+  const audits: import('./audit.ts').ProbeAuditRecord[] = []
+  const result = await guardedFetch('https://public.example.com/a', budget, ALLOW, {
+    callerIdentifier: 'test-caller',
+    parseResponse: textParser,
+    fetchImpl: net.impl,
+    resolveAndValidateHostImpl: dns.impl,
+    resolveHostImpl: dns.impl,
+    onAudit: (r) => audits.push(structuredClone(r)),
+    ...(followRedirects === undefined ? {} : { followRedirects }),
+  })
+  return { result, urls: net.calls.map((c) => c.url), audits }
+}
+
+await t('GET + followRedirects:false 收到跨主机 302：恰好一次 fetch，3xx 原样作为结果返回（status / Location / redirectCrossHostObserved=true），审计记录一条 success', async () => {
+  const { result, urls, audits } = await getOnce('https://other.example.com/c', false)
+  assert.deepEqual(urls, ['https://public.example.com/a'], '第二跳绝不能被发出')
+  assert.equal(result.status, 302)
+  assert.equal(result.result.body, 'moved')
+  assert.equal(result.finalUrl, 'https://public.example.com/a')
+  assert.equal(result.redirectCrossHostObserved, true)
+  assert.equal(audits.length, 1)
+  assert.equal(audits[0]!.outcome, 'success')
+  assert.equal(audits[0]!.hopCount, 1)
+  assert.equal(audits[0]!.redirectCrossHostObserved, true)
+})
+
+await t('GET + followRedirects:false 收到同主机 302：同样恰好一次 fetch，redirectCrossHostObserved=false', async () => {
+  const { result, urls, audits } = await getOnce('/b', false)
+  assert.deepEqual(urls, ['https://public.example.com/a'])
+  assert.equal(result.status, 302)
+  assert.equal(result.redirectCrossHostObserved, false)
+  assert.equal(audits[0]!.redirectCrossHostObserved, false)
+})
+
+await t('GET + followRedirects:false 与 maxRedirects=0 同时出现：仍是原样返回 302，绝不抛 MAX_REDIRECTS（「不跟随」不是「跳数超限」）', async () => {
+  const { result, urls } = await getOnce('https://other.example.com/c', false, { ...DEFAULT_PROBE_BUDGET, maxRedirects: 0 })
+  assert.deepEqual(urls, ['https://public.example.com/a'])
+  assert.equal(result.status, 302)
+})
+
+await t('GET + followRedirects:false 收到每一种重定向状态（301/302/303/307/308）都原样返回', async () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    const { result, urls } = await getOnce('https://other.example.com/c', false, DEFAULT_PROBE_BUDGET, status)
+    assert.deepEqual(urls, ['https://public.example.com/a'], `${status}`)
+    assert.equal(result.status, status)
+  }
+})
+
+for (const [label, option] of [['选项缺省', undefined], ['followRedirects:true', true]] as const) {
+  await t(`GET + ${label}：照旧跟随（跨主机两跳 fetch，返回最终 200，redirectCrossHostObserved=true）`, async () => {
+    const { result, urls } = await getOnce('https://other.example.com/c', option)
+    assert.deepEqual(urls, ['https://public.example.com/a', 'https://other.example.com/c'])
+    assert.equal(result.status, 200)
+    assert.equal(result.result.body, 'other-host target')
+    assert.equal(result.redirectCrossHostObserved, true)
+  })
+}
+
+await t('POST + followRedirects:true 也不跟随：这个选项只能让 GET 更严，不能让非 GET 变松', async () => {
+  const dns = makeValidatingResolver({ 'public.example.com': [publicV4('93.184.216.34')] })
+  const net = makeFetch({
+    'https://public.example.com/mcp': () => new Response(null, { status: 307, headers: { location: 'https://other.example.com/mcp' } }),
+  })
+  const result = await guardedFetch('https://public.example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller',
+    parseResponse: textParser,
+    fetchImpl: net.impl,
+    resolveAndValidateHostImpl: dns.impl,
+    resolveHostImpl: dns.impl,
+    method: 'POST',
+    body: '{}',
+    followRedirects: true,
+  })
+  assert.equal(result.status, 307)
+  assert.equal(net.calls.length, 1)
+})
+
 console.log('\nguardedFetch: authorization 头绝不跨主机传递（N 任务安全要求 3，独立于「非 GET 不跟随重定向」的第二道锁）')
 
 await t('GET 多跳，hop2 跨主机：hop1 的 fetch 带 authorization，hop2 的 fetch 不带；同主机 hop 之间 authorization 保留', async () => {

@@ -32,6 +32,7 @@ const EXPECTED_KEYS = [
   'fingerprint_tool_missing_name', 'fingerprint_canonicalize_failed',
   'probe_tool_name_collision', 'probe_tool_name_unverifiable',
   'reachability_unanswered', 'reachability_dns_failed', 'probe_blocked_by_policy', 'probe_resolver_unavailable',
+  'probe_declined_other_host',
 ]
 
 async function main() {
@@ -405,6 +406,20 @@ async function main() {
     assert.deepEqual(reads('probe_blocked_by_policy', 'X'), ['code'])
     assert.deepEqual(reads('reachability_dns_failed', 'X'), [])
     assert.deepEqual(reads('probe_resolver_unavailable', 'X'), [])
+  })
+
+  await t('suite 0.11.0: probe_declined_other_host renders exactly its en/zh sentence, reads no params, and names no host', () => {
+    const touched = new Set<string>()
+    const spy = new Proxy({} as Record<string, string | number>, {
+      has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+      get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 'declined.example.net' },
+    })
+    const entry = REASON_MESSAGES.probe_declined_other_host!
+    for (const params of [undefined, spy]) {
+      assert.equal(entry.en(params), 'Our probe did not connect to another host the server pointed to — later checks did not run.')
+      assert.equal(entry.zh(params), '我们的探测器没有连接该服务器指向的另一个主机——后续检查未运行。')
+    }
+    assert.deepEqual([...touched], [])
   })
 
   console.log(`\n${pass} passed, ${fail} failed`)

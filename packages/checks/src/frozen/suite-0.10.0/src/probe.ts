@@ -5,7 +5,6 @@ import { BudgetExceeded, RateLimited, SsrfBlocked, UpstreamFetchFailed } from '@
 type ExecutionStatus = Assertion['execution_status']
 import { runHygieneCheck } from './hygiene.ts'
 import { createProbeContext, ProbeAborted } from './wire.ts'
-import { OtherHostDeclined } from './other-host-declined.ts'
 import type { ProbeContext } from './wire.ts'
 import { performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
 import type { CredentialChallenge } from './protocol.ts'
@@ -52,9 +51,8 @@ const GUARD_CODE_SHAPE = /^[A-Z][A-Z0-9_]{0,63}$/
  *  alone. The error's message and cause are never read and never copied: the
  *  only params are `kind` (a fixed word) or `code` (a guard constant), and the
  *  budget numbers come from this run's own budget. Returns undefined for
- *  anything else — our own errors: OtherHostDeclined (its own key, in
- *  runProbe's catch) and the adapter's argument checks, which keep
- *  probe_aborted.
+ *  anything else — our own wrapper errors (the trial host restriction, the
+ *  adapter's argument checks), which keep probe_aborted.
  *
  *  Two rules keep a reason from saying something false about the endpoint:
  *  - The keys whose copy names "the endpoint" — reachability_dns_failed and
@@ -165,9 +163,7 @@ function judgeBaselineCheck(
  *  gets is decided by its class and code only (guardErrorReason), never by
  *  its message — so the ssrf-guard errors fetchImpl passes through now tell
  *  "the endpoint did not answer" apart from our own policy, resolver and
- *  budget. Suite 0.11.0: a host other than the endpoint's that a FetchLike
- *  wrapper declined to contact (OtherHostDeclined) gets
- *  probe_declined_other_host; anything else still gets probe_aborted. */
+ *  budget; anything else still gets probe_aborted. */
 export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   const { target, fetchImpl, budget, now, newId, approvedBaseline, provenance, registry } = input
 
@@ -462,14 +458,6 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       if (e.code === 'RATE_LIMITED') {
         rateLimited = { retryAfterSeconds: e.retryAfterSeconds ?? null }
       }
-    } else if (e instanceof OtherHostDeclined) {
-      // A FetchLike wrapper refused, before any request, to contact a host
-      // other than the endpoint's own (see other-host-declined.ts): our
-      // decision, so never FAILED or OBSERVED_RISK. No params — the key names
-      // neither the host nor why — so, like the branches around it, the
-      // cascade carries the same reason.
-      reachabilityReason = { key: 'probe_declined_other_host' }
-      cascadeReason = reachabilityReason
     } else if (guardReason !== undefined) {
       // T85: an ssrf-guard error — classified by class / code, never message
       // (guardErrorReason). Its params are kind / code / budget numbers only,
@@ -480,8 +468,8 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       cascadeReason = reachabilityReason
     } else {
       // Anything else — in production, one of our own wrapper errors (the
-      // adapter's argument checks). Its message is kept in params as a
-      // diagnostic, unlike ProbeAborted above.
+      // trial host restriction, the adapter's argument checks). Its message is
+      // kept in params as a diagnostic, unlike ProbeAborted above.
       //
       // Deliberately NOT promoted into cascadeReason, unlike the ProbeAborted
       // branch: `message` is an unbounded third-party/system string, and the

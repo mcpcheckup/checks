@@ -90,7 +90,21 @@ const FROZEN_080_PROBE_BLOB = '9264f8730e0582158f80fb0a6a019e596e691cee'
  *  (./probe.ts, and frozen/suite-0.8.0/probe.ts through ../../protocol.ts),
  *  so the change reaches both sides identically. Freezing protocol.ts here
  *  would have meant editing the frozen probe.ts's imports. T96's own change
- *  is carried by discover-fallback-differential.test.ts (live vs frozen 0.9.0). */
+ *  is carried by discover-fallback-differential.test.ts (live vs frozen 0.9.0).
+ *
+ *  Suite 0.11.0 re-pins three files to their 0.11.0 blob (git hash-object
+ *  <path> at that change): checks.json (registry_version 0.9.0, nothing
+ *  else), wire.ts (a GET redirect hop to another
+ *  host drops authorization / proxy-authorization / cookie) and ssrf-guard's
+ *  guarded-fetch.ts (the followRedirects option, default unchanged). None
+ *  changes what this differential computes: checks.json is reached type-only;
+ *  both parties run the same live wire.ts, and the only GET either sends —
+ *  auth.ts's metadata fetch, including the GET-redirect variants of input set
+ *  A — carries no headers, so no hop has anything to drop; no run here calls
+ *  guardedFetch, and the trial host restriction this file's input set B
+ *  imitates with a plain Error now throws OtherHostDeclined in production,
+ *  which is carried by declined-host-differential.test.ts (live vs frozen
+ *  0.10.0). */
 const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
@@ -105,7 +119,7 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '64ecf38d8c667af4058dbb62c441230f2bc5e880', // no-baseline reason copy (registry_version 0.8.0; the two no_baseline_reason texts only, same type-only reach as the transport_type copy pin, no frozen file computes from it) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': '04920465eb88986f76febbdec74b66238e3cd2ed', // suite 0.11.0 (registry_version 0.9.0 only; see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/auth.ts': 'f8b78f074b997b38e39319d97ec93807f73a0c65',
   'packages/checks/src/error-taxonomy.ts': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
@@ -113,12 +127,12 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/checks/src/protocol.ts': '2d39fd28a93a21000b6cc008336971bd1080d030', // T96 (2xx discover fallback; see above) — git rev-parse "$(git log -n1 --format=%h -G'T96 rule: the statuses' -- packages/checks/src/protocol.ts)":packages/checks/src/protocol.ts
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
   'packages/checks/src/types.ts': '59d38f860a3cd07989421fc2e6b97b60cabedd10',
-  'packages/checks/src/wire.ts': 'c0ab8b30a92e22457c20acb21bc166b6c1336e56',
+  'packages/checks/src/wire.ts': '73314f32dec3befcb82edfa8afa70e05223d16b6', // suite 0.11.0 (see above) — git hash-object packages/checks/src/wire.ts
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
   'packages/ssrf-guard/src/dns-wire.ts': '04357f1c08ee2d649a382d2640580903323af222',
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57', // T85 round 2 (hop field) — git rev-parse 962fdc6:packages/ssrf-guard/src/errors.ts
-  'packages/ssrf-guard/src/guarded-fetch.ts': '3c96a62e1a4e1f3378ff4a31766f597d59852438', // TODO 591 (re-check RESOLVER_UNAVAILABLE rethrown, R20) — git rev-parse "$(git log -n1 --format=%h -G'discardBody' -- packages/ssrf-guard/src/guarded-fetch.ts)":packages/ssrf-guard/src/guarded-fetch.ts
+  'packages/ssrf-guard/src/guarded-fetch.ts': 'eda760ca7ffb210feb2a685ca0dd43d34a9ab86a', // suite 0.11.0 (followRedirects; see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755', // T85: git rev-parse 3696518:packages/ssrf-guard/src/index.ts
   'packages/ssrf-guard/src/ip-policy.ts': 'b581241df1a369ee55e780b1450d1997ab2635db',
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',

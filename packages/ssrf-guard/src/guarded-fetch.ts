@@ -26,6 +26,14 @@ export interface GuardedFetchOptions<T> {
    *  network access — the same budget dimension response bodies are checked against
    *  (see response-view.ts), not a separate one. */
   body?: string | Uint8Array
+  /** Defaults to true. When false, a GET does not follow its own redirect either:
+   *  a 3xx with a Location comes back as the result, exactly as a non-GET's does
+   *  (see "Non-GET does not follow redirects" in the README), never as
+   *  MAX_REDIRECTS. For a caller that follows redirects itself, one call per hop,
+   *  so that every hop also passes through that caller's own checks. Stricter,
+   *  never looser: each hop the caller then requests is a new guardedFetch call,
+   *  validated from scratch. */
+  followRedirects?: boolean
 }
 
 export interface GuardedFetchResult<T> {
@@ -34,14 +42,13 @@ export interface GuardedFetchResult<T> {
   finalUrl: string
   hops: ProbeHopRecord[]
   dnsAnswerChangedDuringProbe: boolean
-  /** See "Non-GET does not follow redirects" in the README. True when a non-GET
-   *  request's final response is itself a redirect (3xx + Location) whose Location
-   *  points at a different host than the request that produced it — meaning
-   *  guardedFetch deliberately stopped rather than replaying the method/headers/body
-   *  at a host that never agreed to receive them. Also true (independently) whenever
-   *  a GET redirect chain crosses hosts, since that's the same fact the "strip
-   *  authorization across hosts" rule below reacts to. Always false when the whole
-   *  call never crossed a host boundary. */
+  /** See "Non-GET does not follow redirects" in the README. True when the final
+   *  response is itself a redirect (3xx + Location) that guardedFetch did not
+   *  follow — any non-GET, or a GET called with followRedirects: false — and its
+   *  Location points at a different host than the request that produced it. Also
+   *  true (independently) whenever a followed GET redirect chain crosses hosts,
+   *  since that's the same fact the "strip authorization across hosts" rule below
+   *  reacts to. Always false when the whole call never crossed a host boundary. */
   redirectCrossHostObserved: boolean
 }
 
@@ -177,7 +184,8 @@ function classifyOutcome(error: unknown): ProbeOutcome {
  * detect (not prevent) a DNS answer that changed mid-probe. Method defaults to GET;
  * POST additionally requires an allowlisted header set and does not follow its own
  * redirects — see "Non-GET does not follow redirects" and "authorization never crosses
- * a host" in the README for why.
+ * a host" in the README for why. A GET follows its redirects unless the caller passes
+ * followRedirects: false, in which case the 3xx is returned the same way.
  */
 export async function guardedFetch<T>(
   url: string,
@@ -295,7 +303,8 @@ export async function guardedFetch<T>(
       // the classic credential-leak redirect pattern. The redirect becomes the terminal
       // result instead (still a normal, successful return — this is data, not a guard
       // rejection), with redirectCrossHostObserved recording whether it pointed cross-host.
-      if (isRedirect && method !== 'GET') {
+      // A GET whose caller passed followRedirects: false takes this same branch.
+      if (isRedirect && (method !== 'GET' || opts.followRedirects === false)) {
         const location = response.headers.get('location')!
         redirectCrossHostObserved = isCrossHostRedirect(location, target.url, target.hostname)
 

@@ -172,24 +172,6 @@ async function readBodyWithBudget(response: Response, maxBodyBytes: number): Pro
   return text
 }
 
-/** Request headers that carry a credential. None of them may travel with a
- *  redirect hop to a different host (see sendRequest). `authorization` is the one
- *  guardedFetch itself strips on a cross-host hop of a chain it follows; the
- *  other two are never sent by this package and never pass guardedFetch's
- *  header allowlist, and are listed so that this rule does not depend on it. */
-const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie'] as const
-
-/** `init` without any CREDENTIAL_HEADERS. Returns `init` itself, untouched, when
- *  it carries none — so a request without credentials is sent on exactly as
- *  before. */
-function withoutCredentialHeaders(init: RequestInit): RequestInit {
-  if (init.headers === undefined) return init
-  const headers = new Headers(init.headers)
-  if (!CREDENTIAL_HEADERS.some((name) => headers.has(name))) return init
-  for (const name of CREDENTIAL_HEADERS) headers.delete(name)
-  return { ...init, headers }
-}
-
 /** Sends one logical request, following same- or cross-host redirects (recording
  *  cross-host ones) up to budget.maxRedirects, enforcing the run's request-count /
  *  wall-clock / body-size budget at every hop, and collecting GuardSignals fetchImpl
@@ -197,16 +179,8 @@ function withoutCredentialHeaders(init: RequestInit): RequestInit {
  *  probe budget (packages/checks/checks.json's `budget`) is enforced here, in one
  *  place, so no individual check has to reimplement budget accounting.
  *
- *  Redirect-following only ever applies to GET. The protocol calls (protocol.ts)
- *  are POST; the one GET this package sends is auth.ts's fetch of the target's
- *  `resource_metadata` URL. Its hops are followed HERE, one fetchImpl call per
- *  hop: the production FetchLike asks guardedFetch not to follow redirects
- *  itself (followRedirects: false), so every hop is counted against the run's
- *  request budget, passes through the caller's FetchLike wrappers (which hosts
- *  the run may contact at all) and is seen by redirectCrossHostObserved below.
- *  A hop that changes host drops the credential headers (CREDENTIAL_HEADERS)
- *  from every later hop, as guardedFetch does with `authorization` when it
- *  follows a chain itself. A POST that gets 3xx'd is never re-issued
+ *  Redirect-following only ever applies to GET. Every real wire call this package
+ *  makes is POST (see protocol.ts) — a POST that gets 3xx'd is never re-issued
  *  against the Location target; that response becomes this call's terminal result
  *  instead (same as any non-redirect status), with redirectCrossHostObserved still
  *  set when the Location crosses hosts, so the observation isn't silently lost. This
@@ -243,7 +217,6 @@ export async function sendRequest(
   const originalHostname = new URL(url).hostname
   const method = (init.method ?? 'GET').toUpperCase()
   let currentUrl = url
-  let currentInit = init
   let hop = 0
 
   const deadlineAtMs = ctx.startedAtMs + budget.maxDurationMs
@@ -296,7 +269,7 @@ export async function sendRequest(
       throw new ProbeAborted('MAX_REQUESTS', `探测已达到 ${budget.maxRequests} 次请求的总预算`, { maxRequests: budget.maxRequests })
     }
     ctx.requestCount++
-    const response = await withinDeadline((timeoutMs) => fetchImpl(currentUrl, currentInit, onGuardSignal, { timeoutMs }), remainingMs)
+    const response = await withinDeadline((timeoutMs) => fetchImpl(currentUrl, init, onGuardSignal, { timeoutMs }), remainingMs)
 
     // Checked before anything else this response could lead to — before the
     // redirect hop, before the body is even read. Throwing here is what makes
@@ -317,9 +290,6 @@ export async function sendRequest(
         }
         const nextUrl = new URL(location, currentUrl)
         if (nextUrl.hostname !== originalHostname) ctx.redirectCrossHostObserved = true
-        // A hop to another host never carries our credentials, and once dropped
-        // they stay dropped for the rest of the chain (A -> B -> A included).
-        if (nextUrl.hostname !== new URL(currentUrl).hostname) currentInit = withoutCredentialHeaders(currentInit)
         currentUrl = nextUrl.href
         continue
       }

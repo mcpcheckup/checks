@@ -294,7 +294,13 @@ applies regardless of whether the redirect is same-host or cross-host — the de
 cross-host POST replaying the same body and headers is the classic credential-leak
 redirect pattern (steal the token via a 302 to an attacker-controlled host), and an MCP
 server responding to a POST with a redirect is itself worth recording as a signal, not
-worth chasing. GET's existing multi-hop redirect-following behavior is unchanged.
+worth chasing. A GET follows its redirects (re-validating every hop) by default; a
+caller that passes `followRedirects: false` gets a GET's `3xx` back in exactly the same
+way, never a `MAX_REDIRECTS` error. That option exists for a caller that follows
+redirects itself, one `guardedFetch` call per hop, so that each hop also passes through
+the caller's own checks (for example, which hosts it may contact at all). It can only
+make a call stricter: every hop the caller then requests is a fresh call, validated
+from scratch.
 
 ### `authorization` never crosses a host
 
@@ -322,6 +328,7 @@ const result = await guardedFetch(
   {
     callerIdentifier: 'session:abc123',   // for the audit trail — never PII, your call
     method: 'POST',                       // defaults to 'GET'; only 'GET' | 'POST'
+    // followRedirects: false,            // GET only: return a 3xx instead of following it (default true)
     headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     parseResponse: async (handle) => {
@@ -408,6 +415,9 @@ built on nothing but platform globals (`fetch`, `URL`, `TextEncoder`/`TextDecode
   going." A caller with its own generic redirect-following logic sitting on top of
   `guardedFetch` (reconstructing a `Response` and re-inspecting it for `3xx` + `Location`)
   can silently undo this protection by following the redirect itself, outside this
-  package's view, replaying the same method/headers/body it originally sent — this is a
-  real, currently-open gap in a calling prober's own call stack; tracked internally,
-  not in this package.
+  package's view, replaying the same method/headers/body it originally sent. The same
+  holds for a GET called with `followRedirects: false`: once the caller follows the hops
+  itself, the caller must keep both rules above — never replay a non-GET, and drop
+  `authorization` (and any other credential it sends) on a hop that changes host.
+  Every hop it then requests still goes through `guardedFetch`, so the address checks
+  are never skipped; only those two header/method rules move to the caller.

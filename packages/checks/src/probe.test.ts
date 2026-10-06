@@ -9,6 +9,7 @@ import { runProbe as frozen090RunProbe } from './frozen/suite-0.9.0/probe.ts'
 import { judgeAuthMetadata as frozen071JudgeAuthMetadata } from './frozen/suite-0.7.1/auth.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import { ProbeAborted, createProbeContext } from './wire.ts'
+import { OtherHostDeclined } from './other-host-declined.ts'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { DEFAULT_PROBE_BUDGET, createProbeBudget, BudgetExceeded, RateLimited, SsrfBlocked, UpstreamFetchFailed } from '@mcpcheckup/ssrf-guard'
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
@@ -273,7 +274,7 @@ for (const [label, make, reason, settledReason] of T85_CASES) {
 console.log('\nT85：我们自己的包装错误（不是 ssrf-guard 的错误类）仍然是 probe_aborted { message }')
 
 const OWN_ERRORS: [string, () => unknown][] = [
-  ['trial host restriction (the trial-host restriction in the prober)', () => new Error('trial probe declined to fetch "other.example.com": a trial run never leaves the host it was asked to check ("notes-mcp.example.com")')],
+  ['a plain Error (what the prober\'s trial-host restriction threw before suite 0.11.0; it now throws OtherHostDeclined, below)', () => new Error('trial probe declined to fetch "other.example.com": a trial run never leaves the host it was asked to check ("notes-mcp.example.com")')],
   ['adapter body type (guarded-fetch-adapter.ts normalizeBody)', () => new TypeError('guarded-fetch-adapter: unsupported request body type [object Blob]')],
   ['adapter timeoutMs (guarded-fetch-adapter.ts)', () => new RangeError('guarded-fetch-adapter: timeoutMs must be a positive number of milliseconds, got 0')],
 ]
@@ -369,6 +370,40 @@ for (const [label, make] of [
     for (const a of result.assertions) assert.ok(a.reason?.key !== 'reachability_dns_failed' && a.reason?.key !== 'reachability_unanswered', a.check_id)
   })
 }
+
+console.log('\nsuite 0.11.0：FetchLike 包装层拒绝访问端点以外的主机（OtherHostDeclined）→ probe_declined_other_host，无 params，从不 FAILED / OBSERVED_RISK')
+
+await t('OtherHostDeclined on the metadata GET (after reachability is VERIFIED): auth_metadata, redirect_policy and every other never-ran row SKIPPED/UNVERIFIED probe_declined_other_host; no row FAILED or OBSERVED_RISK because of it', async () => {
+  const declined = await runProbe(makeInput(failingMetadataGet(() => new OtherHostDeclined())))
+  const control = await runProbe(makeInput(failingMetadataGet(() => new Error('control: a plain Error at the same request'))))
+  assert.equal(declined.assertions.find((a) => a.check_id === 'reachability')!.assertion_status, 'VERIFIED')
+  for (const checkId of ['auth_metadata', 'redirect_policy']) {
+    const a = declined.assertions.find((x) => x.check_id === checkId)!
+    assert.deepEqual([a.execution_status, a.assertion_status, a.reason, a.unverified_reason], ['SKIPPED', 'UNVERIFIED', { key: 'probe_declined_other_host' }, { key: 'probe_declined_other_host' }], checkId)
+  }
+  // Exactly the rows the control's catch wrote, and nothing else, differ.
+  for (const [i, a] of declined.assertions.entries()) {
+    const c = control.assertions[i]!
+    if (c.reason?.key === 'probe_cascade_incomplete') assert.deepEqual(a.reason, { key: 'probe_declined_other_host' }, a.check_id)
+    else assert.deepEqual(a, c, a.check_id)
+  }
+})
+
+await t('OtherHostDeclined on the very first request: reachability ERROR/UNVERIFIED probe_declined_other_host (no params, no message), and so is every never-ran row', async () => {
+  const result = await runThrowingAt(1, () => new OtherHostDeclined())
+  const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
+  assert.deepEqual([reachability.execution_status, reachability.reason], ['ERROR', { key: 'probe_declined_other_host' }])
+  for (const a of result.assertions) {
+    if (a.check_id === 'tls_certificate') continue
+    assert.deepEqual(a.reason, { key: 'probe_declined_other_host' }, a.check_id)
+  }
+  assert.ok(!JSON.stringify(result).includes(new OtherHostDeclined().message), 'the error message never reaches the result')
+})
+
+await t('class decides, not shape: a plain Error named OtherHostDeclined is still probe_aborted', async () => {
+  const result = await runThrowingAt(1, () => Object.assign(new Error('declined'), { name: 'OtherHostDeclined' }))
+  assert.equal(result.assertions.find((a) => a.check_id === 'reachability')!.reason?.key, 'probe_aborted')
+})
 
 for (const [label, make] of [
   ['RESOLUTION_FAILED at hop 1 (a redirect to another host that does not resolve)', () => atHop(1, new SsrfBlocked('RESOLUTION_FAILED', 'hop1.example.net has no A or AAAA records'))],

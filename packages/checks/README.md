@@ -82,8 +82,15 @@ handful of wire calls, and several checks read from the same call:
    UNVERIFIED" below).
 6. **`redirect_policy`** is judged last, from whether *any* wire call in the whole run
    crossed hosts on a redirect (tracked once, centrally, in `wire.ts`'s
-   `ProbeContext` — not recomputed per call site). Every wire call this package makes
-   is `POST` (see `protocol.ts`), and `sendRequest` **never follows a redirect for a
+   `ProbeContext` — not recomputed per call site). The protocol calls (`protocol.ts`)
+   are `POST`; the one `GET` is `auth.ts`'s fetch of the target's `resource_metadata`
+   URL. `sendRequest` follows a `GET`'s redirects itself, one `fetchImpl` call per hop
+   (the production `fetchImpl` asks `guardedFetch` not to follow them, with
+   `followRedirects: false`), so every hop counts against the request budget, passes
+   through the caller's own `fetchImpl` wrappers, and sets `redirectCrossHostObserved`
+   when it leaves the host that call started on; a hop to another host drops the
+   credential headers (`authorization`, `proxy-authorization`, `cookie`) from that hop
+   on. `sendRequest` **never follows a redirect for a
    non-GET request**: a 3xx becomes that call's terminal response instead of a second
    hop, though `redirectCrossHostObserved` still gets set when the `Location` crosses
    hosts, so the observation isn't silently lost. This is the same rule
@@ -185,7 +192,12 @@ Since suite 0.9.0 the same holds for an error `@mcpcheckup/ssrf-guard` raised. T
 `catch` reads its class, its `code` and its `hop` — never its message — and gives
 `reachability` (when it was not yet settled) and every never-ran check one of these
 reasons. `hop` is how many redirects the guard followed before the request that failed:
-0 is the URL it was asked for.
+0 is the URL it was asked for. Since suite 0.11.0 the production `fetchImpl` asks the
+guard to follow no redirects (`followRedirects: false`; `sendRequest` follows a `GET`'s
+hops itself, one guard call each), so there `hop` is always 0 and a redirect hop is a
+call of its own. The rules below stay true: the only request that is ever redirected
+is the `GET` of the `resource_metadata` URL, which runs after `reachability` is settled,
+where the endpoint-naming reasons are not used.
 
 | ssrf-guard error | reachability not yet settled | reachability already settled |
 |---|---|---|
@@ -208,6 +220,15 @@ failed request later in the run (for example the authorization metadata lookup, 
 can go to another host) gives the generic `probe_cascade_incomplete`, and running out of
 time gives `probe_budget_exhausted_duration`, the same reason `wire.ts`'s own time budget
 gives.
+
+Since suite 0.11.0 one error of our own has a reason of its own as well:
+`OtherHostDeclined` (exported from this package), which a caller's `fetchImpl` wrapper
+throws, before any request, when it declines to contact a host other than the
+endpoint's — a redirect hop or a `resource_metadata` URL on another host. It gives
+`probe_declined_other_host` (no params) to `reachability`, when not yet settled, and to
+every never-ran check, in both columns. The reason names neither the host nor why it
+was declined. Like any abort, it ends the run: `redirect_policy` is among the checks
+that never ran, even when the declined hop was a cross-host redirect.
 
 The params are only `kind`, `code` or a budget number: the error's message and cause
 reach no assertion, no stored row and no signed payload. Any other thrown error — for
