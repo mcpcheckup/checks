@@ -1,0 +1,22 @@
+{
+  "name": "@mcpcheckup/toolset-diff",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A deterministic per-tool comparison of two MCP tool lists: tools added, removed, description changed, input schema changed.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mcpcheckup/canonicalizer": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -35,6 +35,7 @@ This repository is published as snapshots of a private monorepo. Apart from the 
 - `packages/ssrf-guard`: the rules that decide which URLs the prober may fetch, re-checked on every redirect.
 - `packages/fixtures`: simulated MCP servers, each declaring the results the checks must produce against it.
 - `packages/verifier`: an offline verifier for signed attestation envelopes.
+- `packages/toolset-diff`: deterministic per-tool comparison of two MCP tool lists: tools added, removed, description changed, input schema changed.
 
 ## Recomputing `suite_digest`
 
