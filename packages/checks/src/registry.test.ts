@@ -121,5 +121,50 @@ t('no_baseline_reason：两项基线检查的「没有基线」原因逐字固�
   }
 })
 
+// redirect_policy (registry 0.10.0): only auth.ts's metadata GET follows redirects
+// (wire.ts sendRequest, `method === 'GET'`, up to budget.maxRedirects); a protocol POST's
+// 3xx is that call's terminal response, with the cross-host Location still recorded.
+t('redirect_policy.how_en 与签字原文逐字相同', () => {
+  assert.equal(how('redirect_policy').how_en, `A cross-host redirect is recorded as OBSERVED_RISK. Only the GET for authorization metadata follows redirects, for at most 3 hops; a protocol POST that gets a redirect is recorded, not followed.`)
+})
+
+t('redirect_policy.how_zh 与签字原文逐字相同', () => {
+  assert.equal(how('redirect_policy').how_zh, `跨主机重定向记 OBSERVED_RISK。只有读取授权元数据的 GET 会跟随重定向，最多 3 跳；协议 POST 收到重定向时只记录，不跟随。`)
+})
+
+t('redirect_policy.how 不再写「所有请求都跟随」的旧说法，写的跳数等于 checks.json 的 budget.max_redirects', () => {
+  const h = how('redirect_policy')
+  assert.doesNotMatch(h.how_en, /Followed for at most/)
+  assert.doesNotMatch(h.how_zh, /最多跟 3 跳。/)
+  assert.equal(CHECKS_REGISTRY.budget.max_redirects, 3)
+})
+
+// docs_version enters every signed assertion (probe.ts docsVersionFor). Registry 0.10.0
+// moves redirect_policy alone, v0.1.0 -> v0.2.0; every other value is the one at
+// d4b6af77 (`git show d4b6af77:packages/checks/checks.json`). A later bump of any check
+// updates this table in the same change, deliberately.
+t('docs_version：redirect_policy 为 v0.2.0，其余 14 项检查与 d4b6af77 逐条相同', () => {
+  const atD4b6af77: Record<string, string> = {
+    reachability: 'v0.4.0',
+    latency_profile: 'v0.1.0',
+    transport_type: 'v0.2.0',
+    protocol_revision: 'v0.2.0',
+    discovery_handshake: 'v0.3.0',
+    tools_list: 'v0.2.0',
+    error_taxonomy: 'v0.1.0',
+    tls_certificate: 'v0.1.0',
+    redirect_policy: 'v0.1.0',
+    auth_metadata: 'v0.1.0',
+    tool_description_hygiene: 'v0.1.0',
+    toolset_fingerprint: 'v0.1.0',
+    schema_fingerprint: 'v0.1.0',
+    toolset_unchanged_vs_approved: 'v0.1.0',
+    schema_unchanged_vs_approved: 'v0.1.0',
+  }
+  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.deepStrictEqual(now, { ...atD4b6af77, redirect_policy: 'v0.2.0' })
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

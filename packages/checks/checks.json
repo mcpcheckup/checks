@@ -1,6 +1,6 @@
 {
   "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
-  "registry_version": "0.9.0",
+  "registry_version": "0.10.0",
   "suite_id": "remote-baseline-v0.1",
   "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
   "groups": [
@@ -167,7 +167,7 @@
       }
     },
     {
-      "n": 12, "check_id": "redirect_policy", "group": "sec", "docs_version": "v0.1.0",
+      "n": 12, "check_id": "redirect_policy", "group": "sec", "docs_version": "v0.2.0",
       "predicate_zh": "重定向不跨越到非预期主机",
       "predicate_en": "redirects do not cross to an unexpected host",
       "failure_status": "OBSERVED_RISK",
@@ -175,8 +175,8 @@
       "explain": {
         "what_zh": "重定向是否跨越到非预期主机。",
         "what_en": "Whether a redirect crosses to an unexpected host.",
-        "how_zh": "跨主机重定向记 OBSERVED_RISK。最多跟 3 跳。",
-        "how_en": "A cross-host redirect is recorded as OBSERVED_RISK. Followed for at most 3 hops.",
+        "how_zh": "跨主机重定向记 OBSERVED_RISK。只有读取授权元数据的 GET 会跟随重定向，最多 3 跳；协议 POST 收到重定向时只记录，不跟随。",
+        "how_en": "A cross-host redirect is recorded as OBSERVED_RISK. Only the GET for authorization metadata follows redirects, for at most 3 hops; a protocol POST that gets a redirect is recorded, not followed.",
         "cannot_zh": "不能说明目标主机可信，只说明有没有发生跳转。",
         "cannot_en": "This cannot tell you the destination host is trustworthy — only whether a redirect happened."
       }

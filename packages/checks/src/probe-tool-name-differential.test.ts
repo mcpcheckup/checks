@@ -164,7 +164,12 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  compute in this differential: both parties run the same live wire.ts, and
  *  the only GET either sends — auth.ts's metadata fetch — carries no headers,
  *  so no hop has anything to drop. The 0.11.0 change itself is carried by
- *  declined-host-differential.test.ts (live vs frozen 0.10.0). */
+ *  declined-host-differential.test.ts (live vs frozen 0.10.0).
+ *
+ *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
+ *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
+ *  else; same type-only reach, so it cannot alter what this differential
+ *  computes. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
@@ -179,7 +184,7 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '04920465eb88986f76febbdec74b66238e3cd2ed', // suite 0.11.0 (registry_version 0.9.0 only; see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': '679218719d8b2345c667bcd36f479548181caff7', // registry 0.10.0 (redirect_policy how copy and docs_version v0.2.0 only; see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
