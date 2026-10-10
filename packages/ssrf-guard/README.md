@@ -33,10 +33,30 @@ not just a general assertion that "bad things are blocked":
 - **Credentials in the URL** (`https://user:pass@host/`) rejected. <!-- scan-secrets-allow: illustrative placeholder, not a real host -->
 - **Non-standard ports** rejected — see "Non-standard ports" below for why this is
   stricter than it has to be.
-- **Private, reserved, and special-purpose IPv4 ranges**: `0.0.0.0/8`, `10.0.0.0/8`,
-  `100.64.0.0/10` (carrier-grade NAT), `127.0.0.0/8`, `169.254.0.0/16`,
-  `172.16.0.0/12`, `192.0.2.0/24`, `192.168.0.0/16`, `198.18.0.0/15`,
-  `224.0.0.0/4`, `240.0.0.0/4`.
+- **Host names that never name a public server**, rejected before any DNS lookup:
+  `localhost`, `local`, `internal` and `home.arpa`, each with every name under it; any
+  single-label name (no dot); and any name with an empty label. One trailing dot is
+  dropped and the name lower-cased first, so `LOCALHOST.` is `localhost`.
+- **Special-purpose IPv4 and IPv6 ranges, taken from the IANA IPv4 and IPv6
+  Special-Purpose Address Registries** (both last updated 2025-10-09): every entry the
+  registry marks *Globally Reachable = False* is rejected, with one exception: an
+  IPv4-mapped address (`::ffff:0:0/96`) is unwrapped and judged as the IPv4 address it
+  carries. Among them: `0.0.0.0/8`,
+  `10.0.0.0/8`, `100.64.0.0/10` (carrier-grade NAT), `127.0.0.0/8`, `169.254.0.0/16`,
+  `172.16.0.0/12`, `192.0.0.0/24`, the documentation blocks `192.0.2.0/24`,
+  `198.51.100.0/24` and `203.0.113.0/24`, `192.168.0.0/16`, `198.18.0.0/15` and
+  `240.0.0.0/4`; `64:ff9b:1::/48`, `100::/64`, `2001::/23`, `2001:db8::/32`, `3fff::/20`
+  and `5f00::/16`. Inside a rejected block, an entry the registry marks *Globally
+  Reachable = True* (for example `192.0.0.9/32` or `2001:3::/32`) is allowed, because the
+  most specific entry decides. `src/ip-policy.test.ts` pins that list, so it cannot grow
+  unnoticed.
+- **Rejected whole, whatever the registry says**: blocks whose traffic is handed on to an
+  address this package cannot see or check. These are the NAT64 prefix `64:ff9b::/96`
+  (marked *True*), 6to4 `2002::/16` and Teredo `2001::/32` (marked *N/A*), and the
+  deprecated `192.88.99.0/24` and `2001:10::/28` (no value). Also rejected are three
+  blocks the registry does not list: the deprecated IPv4-compatible `::/96` (so
+  `::127.0.0.1` is rejected), the deprecated site-local `fec0::/10`, and multicast
+  (`224.0.0.0/4` and `ff00::/8`).
 - **Cloud instance metadata addresses** specifically: `169.254.169.254` (AWS/GCP/Azure)
   and `fd00:ec2::254` (AWS IMDSv2 over IPv6) get their own dedicated block reason and
   test, even though both already fall inside a broader blocked range — so the reason a
@@ -45,7 +65,9 @@ not just a general assertion that "bad things are blocked":
 - **IPv4-mapped IPv6** (`::ffff:0:0/96`): the embedded IPv4 address is extracted and
   re-checked against the IPv4 policy — `::ffff:127.0.0.1` is rejected as loopback,
   `::ffff:8.8.8.8` is allowed, proving this is a real unwrap-and-recheck and not a
-  blanket accept or reject of the whole prefix.
+  blanket accept or reject of the whole prefix. The registry marks this block *Globally
+  Reachable = False*. This package judges it by the IPv4 address it carries instead of
+  rejecting it whole.
 - **Obfuscated IP-literal forms** (`http://0x7f000001/`, `http://017700000001/`, <!-- scan-secrets-allow: obfuscated-loopback examples, not real hosts -->
   `http://127.1/`): these are never a special case in our own code. `new URL(...)` <!-- scan-secrets-allow: obfuscated-loopback example, not a real host -->
   (the WHATWG URL parser, the same one Node and Workers both implement) normalizes all
@@ -92,6 +114,21 @@ We looked for a way to close this and could not find one on Workers today:
   covers everything we require (CGNAT, the IPv6 metadata ULA, IPv4-mapped addresses).
   We are not willing to build tested guarantees on top of untested, undocumented
   platform behavior.
+
+The detection described below has two limits:
+
+- It compares only our own two answers: the one we validated before the request, and
+  the one we get after it. It never sees which address Cloudflare's own resolution chose
+  for the connection. A rebinding server that gives us the same public answer twice, and
+  Cloudflare a different one, is not detected.
+- Cloudflare does not document what a Worker's `fetch()` does when a public host name
+  resolves, in Cloudflare's own resolution, to a private or special-purpose address. So
+  this package does not rely on the platform to refuse it.
+
+The residual risk is a request to whatever address that other answer named. Everything
+else here still limits it: `https://` on port 443 only, no credentials in the URL, a
+bounded number of requests, bytes and seconds, and a caller that only ever sees what its
+`parseResponse` extracts.
 
 If Cloudflare Workers ever exposes a way to pin `fetch()` to a pre-validated IP for an
 arbitrary (non-zone) host, this package should adopt it and this section should shrink.
@@ -348,7 +385,7 @@ const result = await guardedFetch(
 ```
 
 `guardedFetch` throws `SsrfBlocked` (target or request rejected — scheme, credentials,
-port, or a resolved IP failed policy; an unsupported method; a header outside the
+port, a host name rule, or a resolved IP failed policy; an unsupported method; a header outside the
 allowlist; a body on a GET request — `.code` and `.detail`/`.message` describe which),
 `BudgetExceeded` (redirects, wall-clock time, request count, or request body size
 exhausted; `.code` says which), or `RateLimited` (no allowing rate-limit decision was

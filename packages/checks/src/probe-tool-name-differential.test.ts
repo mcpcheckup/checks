@@ -169,7 +169,15 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
- *  computes. */
+ *  computes.
+ *
+ *  The special-purpose address change re-pins two ssrf-guard files to their
+ *  blob at that change (git hash-object <path>): ip-policy.ts (the IANA
+ *  special-purpose address tables) and url-target.ts (host name rules, before
+ *  any lookup). Neither can alter what this differential computes: the files
+ *  in this closure reach ssrf-guard only for its error classes and the
+ *  ProbeBudget type, and nothing they run calls guardedFetch, classifyIp or
+ *  parseGuardedTarget. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
@@ -196,11 +204,11 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57', // T85 re-pin, round 2 (hop field) — git rev-parse 962fdc6:packages/ssrf-guard/src/errors.ts
   'packages/ssrf-guard/src/guarded-fetch.ts': 'eda760ca7ffb210feb2a685ca0dd43d34a9ab86a', // suite 0.11.0 re-pin (followRedirects; see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755', // T85 re-pin: git rev-parse 3696518:packages/ssrf-guard/src/index.ts
-  'packages/ssrf-guard/src/ip-policy.ts': 'b581241df1a369ee55e780b1450d1997ab2635db',
+  'packages/ssrf-guard/src/ip-policy.ts': 'c40a0ef0a1af6ea5721edebcdd3e0660831b411e', // special-purpose address change (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
   'packages/ssrf-guard/src/resolve.ts': '8ba7ae7c4a97c0589fbb8da1166de89f36bdb5d0', // T85 re-pin, PR-1b (DoH timeout, R16) — git rev-parse "$(git log -n1 --format=%h -G'DOH_TIMEOUT_MS' -- packages/ssrf-guard/src/resolve.ts)":packages/ssrf-guard/src/resolve.ts
   'packages/ssrf-guard/src/response-view.ts': 'b1b0e3e040f6d6acf66700758323b6bfae223d96', // T85 re-pin: git rev-parse 3696518:packages/ssrf-guard/src/response-view.ts
-  'packages/ssrf-guard/src/url-target.ts': '46678f430c6534806c014b0265dc408c8fe29705',
+  'packages/ssrf-guard/src/url-target.ts': 'c1d8f47ef7b0402b45bd9f555cd82fd0f0ec103a', // special-purpose address change (see above) — git hash-object packages/ssrf-guard/src/url-target.ts
 }
 const CLOSURE_071_THIRD_PARTY: string[] = []
 

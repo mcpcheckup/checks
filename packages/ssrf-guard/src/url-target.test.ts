@@ -88,5 +88,48 @@ t('IPv4-mapped IPv6 字面量 [::ffff:127.0.0.1] 经归一化后按 IPv6 字面�
   assert.equal(target.hostname, '::ffff:7f00:1')
 })
 
+console.log('\nparseGuardedTarget: host name rules, before any DNS lookup (one trailing dot dropped, lower-cased, compared label by label)')
+const SPECIAL_USE: Array<[url: string, why: string]> = [
+  ['https://localhost/', 'localhost'],
+  ['https://LOCALHOST./', 'upper case and one trailing dot'], // scan-secrets-allow: special-use host, a host-name-rule test input, never contacted
+  ['https://ｌｏｃａｌｈｏｓｔ/', 'full-width "localhost", which the URL parser folds to localhost'],
+  ['https://api.localhost/', 'a name under .localhost'], // scan-secrets-allow: special-use host, a host-name-rule test input, never contacted
+  ['https://printer.local/', 'a name under .local'], // scan-secrets-allow: special-use host, a host-name-rule test input, never contacted
+  ['https://local/', 'the domain local itself'], // scan-secrets-allow: special-use host, a host-name-rule test input, never contacted
+  ['https://db.internal/', 'a name under .internal'], // scan-secrets-allow: special-use host, a host-name-rule test input, never contacted
+  ['https://router.home.arpa./', 'a name under home.arpa, with a trailing dot'], // scan-secrets-allow: special-use host, a host-name-rule test input, never contacted
+  ['https://home.arpa/', 'the domain home.arpa itself'], // scan-secrets-allow: special-use host, a host-name-rule test input, never contacted
+]
+for (const [url, why] of SPECIAL_USE) {
+  t(`${JSON.stringify(url)} rejected as SPECIAL_USE_HOSTNAME (${why})`, () => blockedWith(url, 'SPECIAL_USE_HOSTNAME'))
+}
+t('"https://mcp/" rejected as SINGLE_LABEL_HOSTNAME', () => blockedWith('https://mcp/', 'SINGLE_LABEL_HOSTNAME')) // scan-secrets-allow: single-label host, a host-name-rule test input, never contacted
+t('"https://mcp./" rejected as SINGLE_LABEL_HOSTNAME (a trailing dot does not add a label)', () => blockedWith('https://mcp./', 'SINGLE_LABEL_HOSTNAME')) // scan-secrets-allow: single-label host, a host-name-rule test input, never contacted
+t('host "localhost.." rejected as MALFORMED_HOSTNAME (only one trailing dot is dropped; the empty label left over would otherwise dodge the localhost rule)', () =>
+  blockedWith('https://localhost../', 'MALFORMED_HOSTNAME')) // scan-secrets-allow: malformed host, a host-name-rule test input, never contacted
+t('"https://a..example.com/" and "https://.example.com/" rejected as MALFORMED_HOSTNAME (empty label)', () => {
+  blockedWith('https://a..example.com/', 'MALFORMED_HOSTNAME')
+  blockedWith('https://.example.com/', 'MALFORMED_HOSTNAME')
+})
+t('a special-use word that is not the last label is not special-use: local.example.com, localhost.example.com, internal.example.com all pass the name rules', () => {
+  for (const url of ['https://local.example.com/', 'https://localhost.example.com/', 'https://internal.example.com/']) {
+    const target = parseGuardedTarget(url)
+    assert.equal(target.isIpLiteral, false)
+  }
+})
+t('a label that merely ends in a special-use word is not special-use: notlocal.example.com passes', () => {
+  assert.equal(parseGuardedTarget('https://notlocal.example.com/').isIpLiteral, false)
+})
+t('one trailing dot on an ordinary name passes, and the host name handed on is the parser\'s own, unchanged', () => {
+  const target = parseGuardedTarget('https://example.com./') // scan-secrets-allow: trailing-dot form of example.com, never contacted
+  assert.equal(target.hostname, 'example.com.')
+})
+t('IP literals skip the name rules and go to the IP policy as before: the pure-decimal 2130706433 is the literal 127.0.0.1', () => {
+  const target = parseGuardedTarget('https://2130706433/') // scan-secrets-allow: decimal-integer loopback literal, never contacted
+  assert.equal(target.isIpLiteral, true)
+  assert.equal(target.ipFamily, 4)
+  assert.equal(target.hostname, '127.0.0.1')
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

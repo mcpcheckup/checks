@@ -83,7 +83,7 @@ t('transport_type：说明如实——不与声明的传输比对，也不声称
   assert.match(def.explain.how_zh, /不会与 server 声明的传输做比对/)
 })
 
-// R8 / R9 (approved copy): the four `how` strings pinned verbatim. Each states what probe.ts does on every branch —
+// Approved copy: the four `how` strings pinned verbatim. Each states what probe.ts does on every branch —
 // VERIFIED once performHandshake returns (whatever the handshake's own verdict), and on any stop before that the
 // catch block writes reachability ERROR/UNVERIFIED and cascades the rest SKIPPED/UNVERIFIED with the abort's reason.
 const how = (id: string) => CHECKS_REGISTRY.checks.find((c) => c.check_id === id)!.explain
@@ -140,11 +140,11 @@ t('redirect_policy.how 不再写「所有请求都跟随」的旧说法，写的
 })
 
 // docs_version enters every signed assertion (probe.ts docsVersionFor). Registry 0.10.0
-// moves redirect_policy alone, v0.1.0 -> v0.2.0; every other value is the one at
-// d4b6af77 (`git show d4b6af77:packages/checks/checks.json`). A later bump of any check
+// moves redirect_policy alone, v0.1.0 -> v0.2.0; every other value is the one in the
+// previous registry version's checks.json. A later bump of any check
 // updates this table in the same change, deliberately.
-t('docs_version：redirect_policy 为 v0.2.0，其余 14 项检查与 d4b6af77 逐条相同', () => {
-  const atD4b6af77: Record<string, string> = {
+t('docs_version：redirect_policy 为 v0.2.0，其余 14 项检查与上一版 registry 的 checks.json 逐条相同', () => {
+  const previousRegistry: Record<string, string> = {
     reachability: 'v0.4.0',
     latency_profile: 'v0.1.0',
     transport_type: 'v0.2.0',
@@ -163,7 +163,7 @@ t('docs_version：redirect_policy 为 v0.2.0，其余 14 项检查与 d4b6af77 �
   }
   const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
   assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
-  assert.deepStrictEqual(now, { ...atD4b6af77, redirect_policy: 'v0.2.0' })
+  assert.deepStrictEqual(now, { ...previousRegistry, redirect_policy: 'v0.2.0' })
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

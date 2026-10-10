@@ -65,6 +65,9 @@ const CASES: Case[] = [
   { name: 'http scheme', url: 'http://example.com/', expected: 'SsrfBlocked:NON_HTTPS_SCHEME|0' },
   { name: 'credentials in URL', url: 'https://u:p@example.com/', expected: 'SsrfBlocked:CREDENTIALS_IN_URL|0' }, // scan-secrets-allow: RFC special-use / placeholder address, a block-code test input, never contacted
   { name: 'non-standard port', url: 'https://example.com:8443/', expected: 'SsrfBlocked:NON_STANDARD_PORT|0' },
+  { name: 'special-use host name', url: 'https://localhost/', expected: 'SsrfBlocked:SPECIAL_USE_HOSTNAME|0' },
+  { name: 'single-label host name', url: 'https://mcp/', expected: 'SsrfBlocked:SINGLE_LABEL_HOSTNAME|0' }, // scan-secrets-allow: single-label host, a block-code test input, never contacted
+  { name: 'host name with an empty label', url: 'https://a..example.com/', expected: 'SsrfBlocked:MALFORMED_HOSTNAME|0' },
   // guarded-fetch.ts request shape
   { name: 'header outside the allowlist', url: 'https://example.com/', opts: { headers: { 'x-forwarded-for': '1' } }, expected: 'SsrfBlocked:HEADER_NOT_ALLOWED|0' },
   { name: 'method PUT', url: 'https://example.com/', opts: { method: 'PUT' as 'GET' }, expected: 'SsrfBlocked:METHOD_NOT_ALLOWED|0' },
@@ -89,6 +92,17 @@ const CASES: Case[] = [
   { name: '[::]', url: 'https://[::]/', expected: 'SsrfBlocked:UNSPECIFIED|0' },
   { name: '[fe80::1]', url: 'https://[fe80::1]/', expected: 'SsrfBlocked:LINK_LOCAL|0' },
   { name: '[fd00:ec2::254]', url: 'https://[fd00:ec2::254]/', expected: 'SsrfBlocked:CLOUD_METADATA|0' },
+  { name: '192.0.0.8', url: 'https://192.0.0.8/', expected: 'SsrfBlocked:PROTOCOL_ASSIGNMENT|0' }, // scan-secrets-allow: RFC special-use / placeholder address, a block-code test input, never contacted
+  { name: '192.88.99.1', url: 'https://192.88.99.1/', expected: 'SsrfBlocked:DEPRECATED|0' }, // scan-secrets-allow: RFC special-use / placeholder address, a block-code test input, never contacted
+  { name: '[64:ff9b::a00:1]', url: 'https://[64:ff9b::a00:1]/', expected: 'SsrfBlocked:NAT64|0' },
+  { name: '[::7f00:1]', url: 'https://[::7f00:1]/', expected: 'SsrfBlocked:IPV4_COMPATIBLE|0' },
+  { name: '[2002:c000:204::1]', url: 'https://[2002:c000:204::1]/', expected: 'SsrfBlocked:SIX_TO_FOUR|0' },
+  { name: '[2001:0:4136:e378::1]', url: 'https://[2001:0:4136:e378::1]/', expected: 'SsrfBlocked:TEREDO|0' },
+  { name: '[100::1]', url: 'https://[100::1]/', expected: 'SsrfBlocked:DISCARD_ONLY|0' },
+  { name: '[100:0:0:1::1]', url: 'https://[100:0:0:1::1]/', expected: 'SsrfBlocked:DUMMY_PREFIX|0' },
+  { name: '[5f00::1]', url: 'https://[5f00::1]/', expected: 'SsrfBlocked:SEGMENT_ROUTING|0' },
+  { name: '[fec0::1]', url: 'https://[fec0::1]/', expected: 'SsrfBlocked:SITE_LOCAL|0' },
+  { name: '[ff02::1]', url: 'https://[ff02::1]/', expected: 'SsrfBlocked:MULTICAST|0' },
   { name: '[::ffff:127.0.0.1]', url: 'https://[::ffff:127.0.0.1]/', expected: 'SsrfBlocked:LOOPBACK|0' },
   // resolve.ts through the real validating resolver, fake DoH
   { name: 'name resolving to 10.0.0.1', url: 'https://example.com/', resolve: viaDoh({ a: [[10, 0, 0, 1]] }), expected: 'SsrfBlocked:PRIVATE_USE|0' },
