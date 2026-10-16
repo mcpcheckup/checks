@@ -20,9 +20,14 @@
  *
  * Invariants, asserted for every input of a deterministic cartesian product
  * (statuses × content-types × bodies):
- *   (a) judge(x).status === FROZEN_PRE_T73(x).status
- *   (b) VERIFIED ⇒ no reason; OBSERVED_RISK ⇒ reason deep-equals the oracle's
- *       (key is one of the seven T73 keys)
+ *   (a) judge(x).status === FROZEN_PRE_T73(x).status — except for an HTTP
+ *       status of 401 or 403, where suite 0.12.0 returns UNVERIFIED (the
+ *       request was rejected before any protocol error came back, so no error
+ *       shape was observed; the frozen judge, like every suite up to 0.11.0,
+ *       says VERIFIED)
+ *   (b) VERIFIED ⇒ no reason; UNVERIFIED ⇒ exactly { key:
+ *       'error_shape_not_observed' }; OBSERVED_RISK ⇒ reason deep-equals the
+ *       oracle's (key is one of the seven T73 keys)
  *   (c) params bounded: exactly the allowed keys, status an integer equal to
  *       the HTTP status, media_type in the six-value set, scenario constant,
  *       jsonrpc_error_code only on jsonrpc_malformed and only a safe integer
@@ -320,6 +325,7 @@ console.log(`  adversarial input set: ${STATUSES.length} statuses × ${CONTENT_T
 
 const classCounts = new Map<string, number>()
 let verifiedCount = 0
+let unverifiedCount = 0
 const failures: string[] = []
 const failuresByInvariant = { a: 0, b: 0, c: 0, d: 0 }
 
@@ -331,10 +337,24 @@ for (const status of STATUSES) {
       const got = judgeErrorTaxonomy(input)
       const frozen = frozenJudgeErrorTaxonomy(callResult(status, ct, body))
 
-      // (a)
-      if (got.status !== frozen.status) {
+      // (a) — equal to pre-T73 except the one intended difference of suite 0.12.0: a 401/403 returned no
+      // protocol error, so nothing was observed and the verdict is UNVERIFIED { key: 'error_shape_not_observed' }
+      // (pre-T73 and every suite up to 0.11.0 said VERIFIED). Stated from the INPUT's status, not from the judge.
+      const authRejection = status === 401 || status === 403
+      const wantStatus = authRejection ? 'UNVERIFIED' : frozen.status
+      if (got.status !== wantStatus) {
         failuresByInvariant.a++
-        failures.push(`(a) ${id}: new=${got.status} pre-T73=${frozen.status}`)
+        failures.push(`(a) ${id}: new=${got.status} want=${wantStatus} (pre-T73=${frozen.status})`)
+        continue
+      }
+
+      if (got.status === 'UNVERIFIED') {
+        unverifiedCount++
+        // (b) UNVERIFIED side: always a reason, exactly the one key, no params
+        try { assert.deepStrictEqual(got.reason, { key: 'error_shape_not_observed' }) } catch {
+          failuresByInvariant.b++
+          failures.push(`(b) ${id}: UNVERIFIED reason ${JSON.stringify(got.reason)}`)
+        }
         continue
       }
 
@@ -414,6 +434,8 @@ await t(`(a)-(d) hold for all ${inputCount} inputs`, () => {
 await t('the input set is not vacuous: every one of the seven classes, and VERIFIED, is hit', () => {
   console.log(`       VERIFIED=${verifiedCount} ${ORACLE_KEYS.map((k) => `${k.replace('error_taxonomy_', '')}=${classCounts.get(k) ?? 0}`).join(' ')}`)
   assert.ok(verifiedCount > 0, 'no VERIFIED input at all')
+  assert.equal(unverifiedCount, [401, 403].length * CONTENT_TYPES.length * BODIES.length, 'UNVERIFIED must be exactly the 401/403 inputs')
+  assert.ok(STATUSES.includes(401) && STATUSES.includes(403), 'the status set no longer contains 401 and 403')
   for (const k of ORACLE_KEYS) assert.ok((classCounts.get(k) ?? 0) > 0, `${k} never produced — the set does not cover that boundary`)
 })
 

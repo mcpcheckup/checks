@@ -71,18 +71,24 @@ await t('error-response-nonconformant-shape：纯文本 500 → OBSERVED_RISK / 
   assert.deepStrictEqual(judgeErrorTaxonomy(callResult), expected('not_json', 500, 'text/plain'))
 })
 
-await t('no-credentials-unverifiable-auth：裸 401 是 JSON-RPC 分发之前的合法拒绝，不算错误形状问题 → VERIFIED', async () => {
+await t('no-credentials-unverifiable-auth：裸 401 是 JSON-RPC 分发之前的合法拒绝，不算错误形状问题（不是 OBSERVED_RISK），但没有返回任何协议错误 → UNVERIFIED error_shape_not_observed（0.12.0 起，不再是 VERIFIED）', async () => {
   const callResult = await callResultFor(noCredentialsUnverifiableAuth)
-  assert.deepStrictEqual(judgeErrorTaxonomy(callResult), { status: 'VERIFIED' })
+  assert.deepStrictEqual(judgeErrorTaxonomy(callResult), { status: 'UNVERIFIED', reason: { key: 'error_shape_not_observed' } })
 })
 
-console.log('\njudgeErrorTaxonomy：VERIFIED 两支逻辑不变，且不带任何 reason')
+console.log('\njudgeErrorTaxonomy：401 / 403 没有协议错误可看 → UNVERIFIED；合法 JSON-RPC error 仍是 VERIFIED，且不带任何 reason')
 
-await t('401 / 403 无论 body 是什么 → VERIFIED（没有 reason 字段）', () => {
+await t('401 / 403 无论 body 是什么 → UNVERIFIED error_shape_not_observed（没有 params；body 不进入 reason）', () => {
   for (const status of [401, 403]) {
-    for (const body of ['', 'Unauthorized', RESULT_IS_ERROR, NOTIFICATION]) {
-      assert.deepStrictEqual(judgeErrorTaxonomy(cr(status, J, body)), { status: 'VERIFIED' }, `${status} ${JSON.stringify(body)}`)
+    for (const body of ['', 'Unauthorized', RESULT_IS_ERROR, NOTIFICATION, WELL_FORMED_ERROR]) {
+      assert.deepStrictEqual(judgeErrorTaxonomy(cr(status, J, body)), { status: 'UNVERIFIED', reason: { key: 'error_shape_not_observed' } }, `${status} ${JSON.stringify(body)}`)
     }
+  }
+})
+
+await t('401 / 403 的相邻状态 400 / 402 / 404 / 500 不是这一支：空 body 仍是 OBSERVED_RISK empty_body，不被 error_shape_not_observed 吞掉', () => {
+  for (const status of [400, 402, 404, 500]) {
+    assert.deepStrictEqual(judgeErrorTaxonomy(cr(status, null, '')), expected('empty_body', status, 'none'), String(status))
   }
 })
 

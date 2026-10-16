@@ -12,7 +12,8 @@ import {
   cleanBaselineAssertions,
   withOverride,
   withOverrides,
-  latencyObserved,
+  latencyNotRecorded,
+  errorShapeNotObserved,
   unclaimedDriftAssertions,
   type ModernHandlerOptions,
 } from './shared.ts'
@@ -134,19 +135,23 @@ export const noCredentialsUnverifiableAuth: Fixture = {
   guardsAgainst:
     'auth_metadata 的 no_credential_status：完全无法观察到任何认证 metadata 时是 UNVERIFIED，不是 OBSERVED_RISK——' +
     '"看不见"和"看见了但不对"是两件不同的事，前者不能证明任何缺陷，只能说明我们没有凭据。' +
-    '裸 401 本身是 HTTP 层在 JSON-RPC 处理之前就做的合法拒绝，不算协议错误形状问题，所以 error_taxonomy 不受影响，仍是 VERIFIED。',
+    '裸 401 本身是 HTTP 层在 JSON-RPC 处理之前就做的合法拒绝，不算协议错误形状问题，所以 error_taxonomy 不是 OBSERVED_RISK；' +
+    '但那次请求也没有返回任何协议层错误，没有观察到错误形状，所以 0.12.0 起 error_taxonomy 是 SKIPPED/UNVERIFIED（error_shape_not_observed），不再是 VERIFIED。',
   tools: CLEAN_TOOLS,
   createHandler: () =>
     createModernHandler(CLEAN_TOOLS, {
       toolsCallResponse: () => rawResponse(401, {}, null),
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: withOverride(cleanBaselineAssertions(), {
-    check_id: 'auth_metadata',
-    execution_status: 'COMPLETED',
-    assertion_status: 'UNVERIFIED',
-    reason: { key: 'auth_401_no_challenge', params: {} },
-  }),
+  expectedAssertions: withOverrides(cleanBaselineAssertions(), [
+    {
+      check_id: 'auth_metadata',
+      execution_status: 'COMPLETED',
+      assertion_status: 'UNVERIFIED',
+      reason: { key: 'auth_401_no_challenge', params: {} },
+    },
+    errorShapeNotObserved(),
+  ]),
 }
 
 const OVERSIZED_PAYLOAD = 'x'.repeat(2_100_000) // > checks.json budget.max_body_bytes (2097152)
@@ -159,7 +164,7 @@ export const responseExceedsBudget: Fixture = {
   guardsAgainst:
     'PRD 硬规则中最容易判错的一条：超预算必须是 execution_status=ERROR + assertion_status=UNVERIFIED，绝不能是 FAILED。' +
     '超时/超量不等于「这个 server 坏了」——也可能是我们这边的探测节点或网络问题。' +
-    '同时证明「已完成的检查保留其结果」：discovery_handshake / protocol_revision / transport_type / latency_profile ' +
+    '同时证明「已完成的检查保留其结果」：discovery_handshake / protocol_revision / transport_type ' +
     '在 tools/list 撞上预算之前就已经 COMPLETED/VERIFIED 了，中止不应该把它们追溯性地清空——' +
     '「我们验证了协议握手，然后预算耗尽」是一句连贯诚实的陈述。只有真正没跑到、或依赖 tools/list 数据' +
     '（tools_list 本身及其下游）的 check 才退到 SKIPPED/UNVERIFIED，不允许在同一次 run 里对着还没跑到的东西' +
@@ -195,8 +200,9 @@ export const responseExceedsBudget: Fixture = {
       // 握手已经拿到一个完整的 HTTP 响应，reachability 在那一刻就为真；后面的
       // 预算中止只影响还没产出的检查（T6.9-F）。
       verified('reachability'),
-      // 这四项在 tools/list 的请求触发预算中止之前就已经完成——必须保留，不能被追溯清空。
-      verified('latency_profile'),
+      // latency_profile 从不运行（0.12.0 起记 SKIPPED/UNVERIFIED latency_not_recorded，与中止无关）；
+      // 其余三项在 tools/list 的请求触发预算中止之前就已经完成——必须保留，不能被追溯清空。
+      latencyNotRecorded(),
       verified('transport_type'),
       verified('protocol_revision'),
       verified('discovery_handshake'),

@@ -3,21 +3,26 @@ import type { ParsedJsonRpc, ProbeCallResult } from './protocol.ts'
 
 type Reason = { key: string; params?: Record<string, string | number> } | null
 
-export type ErrorTaxonomyVerdict = { status: 'VERIFIED' } | { status: 'OBSERVED_RISK'; reason: Reason }
+export type ErrorTaxonomyVerdict =
+  | { status: 'VERIFIED' }
+  | { status: 'UNVERIFIED'; reason: Reason }
+  | { status: 'OBSERVED_RISK'; reason: Reason }
 
 /** Judges error_taxonomy from the tools/call(unknown tool) response — the same
  *  response auth_metadata reads. A 401/403 is an HTTP-layer auth rejection that
  *  happens before JSON-RPC dispatch even runs; it says nothing about whether the
  *  server's *protocol-level* error shape is conformant, so it doesn't count
- *  against this check either way (see no-credentials-unverifiable-auth in
- *  @mcpcheckup/fixtures). Anything else must be a well-formed JSON-RPC error.
+ *  against this check (see no-credentials-unverifiable-auth in
+ *  @mcpcheckup/fixtures) — but it doesn't confirm it either: no protocol error
+ *  was returned, so nothing was observed. Suite 0.12.0: that case is
+ *  UNVERIFIED (error_shape_not_observed), no longer VERIFIED. Anything else
+ *  must be a well-formed JSON-RPC error.
  *
- *  T73: the verdict itself is unchanged. Only the OBSERVED_RISK branch now
- *  records WHAT came back, as a bounded classification in the signed reason
- *  ref (see classifyUnknownToolResponse). */
+ *  T73: the OBSERVED_RISK branch records WHAT came back, as a bounded
+ *  classification in the signed reason ref (see classifyUnknownToolResponse). */
 export function judgeErrorTaxonomy(callResult: ProbeCallResult): ErrorTaxonomyVerdict {
   if (callResult.status === 401 || callResult.status === 403) {
-    return { status: 'VERIFIED' }
+    return { status: 'UNVERIFIED', reason: { key: 'error_shape_not_observed' } }
   }
   const contentType = callResult.headers.get('content-type')
   const parsed = parseJsonRpcBody(callResult.bodyText, contentType)

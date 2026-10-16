@@ -133,6 +133,20 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     en: () => 'Our probe did not connect to another host the server pointed to — later checks did not run.',
     zh: () => '我们的探测器没有连接该服务器指向的另一个主机——后续检查未运行。',
   },
+  // Suite 0.12.0: three checks that used to be VERIFIED without observing what
+  // their predicate names. Each renders no params.
+  latency_not_recorded: {
+    en: () => 'Not run: this probe does not measure request latency yet.',
+    zh: () => '未运行：探测器目前还不测量请求延迟。',
+  },
+  auth_no_challenge_observed: {
+    en: () => 'Not observed: the endpoint did not ask for credentials, so there was no auth challenge or metadata to check.',
+    zh: () => '未观察到：该端点没有要求凭据，因此没有可检查的认证质询或元数据。',
+  },
+  error_shape_not_observed: {
+    en: () => 'Not observed: the request was rejected at the HTTP layer (401/403) before any protocol error was returned.',
+    zh: () => '未观察到：请求在 HTTP 层就被拒绝（401/403），没有返回任何协议层错误。',
+  },
   check_not_implemented: {
     en: (p) => `This prober has not implemented check_id=${requireParam(p, 'check_id')} — this is an implementation gap, not a probe result.`,
     zh: (p) => `本探测器未实现 check_id=${requireParam(p, 'check_id')}，这是实现缺口，不是探测结果`,

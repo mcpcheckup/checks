@@ -11,6 +11,7 @@ import {
   modernSampleRun,
   legacySampleRun,
   cleanBaselineAssertions,
+  cleanBaselineWith401ToolsCall,
   withOverride,
 } from './shared.ts'
 
@@ -257,9 +258,12 @@ function createCredentialGatedEverywhereHandler(): FetchHandler {
 export function credentialGatedCascadeAssertions(gatedCheckIds: string[]): ExpectedAssertion[] {
   const reason = { key: 'credential_required', params: { scheme: 'bearer' } }
   const base = cleanBaselineAssertions()
-    .filter((a) => !TOOLS_DERIVED_CHECK_IDS.includes(a.check_id) && a.check_id !== 'error_taxonomy')
+    .filter((a) => !TOOLS_DERIVED_CHECK_IDS.includes(a.check_id) && a.check_id !== 'error_taxonomy' && a.check_id !== 'auth_metadata')
     .concat(TOOLS_DERIVED_CHECK_IDS.map((check_id): ExpectedAssertion => ({ check_id, execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason })))
     .concat([{ check_id: 'error_taxonomy', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason }])
+    // A 401 challenge was observed and its metadata document checks out, so this is the genuine VERIFIED
+    // (the clean baseline's auth_metadata is the open-server SKIPPED/UNVERIFIED since suite 0.12.0).
+    .concat([{ check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' }])
   return gatedCheckIds.reduce(
     (acc, check_id) => withOverride(acc, { check_id, execution_status: 'COMPLETED', assertion_status: 'UNVERIFIED', reason }),
     base,
@@ -454,7 +458,8 @@ export const legacyToolsCallCredentialGated: Fixture = {
     }
   },
   sampleRun: (handler) => legacySampleRun(handler),
-  expectedAssertions: cleanBaselineAssertions(),
+  // tools/call is the 401: auth_metadata reads a genuine challenge (VERIFIED); error_taxonomy gets no protocol error (0.12.0).
+  expectedAssertions: cleanBaselineWith401ToolsCall(),
 }
 
 // ---- T86: when the probe still sends its reserved tool name ----

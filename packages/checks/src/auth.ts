@@ -465,10 +465,15 @@ export type AuthChallengeJudgment =
  *  the same (status, header) gets the same verdict from either. Zero IO.
  *  Through judgeAuthMetadataFromGate the status is always 401 and the header
  *  always present (classifyCredentialChallenge accepted it), so the first two
- *  branches are reachable only from judgeAuthMetadata. */
+ *  branches are reachable only from judgeAuthMetadata.
+ *
+ *  Suite 0.12.0: an answer that is not a 401 carries no challenge and points
+ *  at no metadata, so there is nothing for this check to look at — it is
+ *  UNVERIFIED (auth_no_challenge_observed), no longer VERIFIED. VERIFIED now
+ *  means a 401 challenge was observed and its metadata checked out. */
 export function judgeAuthChallenge(status: number, wwwAuthenticate: string | null): AuthChallengeJudgment {
   if (status !== 401) {
-    return { verdict: { status: 'VERIFIED' } }
+    return { verdict: { status: 'UNVERIFIED', reason: { key: 'auth_no_challenge_observed' } } }
   }
   if (!wwwAuthenticate) {
     return { verdict: { status: 'UNVERIFIED', reason: { key: 'auth_401_no_challenge' } } }

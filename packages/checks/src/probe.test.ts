@@ -14,6 +14,7 @@ import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { DEFAULT_PROBE_BUDGET, createProbeBudget, BudgetExceeded, RateLimited, SsrfBlocked, UpstreamFetchFailed } from '@mcpcheckup/ssrf-guard'
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import { REASON_MESSAGES } from './reason-messages.ts'
+import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
 import type { ProbeInput, ProbeResult } from './types.ts'
 
 let pass = 0, fail = 0
@@ -23,6 +24,10 @@ async function t(name: string, fn: () => void | Promise<void>) {
 }
 
 const FIXED_NOW = '2026-08-18T00:00:00.000Z'
+
+/** The two rows no cascade ever writes: tls_certificate (always out of scope) and, since suite
+ *  0.12.0, latency_profile (never run — latency_not_recorded on every branch). */
+const NEVER_CASCADED = ['tls_certificate', 'latency_profile']
 
 function makeInput(fetchImpl: ProbeInput['fetchImpl']): ProbeInput {
   let seq = 0
@@ -91,14 +96,14 @@ for (const fixture of FIXTURE_CORPUS) {
 
 console.log('\n预算耗尽：中止前已完成的检查保留其结果，不因后续中止被清空（NEXT.md 项目二）')
 
-await t('response-exceeds-budget：reachability 与 discovery_handshake / protocol_revision / transport_type / latency_profile 在 tools/list 撞上 body 预算后全部保持 COMPLETED/VERIFIED', async () => {
+await t('response-exceeds-budget：reachability 与 discovery_handshake / protocol_revision / transport_type 在 tools/list 撞上 body 预算后全部保持 COMPLETED/VERIFIED；latency_profile 不在其中（0.12.0 起从不运行）', async () => {
   const fixture = FIXTURE_CORPUS.find((f) => f.id === 'response-exceeds-budget')!
   const result = await runProbe(makeInput(fixture.createHandler()))
   // T6.9-F：reachability 加进了这份名单。它在 performHandshake 返回时就已经为真
   // （server/discover 拿到了一个完整的 HTTP 响应），后面 tools/list 的预算中止没有
   // 资格回头改写它——那正是让 8/12 个未认领目标在握手全 VERIFIED 的同时报出 0%
   // 在线率的缺陷。把断言搬回 try 块末尾，这条的第一行就红。
-  for (const check_id of ['reachability', 'discovery_handshake', 'protocol_revision', 'transport_type', 'latency_profile']) {
+  for (const check_id of ['reachability', 'discovery_handshake', 'protocol_revision', 'transport_type']) {
     const a = result.assertions.find((x) => x.check_id === check_id)!
     assert.equal(a.execution_status, 'COMPLETED', `${check_id}: execution_status`)
     assert.equal(a.assertion_status, 'VERIFIED', `${check_id}: assertion_status`)
@@ -122,7 +127,7 @@ await t('response-exceeds-budget：reachability 与 discovery_handshake / protoc
 await t('response-exceeds-budget：cascade 理由不是只换了 key —— params 一起带上，REASON_MESSAGES 能真的把它渲染成两种语言的句子（渲染器对缺 param 是抛错，不是降级）', async () => {
   const fixture = FIXTURE_CORPUS.find((f) => f.id === 'response-exceeds-budget')!
   const result = await runProbe(makeInput(fixture.createHandler()))
-  const skipped = result.assertions.filter((a) => a.execution_status === 'SKIPPED' && a.check_id !== 'tls_certificate')
+  const skipped = result.assertions.filter((a) => a.execution_status === 'SKIPPED' && !NEVER_CASCADED.includes(a.check_id))
   assert.ok(skipped.length >= 9, `没跑到的检查应当有 9 条以上，实际 ${skipped.length}`)
   for (const a of skipped) {
     const renderer = REASON_MESSAGES[a.unverified_reason!.key]
@@ -231,8 +236,8 @@ for (const [label, make, reason, settledReason] of T85_CASES) {
     assert.equal(reachability.assertion_status, 'UNVERIFIED')
     assert.deepEqual(reachability.reason, reason)
     assert.deepEqual(reachability.unverified_reason, reason)
-    const cascade = result.assertions.filter((a) => a.check_id !== 'reachability' && a.check_id !== 'tls_certificate')
-    assert.equal(cascade.length, CHECKS_REGISTRY.checks.length - 2)
+    const cascade = result.assertions.filter((a) => a.check_id !== 'reachability' && !NEVER_CASCADED.includes(a.check_id))
+    assert.equal(cascade.length, CHECKS_REGISTRY.checks.length - 1 - NEVER_CASCADED.length)
     for (const a of cascade) {
       assert.equal(a.execution_status, 'SKIPPED', a.check_id)
       assert.deepEqual(a.reason, reason, a.check_id)
@@ -248,7 +253,7 @@ for (const [label, make, reason, settledReason] of T85_CASES) {
     const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
     assert.equal(reachability.assertion_status, 'VERIFIED')
     assert.equal(reachability.reason, null)
-    const cascade = result.assertions.filter((a) => a.execution_status === 'SKIPPED' && a.check_id !== 'tls_certificate')
+    const cascade = result.assertions.filter((a) => a.execution_status === 'SKIPPED' && !NEVER_CASCADED.includes(a.check_id))
     assert.ok(cascade.some((a) => a.check_id === 'tools_list'))
     for (const a of cascade) {
       assert.deepEqual(a.reason, settledReason, a.check_id)
@@ -394,7 +399,7 @@ await t('OtherHostDeclined on the very first request: reachability ERROR/UNVERIF
   const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
   assert.deepEqual([reachability.execution_status, reachability.reason], ['ERROR', { key: 'probe_declined_other_host' }])
   for (const a of result.assertions) {
-    if (a.check_id === 'tls_certificate') continue
+    if (NEVER_CASCADED.includes(a.check_id)) continue
     assert.deepEqual(a.reason, { key: 'probe_declined_other_host' }, a.check_id)
   }
   assert.ok(!JSON.stringify(result).includes(new OtherHostDeclined().message), 'the error message never reaches the result')
@@ -417,7 +422,7 @@ for (const [label, make] of [
     const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
     assert.equal(reachability.execution_status, 'ERROR')
     assert.deepEqual(reachability.reason, other)
-    for (const a of result.assertions.filter((x) => x.execution_status === 'SKIPPED' && x.check_id !== 'tls_certificate')) assert.deepEqual(a.reason, other, a.check_id)
+    for (const a of result.assertions.filter((x) => x.execution_status === 'SKIPPED' && !NEVER_CASCADED.includes(x.check_id))) assert.deepEqual(a.reason, other, a.check_id)
   })
 }
 
@@ -1000,8 +1005,11 @@ await t('legacy-tools-call-credential-gated @ 当前预算：6 次请求跑完�
   // 凭据门走到它的正常结论：challenge 合法、resource_metadata 文档取到且自洽。
   assert.equal(byId('auth_metadata').execution_status, 'COMPLETED')
   assert.equal(byId('auth_metadata').assertion_status, 'VERIFIED', 'challenge 合法且 metadata 文档自洽时，auth_metadata 是 VERIFIED，不是 UNVERIFIED')
-  // 反向：一次 HTTP 层的 401 不是协议错误形状问题。
-  assert.equal(byId('error_taxonomy').assertion_status, 'VERIFIED')
+  // 反向：一次 HTTP 层的 401 不是协议错误形状问题（不是 OBSERVED_RISK），但那次请求也没有返回协议错误：
+  // 0.12.0 起 error_taxonomy 是 SKIPPED/UNVERIFIED error_shape_not_observed，不再是 VERIFIED。
+  assert.equal(byId('error_taxonomy').execution_status, 'SKIPPED')
+  assert.equal(byId('error_taxonomy').assertion_status, 'UNVERIFIED')
+  assert.deepStrictEqual(byId('error_taxonomy').reason, { key: 'error_shape_not_observed' })
   // 而且这一整轮里没有任何一条对目标的指控。
   for (const a of result.assertions) {
     assert.notEqual(a.assertion_status, 'FAILED', `${a.check_id}`)
@@ -1054,7 +1062,7 @@ function requestLabel(input: RequestInfo | URL, init: RequestInit | undefined): 
 
 /** Runs one fixture through the implementation or through the frozen 0.6.0
  *  copy, recording the outbound request sequence. */
-async function runRecorded(fixtureId: string, probe: typeof runProbe): Promise<{ result: ProbeResult; calls: string[] }> {
+async function runRecorded(fixtureId: string, probe: typeof runProbe): Promise<{ result: ProbeResult; calls: string[]; toolsCallStatus: number | null }> {
   const fixture = FIXTURE_CORPUS.find((f) => f.id === fixtureId)
   assert.ok(fixture, `fixture ${fixtureId} 不在语料里`)
   const handler = fixture.createHandler()
@@ -1063,7 +1071,8 @@ async function runRecorded(fixtureId: string, probe: typeof runProbe): Promise<{
     calls.push(requestLabel(input, init))
     return handler(input, init)
   }
-  return { result: await probe(makeInput(recording)), calls }
+  const recorder = recordToolsCallStatus(recording)
+  return { result: await probe(makeInput(recorder.fetchImpl)), calls, toolsCallStatus: recorder.toolsCallStatus() }
 }
 
 const withoutT86Rows = (r: ProbeResult) => ({ ...r, assertions: r.assertions.filter((a) => !T86_ROWS.includes(a.check_id)) })
@@ -1085,7 +1094,8 @@ async function assertWithheld(fixtureId: string, key: string): Promise<void> {
     assert.deepStrictEqual(a.reason, { key }, `${fixtureId}/${check_id}: reason 必须恰好是 { key }，没有 params`)
     assert.deepStrictEqual(a.unverified_reason, { key }, `${fixtureId}/${check_id}: unverified_reason`)
   }
-  assert.deepStrictEqual(withoutT86Rows(now.result), withoutT86Rows(then.result), `${fixtureId}: 两行之外应与 0.6.0 逐字段相同`)
+  // Suite 0.12.0 changes latency_profile on every run (suite-0120-remap.ts); that is the only other difference.
+  assert.deepStrictEqual(withoutT86Rows(now.result), withoutT86Rows(suite0120Remap(then.result, then.toolsCallStatus)), `${fixtureId}: 两行之外应与 0.6.0 逐字段相同（0.12.0 的 latency_profile 重映射除外）`)
 }
 
 await t('T86 红证 a（probe-tool-name-collision）：第一页有逐字同名的工具 ⇒ 不发 tools/call，两行 SKIPPED/UNVERIFIED/probe_tool_name_collision，无 params', async () => {
@@ -1118,10 +1128,17 @@ for (const [label, fixtureId] of [
     const then = await runRecorded(fixtureId, frozenRunProbe)
     assert.ok(now.calls.includes('tools/call'), `${fixtureId}: 没有发 tools/call：${JSON.stringify(now.calls)}`)
     assert.deepStrictEqual(now.calls, then.calls)
-    assert.deepStrictEqual(now.result, then.result)
+    assert.deepStrictEqual(now.result, suite0120Remap(then.result, then.toolsCallStatus), '与 0.6.0 逐字段相同，除了 0.12.0 对每次 run 的重映射（suite-0120-remap.ts）')
     for (const check_id of T86_ROWS) {
       const a = now.result.assertions.find((x) => x.check_id === check_id)!
-      assert.equal(a.execution_status, 'COMPLETED', `${fixtureId}/${check_id}: 照发时这两行照常判定`)
+      // 0.12.0: a judged row is COMPLETED, or SKIPPED/UNVERIFIED with a not-observed reason (the answer had nothing for the
+      // check to look at); never the T86 withheld reason, and never ERROR / BLOCKED.
+      const key = a.reason?.key ?? null
+      assert.ok(!T86_KEYS.includes(key ?? ''), `${fixtureId}/${check_id}: 照发时这两行不带 T86 的 key：${key}`)
+      assert.ok(
+        a.execution_status === 'COMPLETED' || (a.execution_status === 'SKIPPED' && (key === 'auth_no_challenge_observed' || key === 'error_shape_not_observed')),
+        `${fixtureId}/${check_id}: 照发时这两行照常判定：${a.execution_status}/${key}`,
+      )
     }
   })
 }
@@ -1345,6 +1362,99 @@ await t('T86b × 预算（后半）：握手层门控 + maxRequests=3 —— 门
   const auth = row(result, 'auth_metadata')
   const want = { key: 'probe_budget_exhausted_requests', params: { maxRequests: 3 } }
   assert.deepStrictEqual([auth.execution_status, auth.assertion_status, auth.reason, auth.unverified_reason], ['SKIPPED', 'UNVERIFIED', want, want])
+})
+
+console.log('\nsuite 0.12.0：latency_profile 从不运行 —— 每条分支都是 SKIPPED/UNVERIFIED latency_not_recorded，恰好一行，绝不 VERIFIED')
+
+const LATENCY_NOT_RECORDED = { key: 'latency_not_recorded' }
+function assertLatencyNotRecorded(result: ProbeResult, label: string) {
+  const rows = result.assertions.filter((a) => a.check_id === 'latency_profile')
+  assert.equal(rows.length, 1, `${label}: exactly one latency_profile row`)
+  const a = rows[0]!
+  assert.deepStrictEqual([a.execution_status, a.assertion_status, a.reason, a.unverified_reason], ['SKIPPED', 'UNVERIFIED', LATENCY_NOT_RECORDED, LATENCY_NOT_RECORDED], label)
+}
+
+await t('normal run (modern-baseline-clean, every other check COMPLETED): latency_profile is SKIPPED/UNVERIFIED latency_not_recorded, never VERIFIED', async () => {
+  const result = await runProbe(makeInput(FIXTURE_CORPUS.find((f) => f.id === 'modern-baseline-clean')!.createHandler()))
+  assertLatencyNotRecorded(result, 'modern-baseline-clean')
+  assert.equal(row(result, 'transport_type').assertion_status, 'VERIFIED')
+})
+
+await t('credential-gated runs (handshake gate, tools/list gate, tools/call gate): latency_profile is the same single SKIPPED/UNVERIFIED latency_not_recorded row', async () => {
+  for (const id of ['credential-gated-handshake', 'credential-gated-tools-list', 'legacy-tools-call-credential-gated']) {
+    assertLatencyNotRecorded(await runProbe(makeInput(FIXTURE_CORPUS.find((f) => f.id === id)!.createHandler())), id)
+  }
+})
+
+await t('cascade runs (abort before the handshake settles, after it, and a body-budget abort): latency_profile keeps latency_not_recorded and is not overwritten by the cascade reason', async () => {
+  for (const position of [1, 2, 3]) {
+    const result = await runThrowingAt(position, () => atHop(0, new UpstreamFetchFailed(new TypeError('x'))))
+    assertLatencyNotRecorded(result, `abort at request ${position}`)
+    assert.notEqual(row(result, 'tools_list').reason?.key, 'latency_not_recorded', 'the cascade reason is still the cascade reason')
+  }
+  assertLatencyNotRecorded(await runProbe(makeInput(FIXTURE_CORPUS.find((f) => f.id === 'response-exceeds-budget')!.createHandler())), 'response-exceeds-budget')
+})
+
+await t('stdio target: latency_profile carries latency_not_recorded, not stdio_out_of_scope; the other 13 rows keep the stdio reason', async () => {
+  const result = await runProbe({ ...makeInput(async () => { throw new Error('stdio never fetches') }), target: { slug: 'example/local-tool', transport: 'stdio', packageRef: 'example-local-tool@1.0.0' } })
+  assertLatencyNotRecorded(result, 'stdio')
+  assert.deepStrictEqual(result.assertions.filter((a) => a.reason?.key === 'stdio_out_of_scope').length, CHECKS_REGISTRY.checks.length - 2)
+})
+
+await t('every corpus fixture: exactly one latency_profile row and it is latency_not_recorded', async () => {
+  for (const fixture of FIXTURE_CORPUS) assertLatencyNotRecorded(await runProbe(makeInput(fixture.createHandler())), fixture.id)
+})
+
+console.log('\nsuite 0.12.0：auth_metadata / error_taxonomy 不再对没观察到的东西记 VERIFIED')
+
+/** modern-baseline-clean, except that the reserved-name tools/call is answered with `status` and no body. */
+function toolsCallAnsweredWith(status: number): ProbeInput['fetchImpl'] {
+  const handler = FIXTURE_CORPUS.find((f) => f.id === 'modern-baseline-clean')!.createHandler()
+  return async (input, init) => {
+    const body = typeof init?.body === 'string' ? init.body : ''
+    if (body.includes('"tools/call"')) return new Response('', { status })
+    return handler(input, init)
+  }
+}
+
+await t('open server (the tools/call is not a 401): auth_metadata is SKIPPED/UNVERIFIED auth_no_challenge_observed (nothing to check, so not COMPLETED) — and error_taxonomy still VERIFIED off a real JSON-RPC error', async () => {
+  const result = await runProbe(makeInput(FIXTURE_CORPUS.find((f) => f.id === 'modern-baseline-clean')!.createHandler()))
+  const auth = row(result, 'auth_metadata')
+  assert.deepStrictEqual([auth.execution_status, auth.assertion_status, auth.reason, auth.unverified_reason], ['SKIPPED', 'UNVERIFIED', { key: 'auth_no_challenge_observed' }, { key: 'auth_no_challenge_observed' }])
+  const et = row(result, 'error_taxonomy')
+  assert.deepStrictEqual([et.execution_status, et.assertion_status, et.reason], ['COMPLETED', 'VERIFIED', null])
+})
+
+for (const status of [401, 403]) {
+  await t(`tools/call answered ${status} with no body: error_taxonomy is SKIPPED/UNVERIFIED error_shape_not_observed (never VERIFIED, never OBSERVED_RISK, never COMPLETED)`, async () => {
+    const result = await runProbe(makeInput(toolsCallAnsweredWith(status)))
+    const et = row(result, 'error_taxonomy')
+    assert.deepStrictEqual([et.execution_status, et.assertion_status, et.reason, et.unverified_reason], ['SKIPPED', 'UNVERIFIED', { key: 'error_shape_not_observed' }, { key: 'error_shape_not_observed' }])
+  })
+}
+
+await t('only the two not-observed reasons are SKIPPED: a 401 with no challenge header is a check that ran (auth_metadata COMPLETED/UNVERIFIED auth_401_no_challenge), a 403 has no challenge to read (SKIPPED/UNVERIFIED auth_no_challenge_observed)', async () => {
+  const a401 = row(await runProbe(makeInput(toolsCallAnsweredWith(401))), 'auth_metadata')
+  assert.deepStrictEqual([a401.execution_status, a401.assertion_status, a401.reason], ['COMPLETED', 'UNVERIFIED', { key: 'auth_401_no_challenge' }])
+  const a403 = row(await runProbe(makeInput(toolsCallAnsweredWith(403))), 'auth_metadata')
+  assert.deepStrictEqual([a403.execution_status, a403.assertion_status, a403.reason], ['SKIPPED', 'UNVERIFIED', { key: 'auth_no_challenge_observed' }])
+})
+
+await t('a genuine 401 with a valid challenge and a served metadata document: auth_metadata is still VERIFIED (legacy-tools-call-credential-gated, credential-gated-handshake)', async () => {
+  for (const id of ['legacy-tools-call-credential-gated', 'credential-gated-handshake']) {
+    const a = row(await runProbe(makeInput(FIXTURE_CORPUS.find((f) => f.id === id)!.createHandler())), 'auth_metadata')
+    assert.deepStrictEqual([a.execution_status, a.assertion_status, a.reason], ['COMPLETED', 'VERIFIED', null], id)
+  }
+})
+
+await t('a real JSON-RPC error on the unknown tools/call: error_taxonomy is still VERIFIED (every positive corpus fixture that sends the call)', async () => {
+  let checked = 0
+  for (const fixture of FIXTURE_CORPUS.filter((f) => f.kind === 'positive' && f.expectedAssertions.some((a) => a.check_id === 'error_taxonomy' && a.assertion_status === 'VERIFIED'))) {
+    const a = row(await runProbe(makeInput(fixture.createHandler())), 'error_taxonomy')
+    assert.deepStrictEqual([a.execution_status, a.assertion_status, a.reason], ['COMPLETED', 'VERIFIED', null], fixture.id)
+    checked++
+  }
+  assert.ok(checked > 0, 'no fixture exercised the VERIFIED error_taxonomy path')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

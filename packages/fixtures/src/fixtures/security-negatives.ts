@@ -1,6 +1,6 @@
 import type { Fixture } from '../types.ts'
 import { rawResponse } from '../helpers.ts'
-import { CLEAN_TOOLS, ENDPOINT, createModernHandler, modernSampleRun, cleanBaselineAssertions, withOverride } from './shared.ts'
+import { CLEAN_TOOLS, ENDPOINT, createModernHandler, modernSampleRun, cleanBaselineAssertions, cleanBaselineWith401ToolsCall, withOverride } from './shared.ts'
 
 const RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource'
 const JWKS_PATH = '/.well-known/jwks.json'
@@ -43,7 +43,7 @@ export const authChallengeScopeContradictsMetadata: Fixture = {
           : undefined,
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: withOverride(cleanBaselineAssertions(), {
+  expectedAssertions: withOverride(cleanBaselineWith401ToolsCall(), {
     check_id: 'auth_metadata',
     execution_status: 'COMPLETED',
     assertion_status: 'OBSERVED_RISK',
@@ -70,7 +70,7 @@ export const authMetadataIllegalStructure: Fixture = {
           : undefined,
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: withOverride(cleanBaselineAssertions(), {
+  expectedAssertions: withOverride(cleanBaselineWith401ToolsCall(), {
     check_id: 'auth_metadata',
     execution_status: 'COMPLETED',
     assertion_status: 'OBSERVED_RISK',
@@ -118,7 +118,7 @@ export const jwksMultipleKeysNotFlagged: Fixture = {
       },
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: cleanBaselineAssertions(),
+  expectedAssertions: cleanBaselineWith401ToolsCall(),
 }
 
 const INJECTED_TOOLS = [
@@ -164,7 +164,7 @@ export const authChallengeNoMetadataUrl: Fixture = {
       toolsCallResponse: () => rawResponse(401, { 'www-authenticate': 'Bearer realm="mcp"' }, null),
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: withOverride(cleanBaselineAssertions(), {
+  expectedAssertions: withOverride(cleanBaselineWith401ToolsCall(), {
     check_id: 'auth_metadata',
     execution_status: 'COMPLETED',
     assertion_status: 'UNVERIFIED',

@@ -1,6 +1,6 @@
 {
   "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
-  "registry_version": "0.10.0",
+  "registry_version": "0.11.0",
   "suite_id": "remote-baseline-v0.1",
   "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
   "groups": [
@@ -54,19 +54,19 @@
       }
     },
     {
-      "n": 9, "check_id": "latency_profile", "group": "reach", "docs_version": "v0.1.0",
-      "predicate_zh": "p50 / p95 在预算内可观测",
-      "predicate_en": "p50 / p95 observable within budget",
+      "n": 9, "check_id": "latency_profile", "group": "reach", "docs_version": "v0.2.0",
+      "predicate_zh": "p50 / p95 请求延迟（尚未测量）",
+      "predicate_en": "p50 / p95 request latency (not measured yet)",
       "failure_status": null,
       "observation_only": true,
       "requires_baseline": false,
       "explain": {
-        "what_zh": "单次 run 内的 p50 / p95 响应延迟。",
-        "what_en": "The p50 / p95 response latency within a single run.",
+        "what_zh": "单次 run 内的 p50 / p95 请求延迟。尚未运行：探测器目前还不测量请求延迟。",
+        "what_en": "The p50 / p95 request latency within a single run. Not run yet: this probe does not measure request latency.",
         "how_zh": "**不做判定。** 我们不设「多少毫秒算慢」的阈值。",
         "how_en": "**No verdict is made.** We don't set a threshold for how many milliseconds counts as slow.",
-        "cannot_zh": "这是从我们探测节点看到的值，不代表你用户看到的值。",
-        "cannot_en": "This is what our probe node observed — not what your users see."
+        "cannot_zh": "开始测量后，这将是从我们探测节点看到的值，不代表你用户看到的值。",
+        "cannot_en": "Once measured, this will be what our probe node observed — not what your users see."
       }
     },
     {
@@ -136,7 +136,7 @@
       }
     },
     {
-      "n": 8, "check_id": "error_taxonomy", "group": "proto", "docs_version": "v0.1.0",
+      "n": 8, "check_id": "error_taxonomy", "group": "proto", "docs_version": "v0.2.0",
       "predicate_zh": "错误响应符合协议定义的形状",
       "predicate_en": "error responses match the protocol's defined shape",
       "failure_status": "OBSERVED_RISK",
@@ -182,7 +182,7 @@
       }
     },
     {
-      "n": 10, "check_id": "auth_metadata", "group": "sec", "docs_version": "v0.1.0",
+      "n": 10, "check_id": "auth_metadata", "group": "sec", "docs_version": "v0.2.0",
       "predicate_zh": "公开可观察的认证 metadata / challenge 结构合法",
       "predicate_en": "publicly observable auth metadata / challenge structure is legal",
       "failure_status": "OBSERVED_RISK",

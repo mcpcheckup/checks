@@ -261,10 +261,12 @@ await t(`slow target, two ${REQUEST_MS} ms requests fit the old pre-request chec
 
   const o = statusOf(old.result), n = statusOf(now.result)
   // Handshake (one request on this fixture) completed in budget either way.
-  for (const id of ['reachability', 'discovery_handshake', 'protocol_revision', 'transport_type', 'latency_profile']) {
+  for (const id of ['reachability', 'discovery_handshake', 'protocol_revision', 'transport_type']) {
     assert.equal(n[id], 'COMPLETED/VERIFIED', id)
     assert.equal(o[id], 'COMPLETED/VERIFIED', id)
   }
+  // Both graphs run the live orchestrator, which since suite 0.12.0 records latency_profile as not run on every branch.
+  for (const side of [n, o]) assert.equal(side['latency_profile'], 'SKIPPED/UNVERIFIED latency_not_recorded', 'latency_profile')
   // 0.7.0: tools/list finished at ≈ 2 × REQUEST_MS and was judged; the pre-request
   // check then stopped tools/call.
   for (const id of ['tools_list', 'toolset_fingerprint', 'schema_fingerprint', 'tool_description_hygiene']) assert.equal(o[id], 'COMPLETED/VERIFIED', `0.7.0 ${id}`)
@@ -291,6 +293,7 @@ await t('slow target, the FIRST request outlives the whole budget: the new wire.
   for (const [id, s] of Object.entries(n)) {
     if (id === 'reachability') continue
     if (id === 'tls_certificate') assert.equal(s, 'SKIPPED/UNVERIFIED tls_certificate_out_of_scope')
+    else if (id === 'latency_profile') assert.equal(s, 'SKIPPED/UNVERIFIED latency_not_recorded')
     else assert.equal(s, `SKIPPED/UNVERIFIED ${DURATION}`, id)
   }
 })

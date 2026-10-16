@@ -32,6 +32,21 @@ type AssertionBuilder = (
   reason?: Reason,
 ) => void
 
+/** Suite 0.12.0: the two reasons whose whole content is "the answer had nothing
+ *  of the kind this check reads" — no 401 challenge for auth_metadata
+ *  (auth_no_challenge_observed), no protocol error for error_taxonomy
+ *  (error_shape_not_observed). A check with no object to look at did not run on
+ *  anything: it is SKIPPED/UNVERIFIED like tls_certificate and latency_profile,
+ *  not COMPLETED. That also keeps it out of the badge fold, which drops SKIPPED
+ *  rows: an open server (answers the reserved-name call with an ordinary error)
+ *  keeps the badge it had under suites up to 0.11.0. Every other verdict of
+ *  these two checks — including every other UNVERIFIED — is a check that ran. */
+const NOTHING_TO_OBSERVE_KEYS: ReadonlySet<string> = new Set(['auth_no_challenge_observed', 'error_shape_not_observed'])
+
+function executionOf(verdict: { status: string; reason?: Reason }): ExecutionStatus {
+  return verdict.status === 'UNVERIFIED' && verdict.reason != null && NOTHING_TO_OBSERVE_KEYS.has(verdict.reason.key) ? 'SKIPPED' : 'COMPLETED'
+}
+
 /** T73b: a FAILED discovery_handshake / tools_list forwards the reason
  *  protocol.ts classified at the failing return — never re-derived here.
  *  Reaching FAILED without one would be a classification gap in protocol.ts,
@@ -155,7 +170,8 @@ function judgeBaselineCheck(
  *  itself, produces: reachability = ERROR/UNVERIFIED **only if it was not
  *  already settled** (i.e. the abort happened at or before the handshake), and
  *  every check that never got to run (except the always-out-of-scope
- *  tls_certificate) = SKIPPED/UNVERIFIED carrying the abort's own reason.
+ *  tls_certificate and the never-run latency_profile) = SKIPPED/UNVERIFIED
+ *  carrying the abort's own reason.
  *  Checks that already COMPLETED before the abort keep whatever result they
  *  earned — "we verified the protocol handshake, then ran out of budget" is a
  *  coherent, honest statement; discarding an already-verified observation would
@@ -167,7 +183,13 @@ function judgeBaselineCheck(
  *  "the endpoint did not answer" apart from our own policy, resolver and
  *  budget. Suite 0.11.0: a host other than the endpoint's that a FetchLike
  *  wrapper declined to contact (OtherHostDeclined) gets
- *  probe_declined_other_host; anything else still gets probe_aborted. */
+ *  probe_declined_other_host; anything else still gets probe_aborted.
+ *  Suite 0.12.0: three checks stop recording VERIFIED for something that was
+ *  not observed — latency_profile (never run: latency_not_recorded),
+ *  auth_metadata (the tools/call answer was not a 401: auth_no_challenge_observed,
+ *  in auth.ts) and error_taxonomy (it was a 401/403: error_shape_not_observed,
+ *  in error-taxonomy.ts). All three are SKIPPED/UNVERIFIED (see
+ *  NOTHING_TO_OBSERVE_KEYS): there was nothing for the check to look at. */
 export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   const { target, fetchImpl, budget, now, newId, approvedBaseline, provenance, registry } = input
 
@@ -213,6 +235,12 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   // tls_certificate is out of this executor's scope unconditionally — set first
   // so every other branch below can rely on it already being present.
   A('tls_certificate', 'SKIPPED', 'UNVERIFIED', { key: 'tls_certificate_out_of_scope' })
+  // Suite 0.12.0: latency_profile is not run on any branch — nothing in this
+  // executor times a request, so it is never VERIFIED (suites up to 0.11.0
+  // wrote it VERIFIED unconditionally). Set here, beside tls_certificate, so
+  // the stdio branch, the cascade and the credential gates each end with this
+  // one row and no branch below writes it a second time.
+  A('latency_profile', 'SKIPPED', 'UNVERIFIED', { key: 'latency_not_recorded' })
 
   if (target.transport === 'stdio') {
     cascadeRemaining('SKIPPED', { key: 'stdio_out_of_scope' })
@@ -288,7 +316,6 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     }
 
     A('transport_type', 'COMPLETED', 'VERIFIED')
-    A('latency_profile', 'COMPLETED', 'VERIFIED')
 
     // Always run tools/list, in both cascade branches: the credential-gate rule
     // does not change whether it is sent, and on the branches that still send
@@ -397,10 +424,10 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       })
 
       const taxonomy = judgeErrorTaxonomy(callResult)
-      A('error_taxonomy', 'COMPLETED', taxonomy.status, taxonomy.status === 'OBSERVED_RISK' ? taxonomy.reason : null)
+      A('error_taxonomy', executionOf(taxonomy), taxonomy.status, taxonomy.status !== 'VERIFIED' ? taxonomy.reason : null)
 
       const authVerdict = await judgeAuthMetadata({ fetchImpl, budget, ctx, callResult })
-      A('auth_metadata', 'COMPLETED', authVerdict.status, authVerdict.status !== 'VERIFIED' ? authVerdict.reason : null)
+      A('auth_metadata', executionOf(authVerdict), authVerdict.status, authVerdict.status !== 'VERIFIED' ? authVerdict.reason : null)
     }
 
     // DNS-answer-change is judged independently of redirect_policy: a changed DNS

@@ -139,11 +139,12 @@ t('redirect_policy.how 不再写「所有请求都跟随」的旧说法，写的
   assert.equal(CHECKS_REGISTRY.budget.max_redirects, 3)
 })
 
-// docs_version enters every signed assertion (probe.ts docsVersionFor). Registry 0.10.0
-// moves redirect_policy alone, v0.1.0 -> v0.2.0; every other value is the one in the
-// previous registry version's checks.json. A later bump of any check
-// updates this table in the same change, deliberately.
-t('docs_version：redirect_policy 为 v0.2.0，其余 14 项检查与上一版 registry 的 checks.json 逐条相同', () => {
+// docs_version enters every signed assertion (probe.ts docsVersionFor). Registry 0.11.0
+// moves latency_profile, error_taxonomy and auth_metadata, each v0.1.0 -> v0.2.0 (their
+// verdicts no longer record VERIFIED for something the run did not observe); every other
+// value is the one in the previous registry version's checks.json. A later bump of any
+// check updates this table in the same change, deliberately.
+t('docs_version：latency_profile / error_taxonomy / auth_metadata 为 v0.2.0，其余 12 项检查与上一版 registry 的 checks.json 逐条相同', () => {
   const previousRegistry: Record<string, string> = {
     reachability: 'v0.4.0',
     latency_profile: 'v0.1.0',
@@ -153,7 +154,7 @@ t('docs_version：redirect_policy 为 v0.2.0，其余 14 项检查与上一版 r
     tools_list: 'v0.2.0',
     error_taxonomy: 'v0.1.0',
     tls_certificate: 'v0.1.0',
-    redirect_policy: 'v0.1.0',
+    redirect_policy: 'v0.2.0',
     auth_metadata: 'v0.1.0',
     tool_description_hygiene: 'v0.1.0',
     toolset_fingerprint: 'v0.1.0',
@@ -163,7 +164,23 @@ t('docs_version：redirect_policy 为 v0.2.0，其余 14 项检查与上一版 r
   }
   const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
   assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
-  assert.deepStrictEqual(now, { ...previousRegistry, redirect_policy: 'v0.2.0' })
+  assert.deepStrictEqual(now, { ...previousRegistry, latency_profile: 'v0.2.0', error_taxonomy: 'v0.2.0', auth_metadata: 'v0.2.0' })
+})
+
+// latency_profile (registry 0.11.0, suite 0.12.0): the probe times nothing and records the check
+// SKIPPED/UNVERIFIED latency_not_recorded on every branch, so no text may say a latency is
+// observable or observed. Pinned verbatim, so a copy swap is one exact-once replacement.
+t('latency_profile：predicate / what / cannot 不再说延迟「可观测」或「是我们观察到的」，逐字固定', () => {
+  const def = CHECKS_REGISTRY.checks.find((c) => c.check_id === 'latency_profile')!
+  assert.equal(def.predicate_en, 'p50 / p95 request latency (not measured yet)')
+  assert.equal(def.predicate_zh, 'p50 / p95 请求延迟（尚未测量）')
+  assert.equal(def.explain.what_en, 'The p50 / p95 request latency within a single run. Not run yet: this probe does not measure request latency.')
+  assert.equal(def.explain.what_zh, '单次 run 内的 p50 / p95 请求延迟。尚未运行：探测器目前还不测量请求延迟。')
+  assert.equal(def.explain.cannot_en, 'Once measured, this will be what our probe node observed — not what your users see.')
+  assert.equal(def.explain.cannot_zh, '开始测量后，这将是从我们探测节点看到的值，不代表你用户看到的值。')
+  for (const text of [def.predicate_en, def.predicate_zh, def.explain.what_en, def.explain.what_zh]) {
+    assert.doesNotMatch(text, /observable within budget|在预算内可观测/, text)
+  }
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

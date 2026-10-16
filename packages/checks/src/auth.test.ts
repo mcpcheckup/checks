@@ -411,10 +411,11 @@ await t('正例：401 + Bearer realm="a\\<0xE9>b"（转义 obs-text）→ { sche
 
 console.log('\njudgeAuthMetadata：针对真实 fixture handler')
 
-await t('modern-baseline-clean：没有 401，未观察到任何 challenge → VERIFIED（没什么好标记的）', async () => {
+await t('modern-baseline-clean：没有 401，未观察到任何 challenge → UNVERIFIED auth_no_challenge_observed（0.12.0 起；没有 challenge 可检查，不是 VERIFIED）', async () => {
   const { fetchImpl, ctx, callResult } = await callResultFor(modernBaselineClean)
+  assert.notEqual(callResult.status, 401)
   const v = await judgeAuthMetadata({ fetchImpl, budget: BUDGET, ctx, callResult })
-  assert.equal(v.status, 'VERIFIED')
+  assert.deepStrictEqual(v, { status: 'UNVERIFIED', reason: { key: 'auth_no_challenge_observed' } })
 })
 
 await t('no-credentials-unverifiable-auth：裸 401 无 WWW-Authenticate → UNVERIFIED', async () => {
@@ -467,9 +468,11 @@ function metadataServer(status: number, body: string, calls: string[]) {
  *  only accepts a 401 with a structurally valid challenge, so the status≠401
  *  and auth_401_no_challenge branches are reachable only from the tools/call
  *  entry (judgeAuthMetadata), never from judgeAuthMetadataFromGate. */
-const AC3_CASES: { name: string; status: number; header: string | null; meta: [number, string]; gate: boolean; want: string }[] = [
-  { name: 'status 403 (≠ 401)', status: 403, header: WITH_URL, meta: [200, '{}'], gate: false, want: 'VERIFIED' },
-  { name: 'status 200 (≠ 401)', status: 200, header: null, meta: [200, '{}'], gate: false, want: 'VERIFIED' },
+const AC3_CASES: { name: string; status: number; header: string | null; meta: [number, string]; gate: boolean; want: string; now?: string }[] = [
+  // `want` is the frozen 0.7.1 verdict; `now`, when present, is the one verdict suite 0.12.0 changes: a status other than 401
+  // carries no challenge, so it is UNVERIFIED auth_no_challenge_observed instead of VERIFIED. Every other case is identical.
+  { name: 'status 403 (≠ 401)', status: 403, header: WITH_URL, meta: [200, '{}'], gate: false, want: 'VERIFIED', now: 'UNVERIFIED auth_no_challenge_observed' },
+  { name: 'status 200 (≠ 401)', status: 200, header: null, meta: [200, '{}'], gate: false, want: 'VERIFIED', now: 'UNVERIFIED auth_no_challenge_observed' },
   { name: '401 without a header', status: 401, header: null, meta: [200, '{}'], gate: false, want: 'UNVERIFIED auth_401_no_challenge' },
   { name: '401 with an empty header', status: 401, header: '', meta: [200, '{}'], gate: false, want: 'UNVERIFIED auth_401_no_challenge' },
   { name: '401, challenge without resource_metadata', status: 401, header: 'Bearer realm="mcp"', meta: [200, '{}'], gate: true, want: 'UNVERIFIED auth_challenge_no_metadata_url' },
@@ -484,19 +487,21 @@ const AC3_CASES: { name: string; status: number; header: string | null; meta: [n
 const label = (v: { status: string; reason?: { key: string } | null }) => (v.status === 'VERIFIED' ? 'VERIFIED' : `${v.status} ${v.reason!.key}`)
 
 for (const c of AC3_CASES) {
-  await t(`AC3 ${c.name}：${c.want}`, async () => {
+  await t(`AC3 ${c.name}：${c.now ?? c.want}${c.now === undefined ? '' : ` (0.7.1: ${c.want})`}`, async () => {
     const headers = new Headers(c.header === null ? {} : { 'www-authenticate': c.header })
     const callResult = { status: c.status, headers, bodyText: '', currentEndpoint: ENDPOINT }
     const oldCalls: string[] = [], newCalls: string[] = []
     const old = await frozen071JudgeAuthMetadata({ fetchImpl: metadataServer(...c.meta, oldCalls), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
     const now = await judgeAuthMetadata({ fetchImpl: metadataServer(...c.meta, newCalls), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
     assert.equal(label(old), c.want, 'the frozen 0.7.1 verdict is the one this case is named for')
-    assert.deepStrictEqual(now, old, 'tools/call entry: same verdict object as 0.7.1')
+    assert.equal(label(now), c.now ?? c.want, 'the verdict suite 0.12.0 gives this pair')
+    if (c.now === undefined) assert.deepStrictEqual(now, old, 'tools/call entry: same verdict object as 0.7.1')
+    else assert.deepStrictEqual(now, { status: 'UNVERIFIED', reason: { key: 'auth_no_challenge_observed' } }, 'tools/call entry: the one verdict 0.12.0 changes')
     assert.deepStrictEqual(newCalls, oldCalls, 'tools/call entry: same metadata request as 0.7.1')
 
     const pure = judgeAuthChallenge(c.status, headers.get('www-authenticate'))
     if ('verdict' in pure) {
-      assert.deepStrictEqual(pure.verdict, old, 'the pure function settles it without a request')
+      assert.deepStrictEqual(pure.verdict, now, 'the pure function settles it without a request')
       assert.equal(oldCalls.length, 0)
     } else {
       assert.deepStrictEqual(oldCalls, [`GET ${pure.fetch.url}`], 'the pure function names exactly the document 0.7.1 fetched')
@@ -516,9 +521,9 @@ for (const c of AC3_CASES) {
   })
 }
 
-await t('AC3 覆盖面：六个非 VERIFIED key 都出现；其中五个经门控入口可达，auth_401_no_challenge 与 status≠401 两支只有 tools/call 入口可达（门控只在 401 + 合法 challenge 时成立）', () => {
-  const keys = (cases: typeof AC3_CASES) => new Set(cases.filter((c) => c.want !== 'VERIFIED').map((c) => c.want.split(' ')[1]))
-  assert.deepStrictEqual([...keys(AC3_CASES)].sort(), ['auth_401_no_challenge', 'auth_challenge_no_metadata_url', 'auth_metadata_http_error', 'auth_metadata_invalid_json', 'auth_metadata_not_json_object', 'auth_scope_contradiction'])
+await t('AC3 覆盖面：七个非 VERIFIED key 都出现；其中五个经门控入口可达，auth_401_no_challenge 与 status≠401（auth_no_challenge_observed）两支只有 tools/call 入口可达（门控只在 401 + 合法 challenge 时成立）', () => {
+  const keys = (cases: typeof AC3_CASES) => new Set(cases.map((c) => c.now ?? c.want).filter((w) => w !== 'VERIFIED').map((w) => w.split(' ')[1]))
+  assert.deepStrictEqual([...keys(AC3_CASES)].sort(), ['auth_401_no_challenge', 'auth_challenge_no_metadata_url', 'auth_metadata_http_error', 'auth_metadata_invalid_json', 'auth_metadata_not_json_object', 'auth_no_challenge_observed', 'auth_scope_contradiction'])
   assert.deepStrictEqual([...keys(AC3_CASES.filter((c) => c.gate))].sort(), ['auth_challenge_no_metadata_url', 'auth_metadata_http_error', 'auth_metadata_invalid_json', 'auth_metadata_not_json_object', 'auth_scope_contradiction'])
   for (const c of AC3_CASES.filter((x) => !x.gate)) {
     assert.equal(classifyCredentialChallenge(c.status, new Headers(c.header === null ? {} : { 'www-authenticate': c.header })), null, `${c.name}: not a gate`)

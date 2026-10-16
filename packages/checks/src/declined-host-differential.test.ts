@@ -47,6 +47,7 @@ import { DEFAULT_PROBE_BUDGET, SsrfBlocked } from '@mcpcheckup/ssrf-guard'
 import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
+import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
 import { runProbe as frozen0100RunProbe } from './frozen/suite-0.10.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
@@ -244,7 +245,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null }
 
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant): Promise<Run> {
   const handler = createHandler()
@@ -278,9 +279,10 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     return handler(input, init)
   }
   let seq = 0
+  const recorded = recordToolsCallStatus(fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl,
+    fetchImpl: recorded.fetchImpl,
     budget: v.budget,
     now: () => '2026-09-25T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -288,7 +290,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, threw }
+  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -377,7 +379,8 @@ for (const fixture of FIXTURE_CORPUS) {
     try {
       const now = await runOnce(runProbe, fixture.createHandler, v)
       const old = await runOnce(frozen0100RunProbe, fixture.createHandler, v)
-      if (!identical(now.result, old.result)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(old.result).slice(0, 400)}`)
+      const want = suite0120Remap(old.result, old.toolsCallStatus)
+      if (!identical(now.result, want)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
       if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
       if (v.getRedirects?.crossHost && now.requests.some((r) => r.includes('.example.net'))) seen.crossHostGets++
     } catch (e) {
@@ -399,7 +402,7 @@ for (const fixture of FIXTURE_CORPUS) {
         if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
         if (!now.threw) { seen.notReached++ }
         else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
-        const expected = now.threw && remaps ? remapped(old.result) : old.result
+        const expected = suite0120Remap(now.threw && remaps ? remapped(old.result) : old.result, old.toolsCallStatus)
         if (!identical(now.result, expected)) violation(id, `ProbeResult is not 0.10.0's ${remaps && now.threw ? 'with the one remap' : 'unchanged'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
         if (now.threw && remaps) {
           const rows = now.result.assertions.filter((a) => identical(a.reason, DECLINED))

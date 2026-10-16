@@ -5,13 +5,16 @@
  * Two parties, both the real orchestrator:
  *
  *   1. The implementation: runProbe (./probe.ts).
- *   2. FROZEN 0.8.0 — ./frozen/suite-0.8.0/probe.ts, byte for byte the suite
- *      0.8.0 (b439bc6; unchanged since f923e35) probe.ts apart from a
- *      four-line `// FROZEN:` header and `../../` import paths (the first test
- *      recomputes its git blob id). probe.ts is the only file T85 changes that
- *      the orchestrator runs; everything else it reaches is shared with the
- *      live code and pinned below (CLOSURE_080_BLOBS), the same way
- *      probe-tool-name-differential.test.ts pins the 0.7.1 oracle.
+ *   2. FROZEN 0.8.0 — ./frozen/suite-0.8.0/{probe,auth,error-taxonomy}.ts, byte
+ *      for byte the suite 0.8.0 (b439bc6; unchanged since f923e35) files apart
+ *      from a four-line `// FROZEN:` header and `../../` import paths (the first
+ *      test recomputes their git blob ids). probe.ts is the only file T85
+ *      changes that the orchestrator runs; auth.ts and error-taxonomy.ts were
+ *      shared with the live code until suite 0.12.0 changed their verdicts and
+ *      were frozen here then (see below). Everything else the frozen files
+ *      reach is shared with the live code and pinned below
+ *      (CLOSURE_080_BLOBS), the same way probe-tool-name-differential.test.ts
+ *      pins the 0.7.1 oracle.
  *
  * Inputs:
  *   A. The TODO 458 / T86b input set: the whole fixture corpus crossed with
@@ -26,7 +29,9 @@
  *   - A, and B for our own wrapper errors (or when the run never reaches
  *     request p): the two ProbeResults are identical (same own keys in the
  *     same order at every level, Object.is on every leaf) and so is the
- *     request sequence.
+ *     request sequence — after the suite 0.12.0 remap that every comparison
+ *     in this file applies to 0.8.0's result (suite-0120-remap.ts: the three
+ *     checks that stopped recording VERIFIED for what they did not observe).
  *   - B for an ssrf-guard error: the request sequences are identical, and the
  *     implementation's ProbeResult is 0.8.0's with exactly this remap and
  *     nothing else — every row 0.8.0 gave `probe_aborted { message }` (the
@@ -50,6 +55,7 @@ import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { runProbe as frozen080RunProbe } from './frozen/suite-0.8.0/probe.ts'
+import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, FetchLike, GuardSignals, ProbeResult } from './types.ts'
 import { RUNS_ONCE_ONLY, HAS_FULL_SET, IS_MERGE, keepThisShard, writeShardOut, readShardIns, mergeCountMaps, SHARD_COUNT, SHARD_INDEX } from './differential-shard.ts'
@@ -64,8 +70,16 @@ async function t(name: string, fn: () => void | Promise<void>) {
 // The frozen copy is what it says it is, and so is everything it reaches.
 // ---------------------------------------------------------------------------
 
-/** `git rev-parse b439bc6:packages/checks/src/probe.ts` (suite 0.8.0; the same blob at f923e35). */
-const FROZEN_080_PROBE_BLOB = '9264f8730e0582158f80fb0a6a019e596e691cee'
+/** `git rev-parse b439bc6:packages/checks/src/<name>.ts` (suite 0.8.0; the same blobs at f923e35).
+ *  auth.ts and error-taxonomy.ts are the same blobs they were in the live tree until suite 0.12.0
+ *  (git rev-parse HEAD~:… at that change), which changed what judgeAuthChallenge and judgeErrorTaxonomy
+ *  say about an answer that proves nothing; they were frozen here then, with probe.ts's two imports
+ *  pointed at them, so the frozen run stays the 0.8.0 behaviour. */
+const FROZEN_080_BLOBS: Record<string, string> = {
+  'probe': '9264f8730e0582158f80fb0a6a019e596e691cee',
+  'auth': 'f8b78f074b997b38e39319d97ec93807f73a0c65',
+  'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
+}
 
 /** The in-repo import closure of frozen/suite-0.8.0/probe.ts (importClosure below;
  *  imports read off the TypeScript AST), each file pinned to the output of
@@ -106,6 +120,13 @@ const FROZEN_080_PROBE_BLOB = '9264f8730e0582158f80fb0a6a019e596e691cee'
  *  which is carried by declined-host-differential.test.ts (live vs frozen
  *  0.10.0).
  *
+ *  Suite 0.12.0 re-pins two files again, and freezes the two it would otherwise have changed under the
+ *  frozen probe.ts (FROZEN_080_BLOBS above): checks.json (registry 0.11.0: latency_profile's, auth_metadata's
+ *  and error_taxonomy's docs_version and copy; reached type-only, passed in as input to both sides) and auth.ts.
+ *  auth.ts stays in this closure because the live protocol.ts imports its classifyCredentialChallenge, which
+ *  suite 0.12.0 did not touch; the function that changed (judgeAuthChallenge) is reached by nothing here, since
+ *  the frozen probe.ts uses the frozen auth.ts. error-taxonomy.ts leaves the closure: only probe.ts imported it.
+ *
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
@@ -132,9 +153,8 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '679218719d8b2345c667bcd36f479548181caff7', // registry 0.10.0 (redirect_policy how copy and docs_version v0.2.0 only; see above) — git hash-object packages/checks/checks.json
-  'packages/checks/src/auth.ts': 'f8b78f074b997b38e39319d97ec93807f73a0c65',
-  'packages/checks/src/error-taxonomy.ts': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
+  'packages/checks/checks.json': 'b3e95a694405977ccae7970f04de90cde4c8e1a8', // registry 0.11.0 (see above) — git hash-object packages/checks/checks.json
+  'packages/checks/src/auth.ts': '0f32e7b3f4d7b61f62e75ac68a942b85f338a50c', // suite 0.12.0 (see above) — git hash-object packages/checks/src/auth.ts
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/protocol.ts': '2d39fd28a93a21000b6cc008336971bd1080d030', // T96 (2xx discover fallback; see above) — git rev-parse "$(git log -n1 --format=%h -G'T96 rule: the statuses' -- packages/checks/src/protocol.ts)":packages/checks/src/protocol.ts
@@ -219,13 +239,16 @@ function importClosure080(): { files: string[]; thirdParty: string[] } {
 // Static/file-hash checks, unaffected by input sharding — run exactly once
 // (shard 0, or the single unsharded process). See differential-shard.ts.
 if (RUNS_ONCE_ONLY) {
-await t('the frozen suite-0.8.0 probe.ts is the b439bc6 blob: header dropped, import paths restored, git blob id recomputed', () => {
-  const lines = readRepo(`${FROZEN_080_DIR}/probe.ts`).replace(/\r\n/g, '\n').split('\n')
-  let header = 0
-  while (lines[header]!.startsWith('// FROZEN:')) header++
-  assert.equal(header, 4, 'expected the four-line FROZEN header')
-  const restored = lines.slice(header).map((l) => (l.startsWith('import ') ? l.replace("from '../../", "from './") : l)).join('\n')
-  assert.equal(blobId(restored), FROZEN_080_PROBE_BLOB)
+await t('the frozen suite-0.8.0 probe.ts, auth.ts and error-taxonomy.ts are the b439bc6 blobs: header dropped, import paths restored, git blob id recomputed', () => {
+  assert.deepStrictEqual(readdirSync(new URL(`${FROZEN_080_DIR}/`, REPO_ROOT)).sort(), Object.keys(FROZEN_080_BLOBS).map((n) => `${n}.ts`).sort(), 'frozen/suite-0.8.0 holds a file that is not pinned, or a pinned one is missing')
+  for (const [name, blob] of Object.entries(FROZEN_080_BLOBS)) {
+    const lines = readRepo(`${FROZEN_080_DIR}/${name}.ts`).replace(/\r\n/g, '\n').split('\n')
+    let header = 0
+    while (lines[header]!.startsWith('// FROZEN:')) header++
+    assert.equal(header, 4, `${name}: expected the four-line FROZEN header`)
+    const restored = lines.slice(header).map((l) => (l.startsWith('import ') ? l.replace("from '../../", "from './") : l)).join('\n')
+    assert.equal(blobId(restored), blob, `frozen/suite-0.8.0/${name}.ts is not the file it claims to be`)
+  }
 })
 
 await t('the in-repo import closure of frozen/suite-0.8.0 is exactly the pinned list, and every pinned file hashes to its pinned blob (git blob id recomputed)', () => {
@@ -256,7 +279,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null }
 
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant): Promise<Run> {
   const handler = createHandler()
@@ -290,9 +313,10 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     return handler(input, init)
   }
   let seq = 0
+  const recorded = recordToolsCallStatus(fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl,
+    fetchImpl: recorded.fetchImpl,
     budget: v.budget,
     now: () => '2026-09-25T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -300,7 +324,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, threw }
+  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -420,7 +444,8 @@ if (!IS_MERGE) {
       try {
         const now = await runOnce(runProbe, fixture.createHandler, v)
         const old = await runOnce(frozen080RunProbe, fixture.createHandler, v)
-        if (!identical(now.result, old.result)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(old.result).slice(0, 400)}`)
+        const want = suite0120Remap(old.result, old.toolsCallStatus)
+        if (!identical(now.result, want)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
         if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
       } catch (e) {
         violation(id, `threw ${(e as Error).message}`)
@@ -446,7 +471,7 @@ if (!IS_MERGE) {
           // Settled when the error landed = 0.8.0 did not write reachability from its catch.
           const settled = old.result.assertions.find((a) => a.check_id === 'reachability')!.execution_status !== 'ERROR'
           const reason = settled ? settledReason : unsettledReason
-          const expected = now.threw && reason !== null ? remapped(old.result, reason) : old.result
+          const expected = suite0120Remap(now.threw && reason !== null ? remapped(old.result, reason) : old.result, old.toolsCallStatus)
           if (!identical(now.result, expected)) violation(id, `ProbeResult is not 0.8.0's ${reason === null || !now.threw ? 'unchanged' : 'with the one remap'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
           if (now.threw && reason !== null) {
             seen.remappedRows += now.result.assertions.filter((a) => identical(a.reason, reason)).length

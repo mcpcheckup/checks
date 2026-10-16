@@ -168,8 +168,17 @@ export function unclaimedDriftAssertions(): ExpectedAssertion[] {
   ]
 }
 
-export function latencyObserved(): ExpectedAssertion {
-  return { check_id: 'latency_profile', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' }
+/** Suite 0.12.0: the probe times no request, so latency_profile is never run (suites up to
+ *  0.11.0 expected COMPLETED/VERIFIED here, which nothing observed). */
+export function latencyNotRecorded(): ExpectedAssertion {
+  return { check_id: 'latency_profile', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: { key: 'latency_not_recorded', params: {} } }
+}
+
+/** Suite 0.12.0: a tools/call answer that is not a 401 carries no challenge, so auth_metadata
+ *  has nothing to check: SKIPPED, not COMPLETED, like latency_profile and tls_certificate
+ *  (suites up to 0.11.0 expected COMPLETED/VERIFIED here). */
+export function authNoChallengeObserved(): ExpectedAssertion {
+  return { check_id: 'auth_metadata', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: { key: 'auth_no_challenge_observed', params: {} } }
 }
 
 /** The full "everything is fine" assertion set for a clean modern or legacy server —
@@ -178,14 +187,14 @@ export function latencyObserved(): ExpectedAssertion {
 export function cleanBaselineAssertions(): ExpectedAssertion[] {
   return [
     { check_id: 'reachability', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
-    latencyObserved(),
+    latencyNotRecorded(),
     { check_id: 'transport_type', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
     { check_id: 'protocol_revision', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
     { check_id: 'discovery_handshake', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
     { check_id: 'tools_list', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
     { check_id: 'error_taxonomy', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
     { check_id: 'redirect_policy', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
-    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
+    authNoChallengeObserved(),
     { check_id: 'tool_description_hygiene', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
     { check_id: 'toolset_fingerprint', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
     { check_id: 'schema_fingerprint', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
@@ -201,6 +210,22 @@ export function withOverride(base: ExpectedAssertion[], override: ExpectedAssert
 
 export function withOverrides(base: ExpectedAssertion[], overrides: ExpectedAssertion[]): ExpectedAssertion[] {
   return overrides.reduce((acc, o) => withOverride(acc, o), base)
+}
+
+/** Suite 0.12.0: a tools/call answered with a 401 and no protocol error — error_taxonomy has
+ *  nothing to look at: SKIPPED, not COMPLETED (suites up to 0.11.0 expected COMPLETED/VERIFIED here). */
+export function errorShapeNotObserved(): ExpectedAssertion {
+  return { check_id: 'error_taxonomy', execution_status: 'SKIPPED', assertion_status: 'UNVERIFIED', reason: { key: 'error_shape_not_observed', params: {} } }
+}
+
+/** The clean baseline for a server whose reserved-name tools/call is answered with a 401 and a
+ *  challenge: error_taxonomy has no protocol error to judge, and auth_metadata (VERIFIED here —
+ *  a well-formed challenge whose metadata checks out) is the one callers override per fixture. */
+export function cleanBaselineWith401ToolsCall(): ExpectedAssertion[] {
+  return withOverrides(cleanBaselineAssertions(), [
+    errorShapeNotObserved(),
+    { check_id: 'auth_metadata', execution_status: 'COMPLETED', assertion_status: 'VERIFIED' },
+  ])
 }
 
 // ---- modern (2026-07-28) handler + sample-run engine ----

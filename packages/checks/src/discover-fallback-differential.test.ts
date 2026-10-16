@@ -76,6 +76,7 @@ import { DEFAULT_PROBE_BUDGET } from '@mcpcheckup/ssrf-guard'
 import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
+import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
 import { runProbe as frozen090RunProbe } from './frozen/suite-0.9.0/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, GuardSignals, FetchLike, ProbeResult } from './types.ts'
@@ -121,6 +122,12 @@ const FROZEN_090_BLOBS: Record<string, string> = {
  *  0.11.0 change itself is carried by declined-host-differential.test.ts
  *  (live vs frozen 0.10.0).
  *
+ *  Suite 0.12.0 re-pins checks.json alone (registry 0.11.0; git hash-object at that change): the docs_version
+ *  (v0.2.0) and copy of latency_profile, auth_metadata and error_taxonomy, nothing else. Same type-only reach, so
+ *  it cannot alter what this differential computes: every run passes the registry in as input to both sides. The
+ *  suite 0.12.0 verdict change itself is carried by the remap every comparison in this file applies to the frozen 0.9.0 result (suite-0120-remap.ts),
+ *  and proved against the frozen 0.11.0 suite by suite-0120-differential.test.ts.
+ *
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
@@ -147,7 +154,7 @@ const CLOSURE_090_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '679218719d8b2345c667bcd36f479548181caff7', // registry 0.10.0 (redirect_policy how copy and docs_version v0.2.0 only; see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': 'b3e95a694405977ccae7970f04de90cde4c8e1a8', // registry 0.11.0 (suite 0.12.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
@@ -269,7 +276,7 @@ interface Variant {
 
 /** `discoverStatus`: the status of the answer to the (only) server/discover
  *  request, or undefined when none came back. */
-interface Run { result: ProbeResult; requests: string[]; discoverStatus: number | undefined }
+interface Run { result: ProbeResult; requests: string[]; discoverStatus: number | undefined; toolsCallStatus: number | null }
 
 const isDiscover = (init?: RequestInit) => {
   if (typeof init?.body !== 'string') return false
@@ -309,9 +316,10 @@ async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant): 
     return res
   }
   let seq = 0
+  const recorded = recordToolsCallStatus(fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl,
+    fetchImpl: recorded.fetchImpl,
     budget: v.budget,
     now: () => '2026-09-30T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -319,7 +327,7 @@ async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant): 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, discoverStatus }
+  return { result, requests, discoverStatus, toolsCallStatus: recorded.toolsCallStatus() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -419,18 +427,18 @@ async function check(serve: (discoverStatus?: number) => () => Handler, v: Varia
   bump(stats, `${c.klass} — ${c.sub}`)
   if (c.klass === 'UNAFFECTED') {
     assert.deepStrictEqual(now.requests, then.requests, 'unaffected: request sequence identical to 0.9.0')
-    assert.ok(identical(now.result, then.result), 'unaffected: ProbeResult identical to 0.9.0')
+    assert.ok(identical(now.result, suite0120Remap(then.result, then.toolsCallStatus)), 'unaffected: ProbeResult identical to 0.9.0 (after the suite 0.12.0 remap)')
     return c
   }
   if (c.klass === 'REJECTED') {
     assert.deepStrictEqual(now.requests, then.requests, 'rejected: request sequence identical to 0.9.0')
     const want = { ...then.result, assertions: then.result.assertions.map((a) => (a.check_id === 'discovery_handshake' ? { ...a, reason: { key: 'handshake_discover_rejected', params: { status: then.discoverStatus!, jsonrpc_error_code: c.code! } } } : a)) }
-    assert.ok(identical(now.result, want), `rejected: ProbeResult is 0.9.0's with discovery_handshake reason handshake_discover_rejected {status:${then.discoverStatus}} and nothing else`)
+    assert.ok(identical(now.result, suite0120Remap(want, then.toolsCallStatus)), `rejected: ProbeResult is 0.9.0's with discovery_handshake reason handshake_discover_rejected {status:${then.discoverStatus}} and nothing else`)
     return c
   }
   const counterfactual = await runOnce(frozen090RunProbe, serve(c.klass === 'FALLBACK' ? 404 : 200), v)
   assert.deepStrictEqual(now.requests, counterfactual.requests, `${c.klass}: request sequence is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200}`)
-  assert.ok(identical(now.result, counterfactual.result), `${c.klass}: ProbeResult is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200}`)
+  assert.ok(identical(now.result, suite0120Remap(counterfactual.result, counterfactual.toolsCallStatus)), `${c.klass}: ProbeResult is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200} (after the suite 0.12.0 remap)`)
   assert.equal(now.requests[0], then.requests[0], `${c.klass}: the discover request itself is unchanged`)
   if (c.klass === 'FALLBACK') {
     if (now.requests.length > 1) assert.equal(methodOf(now.requests[1]!), 'initialize', 'fallback: the next request is initialize')

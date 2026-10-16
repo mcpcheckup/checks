@@ -20,13 +20,17 @@
  *      checks.json included — is pinned to its 2c99377b blob by the second
  *      test (CLOSURE_071_BLOBS), because the frozen copies are the 0.7.1
  *      behaviour only while it is.
- *   2. FROZEN 0.6.0 — ./frozen/suite-0.6.0/{probe,protocol,error-taxonomy}.ts,
+ *   2. FROZEN 0.6.0 — ./frozen/suite-0.6.0/{probe,protocol,auth,error-taxonomy}.ts,
  *      byte-for-byte the suite 0.6.0 (a05097e) files apart from a four-line
  *      `// FROZEN:` header and `../../` import paths; the first test below
- *      recomputes each file's git blob id to prove it. They still import what
- *      T86 does not touch (wire.ts, auth.ts, hygiene.ts, fingerprint.ts,
- *      registry.ts, types.ts, checks.json — `git diff a05097e` on those is
- *      empty for T86). A later change to one of them must freeze the 0.6.0
+ *      recomputes each file's git blob id to prove it. (auth.ts joined them in
+ *      suite 0.12.0, which changed what judgeAuthChallenge says about an answer
+ *      that is not a 401: it is the a05097e blob, the same one as
+ *      frozen/suite-0.7.1/auth.ts, and the frozen probe.ts now imports it.)
+ *      They still import what T86 does not touch (wire.ts, hygiene.ts,
+ *      fingerprint.ts, registry.ts, types.ts, checks.json — `git diff a05097e`
+ *      on those is empty for T86; the live auth.ts is reached by the frozen
+ *      protocol.ts for classifyCredentialChallenge alone, which has not changed). A later change to one of them must freeze the 0.6.0
  *      version first, or this stops being a differential. DO NOT "update" the
  *      frozen copy to match a later implementation. (TODO 458, suite 0.7.1,
  *      changed wire.ts, whose 0.6.0 and 0.7.0 versions are the same blob; it
@@ -104,6 +108,7 @@ async function t(name: string, fn: () => void | Promise<void>) {
  *  from `git rev-parse a05097e:packages/checks/src/<name>.ts`. */
 const FROZEN_BLOBS: Record<string, string> = {
   'probe': 'fb4a0e8666d4afe32d96c2e4ea46b4541867ceaa',
+  'auth': '926a95cf8753f79c1d7085589f836bcde857b534',
   'protocol': '8edaf3a8dd2c2af90e9702425557ca9601fe0342',
   'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
 }
@@ -166,6 +171,12 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  so no hop has anything to drop. The 0.11.0 change itself is carried by
  *  declined-host-differential.test.ts (live vs frozen 0.10.0).
  *
+ *  Suite 0.12.0 re-pins checks.json alone (registry 0.11.0; git hash-object at that change): the docs_version
+ *  (v0.2.0) and copy of latency_profile, auth_metadata and error_taxonomy, nothing else. Same type-only reach, so
+ *  it cannot alter what this differential computes: every run passes the registry in as input to both sides. The
+ *  suite 0.12.0 verdict change itself is proved against the frozen 0.11.0 suite by suite-0120-differential.test.ts; this file compares
+ *  the frozen 0.6.0 / 0.7.1 / 0.9.0 suites with each other and is not changed by it.
+ *
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
@@ -192,7 +203,7 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '679218719d8b2345c667bcd36f479548181caff7', // registry 0.10.0 (redirect_policy how copy and docs_version v0.2.0 only; see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': 'b3e95a694405977ccae7970f04de90cde4c8e1a8', // registry 0.11.0 (suite 0.12.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',

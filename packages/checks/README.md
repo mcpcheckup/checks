@@ -41,8 +41,12 @@ handful of wire calls, and several checks read from the same call:
    string can make `protocol_revision` FAILED while `discovery_handshake` stays
    VERIFIED — see `stale-protocol-version` in the fixture corpus.
 2. Once the handshake requests have returned a complete HTTP response: `transport_type`
-   and `latency_profile` are recorded (both trivially VERIFIED at this point in the
-   current remote-only implementation — see "What's out of scope" below).
+   is recorded (trivially VERIFIED at this point in the current remote-only
+   implementation — see "What's out of scope" below). `latency_profile` is not run:
+   nothing here times a request, so it is `SKIPPED`/`UNVERIFIED` with
+   `latency_not_recorded` on every branch (it is set beside `tls_certificate`, before
+   any request is sent), never `VERIFIED`. Suites up to 0.11.0 recorded it `VERIFIED`
+   at this point without measuring anything.
 3. **`tools/list`** → `tools_list` (a determinate structural fact: is `result.tools` an
    array). If it is, the raw tool list feeds three more checks in parallel:
    `toolset_fingerprint` / `schema_fingerprint` (via `@mcpcheckup/canonicalizer`'s
@@ -66,9 +70,16 @@ handful of wire calls, and several checks read from the same call:
    the call is sent, its response feeds both `error_taxonomy` (is the error shape
    protocol-conformant) and `auth_metadata` (was there a `WWW-Authenticate` challenge,
    and if so, does its declared `scope` actually match its own linked resource-metadata
-   document's `scopes_supported`). A bare 401/403 counts as a legitimate auth rejection
-   for `error_taxonomy`'s purposes (not a taxonomy violation) but is exactly what
-   `auth_metadata` reads. The name is reserved for a tool that should not exist, but a
+   document's `scopes_supported`). A bare 401/403 is not a taxonomy violation, but no
+   protocol error came back either, so there is nothing for `error_taxonomy` to
+   classify: it is `SKIPPED`/`UNVERIFIED` with `error_shape_not_observed` (suites up to
+   0.11.0 recorded `COMPLETED`/`VERIFIED`); it is exactly what `auth_metadata` reads. An
+   answer that is not a 401 carries no challenge to check, so `auth_metadata` is
+   `SKIPPED`/`UNVERIFIED` with `auth_no_challenge_observed` (suites up to 0.11.0
+   recorded `COMPLETED`/`VERIFIED`); `VERIFIED` now means a 401 challenge was observed
+   and its metadata checked out. Both are `SKIPPED`, not `COMPLETED`, like
+   `latency_profile` and `tls_certificate`: there was nothing for the check to look at.
+   The name is reserved for a tool that should not exist, but a
    server can define it, so outside a credential gate the call is withheld when the
    first `tools/list` page names it, when the list carries a `nextCursor`, or when
    `tools/list` failed; both checks are then `SKIPPED`/`UNVERIFIED`. Under a credential
@@ -167,8 +178,9 @@ before the abort keep whatever result they earned**, and since T6.9-F that expre
 includes `reachability` itself. `response-exceeds-budget` in the fixture corpus is
 explicit about this: the handshake in that fixture succeeds fine and only the
 subsequent `tools/list` call blows the body-size budget, so `reachability`,
-`discovery_handshake`, `protocol_revision`, `transport_type`, and `latency_profile`
-stay `VERIFIED` in the result — `tools_list` itself (which never finished) and
+`discovery_handshake`, `protocol_revision`, and `transport_type` stay `VERIFIED` in
+the result (`latency_profile` is `SKIPPED`/`UNVERIFIED` with `latency_not_recorded` on
+every run, aborted or not) — `tools_list` itself (which never finished) and
 everything that depends on its data cascade to `SKIPPED`/`UNVERIFIED` as before.
 
 **T6.9-F, why `reachability` moved.** It used to be the last statement of the `try`
@@ -487,8 +499,10 @@ made — the guard can only observe the DNS mismatch after the fact, not prevent
 - **`transport_type` compares nothing, and does not say the handshake succeeded.** It
   has no `OBSERVED_RISK` path: nothing in this package reads a transport the server
   declares (`checks.json` declares its `failure_status` as `null`, and its `explain` text
-  says so). `probe.ts` records it `VERIFIED` at the same point it records
-  `latency_profile`: once `performHandshake` has returned, i.e. once the handshake
+  says so). `probe.ts` records it `VERIFIED` at the point where
+  `latency_profile` was recorded `VERIFIED` by suites up to 0.11.0 (it is now
+  `SKIPPED`/`UNVERIFIED` with `latency_not_recorded`, set beside `tls_certificate`):
+  once `performHandshake` has returned, i.e. once the handshake
   exchange over the transport the probe used has finished with an HTTP response from the
   endpoint. The predicate is exactly that ("the endpoint answered our handshake request
   over the transport used"), not "the handshake completed": it does not depend on how

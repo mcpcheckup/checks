@@ -33,6 +33,7 @@ const EXPECTED_KEYS = [
   'probe_tool_name_collision', 'probe_tool_name_unverifiable',
   'reachability_unanswered', 'reachability_dns_failed', 'probe_blocked_by_policy', 'probe_resolver_unavailable',
   'probe_declined_other_host',
+  'latency_not_recorded', 'auth_no_challenge_observed', 'error_shape_not_observed',
 ]
 
 async function main() {
@@ -418,6 +419,27 @@ async function main() {
     for (const params of [undefined, spy]) {
       assert.equal(entry.en(params), 'Our probe did not connect to another host the server pointed to — later checks did not run.')
       assert.equal(entry.zh(params), '我们的探测器没有连接该服务器指向的另一个主机——后续检查未运行。')
+    }
+    assert.deepEqual([...touched], [])
+  })
+
+  await t('suite 0.12.0: latency_not_recorded / auth_no_challenge_observed / error_shape_not_observed render exactly their signed en/zh sentences and read no params', () => {
+    const touched = new Set<string>()
+    const spy = new Proxy({} as Record<string, string | number>, {
+      has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+      get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 'x' },
+    })
+    const expected: Record<string, [string, string]> = {
+      latency_not_recorded: ['Not run: this probe does not measure request latency yet.', '未运行：探测器目前还不测量请求延迟。'],
+      auth_no_challenge_observed: ['Not observed: the endpoint did not ask for credentials, so there was no auth challenge or metadata to check.', '未观察到：该端点没有要求凭据，因此没有可检查的认证质询或元数据。'],
+      error_shape_not_observed: ['Not observed: the request was rejected at the HTTP layer (401/403) before any protocol error was returned.', '未观察到：请求在 HTTP 层就被拒绝（401/403），没有返回任何协议层错误。'],
+    }
+    for (const [key, [en, zh]] of Object.entries(expected)) {
+      const entry = REASON_MESSAGES[key]!
+      for (const params of [undefined, spy]) {
+        assert.equal(entry.en(params), en, key)
+        assert.equal(entry.zh(params), zh, key)
+      }
     }
     assert.deepEqual([...touched], [])
   })
