@@ -2,8 +2,8 @@
 // FROZEN: imports of files outside this directory go through ../../ instead of ./ .
 // FROZEN: Test-only baseline for the T85 differential (guard-error-classification-differential.test.ts),
 // FROZEN: which checks its git blob id. DO NOT edit or "update" it; it is the 0.8.0 behaviour.
-import { isSseContentType, jsonRpcCandidates, parseJsonRpcBody } from '../../protocol.ts'
-import type { ParsedJsonRpc, ProbeCallResult } from '../../protocol.ts'
+import { isSseContentType, jsonRpcCandidates, parseJsonRpcBody } from './protocol.ts'
+import type { ParsedJsonRpc, ProbeCallResult } from './protocol.ts'
 
 type Reason = { key: string; params?: Record<string, string | number> } | null
 

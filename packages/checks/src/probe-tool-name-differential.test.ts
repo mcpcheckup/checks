@@ -177,6 +177,15 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  suite 0.12.0 verdict change itself is proved against the frozen 0.11.0 suite by suite-0120-differential.test.ts; this file compares
  *  the frozen 0.6.0 / 0.7.1 / 0.9.0 suites with each other and is not changed by it.
  *
+ *  Suite 0.13.0 (TODO 217) re-pins two files to their 0.13.0 blob (git hash-object <path> at that change):
+ *  checks.json (registry 0.12.0: registry_version, nothing else) and types.ts (ProbeResult gains the optional
+ *  probeOfferedRevision, and its doc). Both are reached type-only — the frozen files, and the shared wire.ts and
+ *  fingerprint.ts, import types.ts with `import type`, erased at run time — and every run below passes the registry
+ *  in as input to both sides, so neither can alter what this differential computes; freezing types.ts here would
+ *  not take it out of this closure, since the shared wire.ts and fingerprint.ts still reach it. This file compares
+ *  frozen suites with each other; the 0.13.0 change itself is proved against frozen 0.12.0 by
+ *  suite-0130-differential.test.ts.
+ *
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
@@ -203,11 +212,11 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': 'b3e95a694405977ccae7970f04de90cde4c8e1a8', // registry 0.11.0 (suite 0.12.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': '0af81aa42257da37e6f1ef5c108b415ab72e4f9e', // registry 0.12.0 (suite 0.13.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
-  'packages/checks/src/types.ts': '59d38f860a3cd07989421fc2e6b97b60cabedd10',
+  'packages/checks/src/types.ts': 'c68dd7f4033b66dba1562be3014b5946fe65b948', // suite 0.13.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
   'packages/checks/src/wire.ts': '73314f32dec3befcb82edfa8afa70e05223d16b6', // suite 0.11.0 re-pin (see above) — git hash-object packages/checks/src/wire.ts
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',

@@ -4,7 +4,7 @@
 // FROZEN: which checks its git blob id. DO NOT edit or "update" it; it is the 0.8.0 behaviour.
 import { sendRequest } from '../../wire.ts'
 import type { ProbeContext } from '../../wire.ts'
-import type { CredentialChallenge, ProbeCallResult } from '../../protocol.ts'
+import type { CredentialChallenge, ProbeCallResult } from './protocol.ts'
 import type { FetchLike, ProbeBudget } from '../../types.ts'
 
 export interface AuthChallenge {

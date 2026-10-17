@@ -44,6 +44,17 @@
  *     probe_budget_exhausted_duration { maxDurationMs }. Each guard error
  *     carries the `hop` guardedFetch gives it; the endpoint-naming keys
  *     (dns_failed, unanswered timeout) are expected at hop 0 only.
+ *
+ * Suite 0.13.0 (TODO 217) changes the live protocol.ts's legacy initialize offer
+ * (2025-06-18 -> 2025-11-25) and records the offer. protocol.ts is frozen here
+ * then (below), so the frozen 0.8.0 run keeps offering 2025-06-18; each input
+ * runs the implementation first and 0.8.0 through suite-0130-remap.ts's
+ * offerAsLive (the target is handed the implementation's request wherever
+ * 0.8.0's differs only by the old offer), 0.8.0's result is remapped by
+ * suite0130Remap after suite0120Remap (probeOfferedRevision inserted, nothing
+ * else), and a replaced header is allowed only on a run whose server declared
+ * no version. The offer change itself is proved against frozen 0.12.0 by
+ * suite-0130-differential.test.ts.
  */
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
@@ -56,6 +67,7 @@ import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { runProbe as frozen080RunProbe } from './frozen/suite-0.8.0/probe.ts'
 import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
+import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0130-remap.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, FetchLike, GuardSignals, ProbeResult } from './types.ts'
 import { RUNS_ONCE_ONLY, HAS_FULL_SET, IS_MERGE, keepThisShard, writeShardOut, readShardIns, mergeCountMaps, SHARD_COUNT, SHARD_INDEX } from './differential-shard.ts'
@@ -74,8 +86,10 @@ async function t(name: string, fn: () => void | Promise<void>) {
  *  auth.ts and error-taxonomy.ts are the same blobs they were in the live tree until suite 0.12.0
  *  (git rev-parse HEAD~:… at that change), which changed what judgeAuthChallenge and judgeErrorTaxonomy
  *  say about an answer that proves nothing; they were frozen here then, with probe.ts's two imports
- *  pointed at them, so the frozen run stays the 0.8.0 behaviour. */
+ *  pointed at them, so the frozen run stays the 0.8.0 behaviour. protocol.ts is the T96 blob both parties ran
+ *  from suite 0.10.0 until suite 0.13.0, frozen here then (see CLOSURE_080_BLOBS). */
 const FROZEN_080_BLOBS: Record<string, string> = {
+  'protocol': '2d39fd28a93a21000b6cc008336971bd1080d030',
   'probe': '9264f8730e0582158f80fb0a6a019e596e691cee',
   'auth': 'f8b78f074b997b38e39319d97ec93807f73a0c65',
   'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
@@ -127,6 +141,17 @@ const FROZEN_080_BLOBS: Record<string, string> = {
  *  suite 0.12.0 did not touch; the function that changed (judgeAuthChallenge) is reached by nothing here, since
  *  the frozen probe.ts uses the frozen auth.ts. error-taxonomy.ts leaves the closure: only probe.ts imported it.
  *
+ *  Suite 0.13.0 freezes protocol.ts here, as the blob both parties ran from T96 (suite 0.10.0) until then
+ *  (2d39fd2…, the T96 re-pin above), with probe.ts's, auth.ts's and error-taxonomy.ts's imports of it pointed at
+ *  ./protocol.ts and its own import of auth.ts at the frozen auth.ts (f8b78f0…; the one thing it imports from it,
+ *  classifyCredentialChallenge, and everything it calls, are byte-identical in the 0.12.0 auth.ts it ran with
+ *  until then — the f8b78f0 -> 0f32e7b diff is one hunk, in judgeAuthChallenge): 0.13.0 changes the live file's
+ *  legacy offer, which the frozen run must not pick up. Live protocol.ts and auth.ts leave this closure. It re-pins two files to their 0.13.0 blob (git hash-object <path> at that
+ *  change): checks.json (registry 0.12.0: registry_version, nothing else) and types.ts (ProbeResult gains the
+ *  optional probeOfferedRevision, and its doc), both reached type-only — the frozen files, and the shared
+ *  wire.ts and fingerprint.ts, import types.ts with `import type`, erased at run time — so neither can alter
+ *  what this differential computes.
+ *
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
@@ -153,13 +178,11 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': 'b3e95a694405977ccae7970f04de90cde4c8e1a8', // registry 0.11.0 (see above) — git hash-object packages/checks/checks.json
-  'packages/checks/src/auth.ts': '0f32e7b3f4d7b61f62e75ac68a942b85f338a50c', // suite 0.12.0 (see above) — git hash-object packages/checks/src/auth.ts
+  'packages/checks/checks.json': '0af81aa42257da37e6f1ef5c108b415ab72e4f9e', // registry 0.12.0 (suite 0.13.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
-  'packages/checks/src/protocol.ts': '2d39fd28a93a21000b6cc008336971bd1080d030', // T96 (2xx discover fallback; see above) — git rev-parse "$(git log -n1 --format=%h -G'T96 rule: the statuses' -- packages/checks/src/protocol.ts)":packages/checks/src/protocol.ts
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
-  'packages/checks/src/types.ts': '59d38f860a3cd07989421fc2e6b97b60cabedd10',
+  'packages/checks/src/types.ts': 'c68dd7f4033b66dba1562be3014b5946fe65b948', // suite 0.13.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
   'packages/checks/src/wire.ts': '73314f32dec3befcb82edfa8afa70e05223d16b6', // suite 0.11.0 (see above) — git hash-object packages/checks/src/wire.ts
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
@@ -279,9 +302,10 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number } }
 
-async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant): Promise<Run> {
+/** `live`: the implementation's request sequence for the same input, for 0.8.0's offerAsLive (suite 0.13.0); omitted on the implementation's own run. */
+async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
   const handler = createHandler()
   const requests: string[] = []
   let position = 0
@@ -314,9 +338,10 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   }
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
+  const offer = offerAsLive(recorded.fetchImpl, live)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl: recorded.fetchImpl,
+    fetchImpl: offer.fetchImpl,
     budget: v.budget,
     now: () => '2026-09-25T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -324,7 +349,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus() }
+  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus(), substituted: offer.substituted() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -443,8 +468,10 @@ if (!IS_MERGE) {
       const id = `A ${fixture.id} / ${label}`
       try {
         const now = await runOnce(runProbe, fixture.createHandler, v)
-        const old = await runOnce(frozen080RunProbe, fixture.createHandler, v)
-        const want = suite0120Remap(old.result, old.toolsCallStatus)
+        const old = await runOnce(frozen080RunProbe, fixture.createHandler, v, now.requests)
+        const want = suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests)
+        const offerProblem = offerSubstitutionProblem(old.result, old.substituted)
+        if (offerProblem) violation(id, offerProblem)
         if (!identical(now.result, want)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
         if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
       } catch (e) {
@@ -463,15 +490,17 @@ if (!IS_MERGE) {
         const v: Variant = { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make } }
         try {
           const now = await runOnce(runProbe, fixture.createHandler, v)
-          const old = await runOnce(frozen080RunProbe, fixture.createHandler, v)
+          const old = await runOnce(frozen080RunProbe, fixture.createHandler, v, now.requests)
           if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
+          const offerProblem = offerSubstitutionProblem(old.result, old.substituted)
+          if (offerProblem) violation(id, offerProblem)
           if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
           if (!now.threw) { seen.notReached++ }
           else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
           // Settled when the error landed = 0.8.0 did not write reachability from its catch.
           const settled = old.result.assertions.find((a) => a.check_id === 'reachability')!.execution_status !== 'ERROR'
           const reason = settled ? settledReason : unsettledReason
-          const expected = suite0120Remap(now.threw && reason !== null ? remapped(old.result, reason) : old.result, old.toolsCallStatus)
+          const expected = suite0130Remap(suite0120Remap(now.threw && reason !== null ? remapped(old.result, reason) : old.result, old.toolsCallStatus), old.requests)
           if (!identical(now.result, expected)) violation(id, `ProbeResult is not 0.8.0's ${reason === null || !now.threw ? 'unchanged' : 'with the one remap'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
           if (now.threw && reason !== null) {
             seen.remappedRows += now.result.assertions.filter((a) => identical(a.reason, reason)).length

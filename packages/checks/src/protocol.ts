@@ -5,7 +5,18 @@ import { classifyCredentialChallenge } from './auth.ts'
 
 const CLIENT_INFO = { name: 'mcp-checkup-prober', version: '0.1.0' }
 const MODERN_PROBE_VERSION = '2026-07-28'
-const LEGACY_PROBE_VERSION = '2025-06-18'
+/** TODO 217: the newest legacy revision in checks.json's revision_matrix
+ *  (2025-06-18 before it). Offering the newest one, once, means a server that
+ *  supports it answers with it — no ladder of extra initialize requests. */
+const LEGACY_PROBE_VERSION = '2025-11-25'
+
+/** TODO 217: the revision the handshake offered on the branch it returned
+ *  from: server/discover's on 'modern', initialize's on 'legacy'.
+ *  performHandshake returns only after a response to that request, so this is
+ *  the offer protocolVersionDeclared answered. */
+export function offeredRevision(mode: HandshakeResult['mode']): string {
+  return mode === 'modern' ? MODERN_PROBE_VERSION : LEGACY_PROBE_VERSION
+}
 
 export interface ParsedJsonRpc {
   isJsonRpc: boolean

@@ -7,7 +7,7 @@ import { runHygieneCheck } from './hygiene.ts'
 import { createProbeContext, ProbeAborted } from './wire.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import type { ProbeContext } from './wire.ts'
-import { performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
+import { offeredRevision, performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
 import type { CredentialChallenge } from './protocol.ts'
 import { judgeAuthMetadata, judgeAuthMetadataFromGate } from './auth.ts'
 import { judgeErrorTaxonomy } from './error-taxonomy.ts'
@@ -206,6 +206,8 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   // stdio path and on any path where the try block throws before reaching the
   // handshake line (never set from inside the catch block).
   let protocolRevisionDeclared: string | null = null
+  // TODO 217: set on the same line and the same paths as protocolRevisionDeclared.
+  let probeOfferedRevision: string | null = null
   // Set ONLY from the catch block's RATE_LIMITED branch — its presence is the
   // whole signal ("this run stopped because the target asked us to come back
   // later"), so it must never be set speculatively anywhere else.
@@ -276,6 +278,7 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     A('reachability', 'COMPLETED', 'VERIFIED')
 
     protocolRevisionDeclared = handshake.protocolVersionDeclared
+    probeOfferedRevision = offeredRevision(handshake.mode)
 
     // Handshake-layer credential-gate rule: a server that
     // deliberately puts the handshake behind auth gets UNVERIFIED/
@@ -556,6 +559,7 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       // whether this run later aborted.
       dnsAnswerChangedObserved: ctx?.dnsAnswerChangedObserved ?? null,
       protocolRevisionDeclared,
+      probeOfferedRevision,
       ...(toolSnapshot ? { toolSnapshot } : {}),
       ...(disqualifiedFromPublication ? { disqualifiedFromPublication } : {}),
       ...(rateLimited ? { rateLimited } : {}),

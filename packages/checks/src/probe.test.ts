@@ -15,6 +15,7 @@ import { DEFAULT_PROBE_BUDGET, createProbeBudget, BudgetExceeded, RateLimited, S
 import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import { REASON_MESSAGES } from './reason-messages.ts'
 import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
+import { offerAsLive, offerSubstitutionProblem, recordRequest, suite0130Remap } from './suite-0130-remap.ts'
 import type { ProbeInput, ProbeResult } from './types.ts'
 
 let pass = 0, fail = 0
@@ -1061,18 +1062,25 @@ function requestLabel(input: RequestInfo | URL, init: RequestInit | undefined): 
 }
 
 /** Runs one fixture through the implementation or through the frozen 0.6.0
- *  copy, recording the outbound request sequence. */
-async function runRecorded(fixtureId: string, probe: typeof runProbe): Promise<{ result: ProbeResult; calls: string[]; toolsCallStatus: number | null }> {
+ *  copy, recording the outbound request sequence. `live` (the frozen run only):
+ *  the implementation's recorded requests for the same fixture, for
+ *  suite-0130-remap.ts's offerAsLive — suite 0.13.0 offers 2025-11-25 on the
+ *  legacy initialize, and the target is handed that request wherever 0.6.0's
+ *  differs from it only by the old offer. */
+async function runRecorded(fixtureId: string, probe: typeof runProbe, live?: readonly string[]): Promise<{ result: ProbeResult; calls: string[]; requests: string[]; toolsCallStatus: number | null; substituted: { body: number; header: number } }> {
   const fixture = FIXTURE_CORPUS.find((f) => f.id === fixtureId)
   assert.ok(fixture, `fixture ${fixtureId} 不在语料里`)
   const handler = fixture.createHandler()
   const calls: string[] = []
+  const requests: string[] = []
   const recording: ProbeInput['fetchImpl'] = async (input, init) => {
     calls.push(requestLabel(input, init))
+    requests.push(recordRequest(input, init))
     return handler(input, init)
   }
   const recorder = recordToolsCallStatus(recording)
-  return { result: await probe(makeInput(recorder.fetchImpl)), calls, toolsCallStatus: recorder.toolsCallStatus() }
+  const offer = offerAsLive(recorder.fetchImpl, live)
+  return { result: await probe(makeInput(offer.fetchImpl)), calls, requests, toolsCallStatus: recorder.toolsCallStatus(), substituted: offer.substituted() }
 }
 
 const withoutT86Rows = (r: ProbeResult) => ({ ...r, assertions: r.assertions.filter((a) => !T86_ROWS.includes(a.check_id)) })
@@ -1083,7 +1091,7 @@ const withoutT86Rows = (r: ProbeResult) => ({ ...r, assertions: r.assertions.fil
  *  the withheld call, and every other ProbeResult field — equal to 0.6.0's. */
 async function assertWithheld(fixtureId: string, key: string): Promise<void> {
   const now = await runRecorded(fixtureId, runProbe)
-  const then = await runRecorded(fixtureId, frozenRunProbe)
+  const then = await runRecorded(fixtureId, frozenRunProbe, now.requests)
   assert.ok(!now.calls.includes('tools/call'), `${fixtureId}: 请求序列里出现了 tools/call：${JSON.stringify(now.calls)}`)
   assert.ok(then.calls.includes('tools/call'), `${fixtureId}: 0.6.0 本该发 tools/call（否则这条对照没有区分力）`)
   assert.deepStrictEqual(now.calls, then.calls.slice(0, then.calls.indexOf('tools/call')), `${fixtureId}: tools/call 之前的请求序列应与 0.6.0 相同，之后一个都不发`)
@@ -1094,8 +1102,10 @@ async function assertWithheld(fixtureId: string, key: string): Promise<void> {
     assert.deepStrictEqual(a.reason, { key }, `${fixtureId}/${check_id}: reason 必须恰好是 { key }，没有 params`)
     assert.deepStrictEqual(a.unverified_reason, { key }, `${fixtureId}/${check_id}: unverified_reason`)
   }
-  // Suite 0.12.0 changes latency_profile on every run (suite-0120-remap.ts); that is the only other difference.
-  assert.deepStrictEqual(withoutT86Rows(now.result), withoutT86Rows(suite0120Remap(then.result, then.toolsCallStatus)), `${fixtureId}: 两行之外应与 0.6.0 逐字段相同（0.12.0 的 latency_profile 重映射除外）`)
+  // Suite 0.12.0 changes latency_profile on every run (suite-0120-remap.ts), and suite 0.13.0 records the offer
+  // (suite-0130-remap.ts); those are the only other differences.
+  assert.equal(offerSubstitutionProblem(then.result, then.substituted), null, `${fixtureId}: 0.6.0 的 mcp-protocol-version 头只能在服务器未声明版本时替换`)
+  assert.deepStrictEqual(withoutT86Rows(now.result), withoutT86Rows(suite0130Remap(suite0120Remap(then.result, then.toolsCallStatus), then.requests)), `${fixtureId}: 两行之外应与 0.6.0 逐字段相同（0.12.0 的 latency_profile 重映射与 0.13.0 的 probeOfferedRevision 除外）`)
 }
 
 await t('T86 红证 a（probe-tool-name-collision）：第一页有逐字同名的工具 ⇒ 不发 tools/call，两行 SKIPPED/UNVERIFIED/probe_tool_name_collision，无 params', async () => {
@@ -1125,10 +1135,12 @@ for (const [label, fixtureId] of [
 ] as const) {
   await t(`T86 ${label}（${fixtureId}）：tools/call 照发，请求序列与整份 ProbeResult 都与 0.6.0 逐字段相同`, async () => {
     const now = await runRecorded(fixtureId, runProbe)
-    const then = await runRecorded(fixtureId, frozenRunProbe)
+    const then = await runRecorded(fixtureId, frozenRunProbe, now.requests)
     assert.ok(now.calls.includes('tools/call'), `${fixtureId}: 没有发 tools/call：${JSON.stringify(now.calls)}`)
     assert.deepStrictEqual(now.calls, then.calls)
-    assert.deepStrictEqual(now.result, suite0120Remap(then.result, then.toolsCallStatus), '与 0.6.0 逐字段相同，除了 0.12.0 对每次 run 的重映射（suite-0120-remap.ts）')
+    assert.deepStrictEqual(now.requests, then.requests, '请求逐字节相同（0.6.0 的旧 offer 已换成 0.13.0 的）')
+    assert.equal(offerSubstitutionProblem(then.result, then.substituted), null, '0.6.0 的 mcp-protocol-version 头只能在服务器未声明版本时替换')
+    assert.deepStrictEqual(now.result, suite0130Remap(suite0120Remap(then.result, then.toolsCallStatus), then.requests), '与 0.6.0 逐字段相同，除了 0.12.0 与 0.13.0 对每次 run 的重映射（suite-0120-remap.ts、suite-0130-remap.ts）')
     for (const check_id of T86_ROWS) {
       const a = now.result.assertions.find((x) => x.check_id === check_id)!
       // 0.12.0: a judged row is COMPLETED, or SKIPPED/UNVERIFIED with a not-observed reason (the answer had nothing for the

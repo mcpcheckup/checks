@@ -53,6 +53,16 @@
  *   and the answer was neither 401 nor 403, latency_profile never is, and a
  *   row that carries one of the three not-observed reasons is SKIPPED/UNVERIFIED
  *   (never COMPLETED, which would pull the badge of an open server down).
+ *
+ * Suite 0.13.0 (TODO 217) offers 2025-11-25 on the legacy initialize fallback and
+ * records the offer. Each input therefore runs the implementation first and the
+ * frozen suite through suite-0130-remap.ts's offerAsLive, which hands the target
+ * the implementation's request wherever the frozen one differs only by the old
+ * offer; the frozen result is then remapped by suite0130Remap after
+ * suite0120Remap (probeOfferedRevision inserted, nothing else), and a replaced
+ * header is allowed only on a run whose server declared no version. The offer
+ * change itself is proved against frozen 0.12.0 by
+ * suite-0130-differential.test.ts.
  */
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
@@ -64,6 +74,7 @@ import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
+import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0130-remap.ts'
 import { runProbe as frozen0110RunProbe } from './frozen/suite-0.11.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.11.0/src/other-host-declined.ts'
@@ -260,9 +271,10 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number } }
 
-async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant): Promise<Run> {
+/** `live`: the implementation's request sequence for the same input, for the frozen run's offerAsLive (suite 0.13.0); omitted on the implementation's own run. */
+async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
   const handler = createHandler()
   const requests: string[] = []
   let position = 0
@@ -295,9 +307,10 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   }
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
+  const offer = offerAsLive(recorded.fetchImpl, live)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl: recorded.fetchImpl,
+    fetchImpl: offer.fetchImpl,
     budget: v.budget,
     now: () => '2026-09-25T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -305,7 +318,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus() }
+  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus(), substituted: offer.substituted() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -417,6 +430,8 @@ function compare(id: string, now: Run, old: Run, expectedOld: ProbeResult) {
   const key = String(old.toolsCallStatus)
   seen.toolsCallStatuses.set(key, (seen.toolsCallStatuses.get(key) ?? 0) + 1)
   if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
+  const offerProblem = offerSubstitutionProblem(old.result, old.substituted)
+  if (offerProblem) violation(id, offerProblem)
   if (now.toolsCallStatus !== old.toolsCallStatus) violation(id, `the tools/call was answered ${now.toolsCallStatus} for the implementation and ${old.toolsCallStatus} for 0.11.0`)
   if (!identical(now.result, expectedOld)) {
     violation(id, `ProbeResult is not 0.11.0's with the remap and nothing else\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.execution_status, a.assertion_status, a.reason]))}\n           old ${JSON.stringify(expectedOld.assertions.map((a) => [a.check_id, a.execution_status, a.assertion_status, a.reason]))}`)
@@ -443,8 +458,8 @@ for (const fixture of FIXTURE_CORPUS) {
     const id = `A ${fixture.id} / ${label}`
     try {
       const now = await runOnce(runProbe, fixture.createHandler, v)
-      const old = await runOnce(frozen0110RunProbe, fixture.createHandler, v)
-      compare(id, now, old, suite0120Remap(old.result, old.toolsCallStatus))
+      const old = await runOnce(frozen0110RunProbe, fixture.createHandler, v, now.requests)
+      compare(id, now, old, suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests))
     } catch (e) {
       violation(id, `threw ${(e as Error).message}`)
     }
@@ -460,11 +475,11 @@ for (const fixture of FIXTURE_CORPUS) {
       const vFrozen: Variant = { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make: makeFrozen } }
       try {
         const now = await runOnce(runProbe, fixture.createHandler, v)
-        const old = await runOnce(frozen0110RunProbe, fixture.createHandler, vFrozen)
+        const old = await runOnce(frozen0110RunProbe, fixture.createHandler, vFrozen, now.requests)
         if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
         if (!now.threw) seen.notReached++
         else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
-        compare(id, now, old, suite0120Remap(old.result, old.toolsCallStatus))
+        compare(id, now, old, suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests))
       } catch (e) {
         violation(id, `threw ${(e as Error).message}`)
       }

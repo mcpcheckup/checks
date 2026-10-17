@@ -66,6 +66,17 @@
  *     { status: <the 2xx>, jsonrpc_error_code: <the code> }.
  *   - MODERN ⇒ identical, ProbeResult and requests, to 0.9.0's run of the
  *     same input with only the discover status replaced by 200.
+ *
+ * Suite 0.13.0 (TODO 217) changes the legacy initialize offer (2025-06-18 ->
+ * 2025-11-25) and records the offer. Every 0.9.0 run here (the run of the same
+ * input, the run at 200, the counterfactual) goes through
+ * suite-0130-remap.ts's offerAsLive, guided by the implementation's run of the
+ * same input: the target is handed the implementation's request wherever
+ * 0.9.0's differs only by the old offer. Each 0.9.0 result compared above is
+ * remapped by suite0130Remap after suite0120Remap (probeOfferedRevision
+ * inserted, nothing else), and a replaced header is allowed only on a run whose
+ * server declared no version. The offer change itself is proved against frozen
+ * 0.12.0 by suite-0130-differential.test.ts.
  */
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
@@ -77,6 +88,7 @@ import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { recordToolsCallStatus, suite0120Remap } from './suite-0120-remap.ts'
+import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0130-remap.ts'
 import { runProbe as frozen090RunProbe } from './frozen/suite-0.9.0/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, GuardSignals, FetchLike, ProbeResult } from './types.ts'
@@ -128,6 +140,14 @@ const FROZEN_090_BLOBS: Record<string, string> = {
  *  suite 0.12.0 verdict change itself is carried by the remap every comparison in this file applies to the frozen 0.9.0 result (suite-0120-remap.ts),
  *  and proved against the frozen 0.11.0 suite by suite-0120-differential.test.ts.
  *
+ *  Suite 0.13.0 (TODO 217) re-pins two files to their 0.13.0 blob (git hash-object <path> at that change):
+ *  checks.json (registry 0.12.0: registry_version, nothing else) and types.ts (ProbeResult gains the optional
+ *  probeOfferedRevision, and its doc). Both are reached type-only — the frozen files, and the shared wire.ts and
+ *  fingerprint.ts, import types.ts with `import type`, erased at run time — and every run passes the registry in
+ *  as input to both sides, so neither can alter what this differential computes; freezing types.ts here would
+ *  not take it out of this closure, since the shared wire.ts and fingerprint.ts still reach it. The frozen 0.9.0
+ *  protocol.ts is its own copy, so the live file's new offer does not reach it.
+ *
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
@@ -154,11 +174,11 @@ const CLOSURE_090_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': 'b3e95a694405977ccae7970f04de90cde4c8e1a8', // registry 0.11.0 (suite 0.12.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': '0af81aa42257da37e6f1ef5c108b415ab72e4f9e', // registry 0.12.0 (suite 0.13.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
-  'packages/checks/src/types.ts': '59d38f860a3cd07989421fc2e6b97b60cabedd10',
+  'packages/checks/src/types.ts': 'c68dd7f4033b66dba1562be3014b5946fe65b948', // suite 0.13.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
   'packages/checks/src/wire.ts': '73314f32dec3befcb82edfa8afa70e05223d16b6', // suite 0.11.0 (see above) — git hash-object packages/checks/src/wire.ts
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
@@ -276,14 +296,15 @@ interface Variant {
 
 /** `discoverStatus`: the status of the answer to the (only) server/discover
  *  request, or undefined when none came back. */
-interface Run { result: ProbeResult; requests: string[]; discoverStatus: number | undefined; toolsCallStatus: number | null }
+interface Run { result: ProbeResult; requests: string[]; discoverStatus: number | undefined; toolsCallStatus: number | null; substituted: { body: number; header: number } }
 
 const isDiscover = (init?: RequestInit) => {
   if (typeof init?.body !== 'string') return false
   try { return (JSON.parse(init.body) as { method?: unknown }).method === 'server/discover' } catch { return false }
 }
 
-async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant): Promise<Run> {
+/** `live`: the implementation's request sequence for the same input, for 0.9.0's offerAsLive (suite 0.13.0); omitted on the implementation's own run. */
+async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant, live?: readonly string[]): Promise<Run> {
   const handler = createHandler()
   const requests: string[] = []
   let position = 0
@@ -317,9 +338,10 @@ async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant): 
   }
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
+  const offer = offerAsLive(recorded.fetchImpl, live)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl: recorded.fetchImpl,
+    fetchImpl: offer.fetchImpl,
     budget: v.budget,
     now: () => '2026-09-30T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -327,7 +349,7 @@ async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant): 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, discoverStatus, toolsCallStatus: recorded.toolsCallStatus() }
+  return { result, requests, discoverStatus, toolsCallStatus: recorded.toolsCallStatus(), substituted: offer.substituted() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -422,23 +444,26 @@ const bump = (m: Stats, k: string) => m.set(k, (m.get(k) ?? 0) + 1)
  *  builds the input's handler with the discover status replaced (or not). */
 async function check(serve: (discoverStatus?: number) => () => Handler, v: Variant, stats: Stats): Promise<Classified> {
   const now = await runOnce(runProbe, serve(), v)
-  const then = await runOnce(frozen090RunProbe, serve(), v)
-  const c = await classify(then, () => runOnce(frozen090RunProbe, serve(200), v))
+  const then = await runOnce(frozen090RunProbe, serve(), v, now.requests)
+  const c = await classify(then, () => runOnce(frozen090RunProbe, serve(200), v, now.requests))
   bump(stats, `${c.klass} — ${c.sub}`)
   if (c.klass === 'UNAFFECTED') {
     assert.deepStrictEqual(now.requests, then.requests, 'unaffected: request sequence identical to 0.9.0')
-    assert.ok(identical(now.result, suite0120Remap(then.result, then.toolsCallStatus)), 'unaffected: ProbeResult identical to 0.9.0 (after the suite 0.12.0 remap)')
+    assert.equal(offerSubstitutionProblem(then.result, then.substituted), null, 'unaffected: the offer header replaced on a run whose server declared a version')
+    assert.ok(identical(now.result, suite0130Remap(suite0120Remap(then.result, then.toolsCallStatus), then.requests)), 'unaffected: ProbeResult identical to 0.9.0 (after the suite 0.12.0 and 0.13.0 remaps)')
     return c
   }
   if (c.klass === 'REJECTED') {
     assert.deepStrictEqual(now.requests, then.requests, 'rejected: request sequence identical to 0.9.0')
     const want = { ...then.result, assertions: then.result.assertions.map((a) => (a.check_id === 'discovery_handshake' ? { ...a, reason: { key: 'handshake_discover_rejected', params: { status: then.discoverStatus!, jsonrpc_error_code: c.code! } } } : a)) }
-    assert.ok(identical(now.result, suite0120Remap(want, then.toolsCallStatus)), `rejected: ProbeResult is 0.9.0's with discovery_handshake reason handshake_discover_rejected {status:${then.discoverStatus}} and nothing else`)
+    assert.equal(offerSubstitutionProblem(then.result, then.substituted), null, 'rejected: the offer header replaced on a run whose server declared a version')
+    assert.ok(identical(now.result, suite0130Remap(suite0120Remap(want, then.toolsCallStatus), then.requests)), `rejected: ProbeResult is 0.9.0's with discovery_handshake reason handshake_discover_rejected {status:${then.discoverStatus}} and nothing else`)
     return c
   }
-  const counterfactual = await runOnce(frozen090RunProbe, serve(c.klass === 'FALLBACK' ? 404 : 200), v)
+  const counterfactual = await runOnce(frozen090RunProbe, serve(c.klass === 'FALLBACK' ? 404 : 200), v, now.requests)
   assert.deepStrictEqual(now.requests, counterfactual.requests, `${c.klass}: request sequence is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200}`)
-  assert.ok(identical(now.result, suite0120Remap(counterfactual.result, counterfactual.toolsCallStatus)), `${c.klass}: ProbeResult is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200} (after the suite 0.12.0 remap)`)
+  assert.equal(offerSubstitutionProblem(counterfactual.result, counterfactual.substituted), null, `${c.klass}: the offer header replaced on a run whose server declared a version`)
+  assert.ok(identical(now.result, suite0130Remap(suite0120Remap(counterfactual.result, counterfactual.toolsCallStatus), counterfactual.requests)), `${c.klass}: ProbeResult is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200} (after the suite 0.12.0 and 0.13.0 remaps)`)
   assert.equal(now.requests[0], then.requests[0], `${c.klass}: the discover request itself is unchanged`)
   if (c.klass === 'FALLBACK') {
     if (now.requests.length > 1) assert.equal(methodOf(now.requests[1]!), 'initialize', 'fallback: the next request is initialize')

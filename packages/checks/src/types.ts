@@ -153,6 +153,17 @@ export interface ProbeResult {
    *  version: stdio transport, or a remote run that errored before the
    *  handshake step. */
   protocolRevisionDeclared: string | null
+  /** TODO 217: the revision our probe offered in the handshake request whose
+   *  response this run recorded (protocol.ts's offeredRevision): '2026-07-28'
+   *  when the handshake ended on server/discover, the legacy revision when it
+   *  fell back to initialize. protocolRevisionDeclared is that response's
+   *  answer, so a change in it is a server change only between runs that
+   *  offered the same revision. null exactly when no handshake request got a
+   *  response: stdio, or a run that threw before performHandshake returned.
+   *  Never null while protocolRevisionDeclared is non-null. runProbe always
+   *  sets it; it is optional only because the frozen suite copies before
+   *  0.10.0 (src/frozen/) return this type and stay byte-identical. */
+  probeOfferedRevision?: string | null
   /** Present ONLY when this run stopped because the target told us to come back
    *  later — HTTP 429, or 503 carrying a Retry-After (see wire.ts's
    *  rateLimitAbort for why 503 without Retry-After is deliberately excluded).
