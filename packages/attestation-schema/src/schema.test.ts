@@ -14,9 +14,14 @@ const schema = JSON.parse(readFileSync(new URL('../schema/attestation.schema.jso
 const sample = JSON.parse(readFileSync(new URL('../test/fixtures/attestation.sample.json', import.meta.url), 'utf8'))
 const schemaV01 = JSON.parse(readFileSync(new URL('../schema/attestation-payload-v0.1.json', import.meta.url), 'utf8'))
 const schemaV02 = JSON.parse(readFileSync(new URL('../schema/attestation-payload-v0.2.json', import.meta.url), 'utf8'))
-// v0.2 形状的真实样例。归档 schema 一律用它来驱动，而不是把当前 sample（已经是 v0.3）
+// v0.2 形状的真实样例。归档 schema 一律用它来驱动，而不是把当前 sample（v0.3 起就不是 v0.2 形状）
 // 就地改造——否则 “sample 是 v0.3” 和 “归档 schema 校验的是历史形状” 两件事会互相干扰。
 const sampleV02 = JSON.parse(readFileSync(new URL('../test/fixtures/attestation-v0.2.sample.json', import.meta.url), 'utf8'))
+const schemaV03 = JSON.parse(readFileSync(new URL('../schema/attestation-payload-v0.3.json', import.meta.url), 'utf8'))
+// v0.3 形状的样例：v0.4 之前的 attestation.sample.json 原样归档。归档 schema 的断言用它驱动，
+// 当前 sample（v0.4，coverage=full）只驱动当前 schema 的断言。
+const sampleV03 = JSON.parse(readFileSync(new URL('../test/fixtures/attestation-v0.3.sample.json', import.meta.url), 'utf8'))
+const sampleAuthGated = JSON.parse(readFileSync(new URL('../test/fixtures/attestation-auth-gated.sample.json', import.meta.url), 'utf8'))
 
 function makeValidator() {
   const ajv = new Ajv2020({ allErrors: true, strict: true })
@@ -28,6 +33,12 @@ function makeV02Validator() {
   const ajv = new Ajv2020({ allErrors: true, strict: true })
   addFormats(ajv)
   return ajv.compile(schemaV02)
+}
+
+function makeV03Validator() {
+  const ajv = new Ajv2020({ allErrors: true, strict: true })
+  addFormats(ajv)
+  return ajv.compile(schemaV03)
 }
 
 function makeV01Validator() {
@@ -463,7 +474,7 @@ t('v0.1 schema 自身通过 2020-12 meta-schema 校验', () => {
 t('v0.1 形状的样例（reason/unverified_reason 为裸字符串）通过 v0.1 schema 校验', () => {
   const validate = makeV01Validator()
   // v0.2 的样例里 reason/unverified_reason 是 {key, params?} 对象；v0.1 时代它们是裸字符串。
-  // 从 sampleV02 派生、不从 sample（v0.3）派生：v0.3 多了一个 v0.1 不认识的 suite_commit，
+  // 从 sampleV02 派生、不从 sample（v0.4）派生：v0.3 起多了一个 v0.1 不认识的 suite_commit，
   // 若从 v0.3 派生，这条断言就变成在测 additionalProperties，而不是在测 reason 的形状。
   const v01Sample = deepClone(sampleV02)
   v01Sample.assertions[1].unverified_reason = 'auth metadata endpoint returned no WWW-Authenticate challenge'
@@ -473,7 +484,7 @@ t('v0.1 形状的样例（reason/unverified_reason 为裸字符串）通过 v0.1
   assert.equal(ok, true)
 })
 
-t('v0.1 shaped 样例（裸字符串 reason）会被当前 v0.3 schema 拒绝（确认两个 schema 确实不同，不是巧合都通过）', () => {
+t('v0.1 shaped 样例（裸字符串 reason）会被当前 schema 拒绝（确认两个 schema 确实不同，不是巧合都通过）', () => {
   const validate = makeValidator()
   const v01Sample = deepClone(sample)
   v01Sample.assertions[1].unverified_reason = 'auth metadata endpoint returned no WWW-Authenticate challenge'
@@ -521,13 +532,14 @@ t('suite_commit 形状不对 → 逐个拒绝（39 位截断、41 位、大写�
   }
 })
 
-console.log('\nschema 版本身份：三份文件的 $id 互不相同（归档不是改个文件名了事）')
+console.log('\nschema 版本身份：四份文件的 $id 互不相同（归档不是改个文件名了事）')
 
-t('当前 schema 的 $id 是 v0.3，两份归档分别是 v0.2 / v0.1，三者互不相同', () => {
-  assert.equal(schema.$id, 'https://mcpcheckup.com/schema/attestation-payload-v0.3.json')
+t('当前 schema 的 $id 是 v0.4，三份归档分别是 v0.3 / v0.2 / v0.1，四者互不相同', () => {
+  assert.equal(schema.$id, 'https://mcpcheckup.com/schema/attestation-payload-v0.4.json')
+  assert.equal(schemaV03.$id, 'https://mcpcheckup.com/schema/attestation-payload-v0.3.json')
   assert.equal(schemaV02.$id, 'https://mcpcheckup.com/schema/attestation-payload-v0.2.json')
   assert.equal(schemaV01.$id, 'https://mcpcheckup.com/schema/attestation-payload-v0.1.json')
-  assert.equal(new Set([schema.$id, schemaV02.$id, schemaV01.$id]).size, 3)
+  assert.equal(new Set([schema.$id, schemaV03.$id, schemaV02.$id, schemaV01.$id]).size, 4)
 })
 
 console.log('\nattestation-payload-v0.2.json：归档 schema，仅供验证 v0.3 之前签发的 attestation')
@@ -545,8 +557,8 @@ t('v0.2 样例（没有 suite_commit）通过 v0.2 schema 校验', () => {
   assert.equal(ok, true)
 })
 
-t('v0.2 样例被当前 v0.3 schema 拒绝，且拒绝理由就是缺 suite_commit（确认 v0.3 真的收紧了，不是两份都放行）', () => {
-  const validate = makeValidator()
+t('v0.2 样例被 v0.3 schema 拒绝，且拒绝理由就是缺 suite_commit（确认 v0.3 真的收紧了，不是两份都放行）', () => {
+  const validate = makeV03Validator()
   assert.equal(validate(sampleV02), false)
   assert.ok(
     (validate.errors ?? []).some((e) => e.keyword === 'required' && (e.params as { missingProperty?: string }).missingProperty === 'suite_commit'),
@@ -556,7 +568,7 @@ t('v0.2 样例被当前 v0.3 schema 拒绝，且拒绝理由就是缺 suite_comm
 
 t('v0.3 样例被 v0.2 schema 拒绝，且拒绝理由就是 suite_commit 是未声明字段（additionalProperties:false）', () => {
   const validate = makeV02Validator()
-  assert.equal(validate(sample), false)
+  assert.equal(validate(sampleV03), false)
   assert.ok(
     (validate.errors ?? []).some((e) => e.keyword === 'additionalProperties' && (e.params as { additionalProperty?: string }).additionalProperty === 'suite_commit'),
     `期望因为 suite_commit 是未声明字段被拒绝，实际错误是 ${JSON.stringify(validate.errors)}`,
@@ -565,33 +577,38 @@ t('v0.3 样例被 v0.2 schema 拒绝，且拒绝理由就是 suite_commit 是未
 
 console.log('\nattestationSchemaForPayloadType：派发出的 schema 真的能校验对应版本的样例（不只是对象引用相等）')
 
-t('每个 payloadType 派发出的 schema，收下本版本的样例、拒绝另外两个版本的样例', () => {
+t('每个 payloadType 派发出的 schema，收下本版本的样例、拒绝其它版本的样例', () => {
   // v0.1 样例：v0.2 的形状，但 reason/unverified_reason 退回裸字符串（v0.1 时代的写法）。
   const sampleV01 = deepClone(sampleV02)
   sampleV01.assertions[1].unverified_reason = 'auth metadata endpoint returned no WWW-Authenticate challenge'
   sampleV01.assertions[2].reason = '该 target 没有已批准基线'
 
-  const cases: Array<[string, unknown]> = [
-    ['application/vnd.mcpcheckup.attestation+json;version=0.1', sampleV01],
-    ['application/vnd.mcpcheckup.attestation+json;version=0.2', sampleV02],
-    ['application/vnd.mcpcheckup.attestation+json;version=0.3', sample],
+  const cases: Array<[string, unknown[]]> = [
+    ['application/vnd.mcpcheckup.attestation+json;version=0.1', [sampleV01]],
+    ['application/vnd.mcpcheckup.attestation+json;version=0.2', [sampleV02]],
+    ['application/vnd.mcpcheckup.attestation+json;version=0.3', [sampleV03]],
+    ['application/vnd.mcpcheckup.attestation+json;version=0.4', [sample, sampleAuthGated]],
   ]
 
-  for (const [payloadType, ownSample] of cases) {
+  for (const [payloadType, ownSamples] of cases) {
     const ajv = new Ajv2020({ allErrors: true, strict: true })
     addFormats(ajv)
     const validate = ajv.compile(attestationSchemaForPayloadType(payloadType))
-    const ok = validate(ownSample)
-    if (!ok) console.error(payloadType, validate.errors)
-    assert.equal(ok, true, `${payloadType} 派发出的 schema 应当收下同版本的样例`)
+    for (const ownSample of ownSamples) {
+      const ok = validate(ownSample)
+      if (!ok) console.error(payloadType, validate.errors)
+      assert.equal(ok, true, `${payloadType} 派发出的 schema 应当收下同版本的样例`)
+    }
 
-    for (const [otherType, otherSample] of cases) {
+    for (const [otherType, otherSamples] of cases) {
       if (otherType === payloadType) continue
-      assert.equal(
-        validate(otherSample),
-        false,
-        `${payloadType} 派发出的 schema 不应当收下 ${otherType} 的样例——两份 schema 若互相都能通过，“按版本校验” 就是句空话`,
-      )
+      for (const otherSample of otherSamples) {
+        assert.equal(
+          validate(otherSample),
+          false,
+          `${payloadType} 派发出的 schema 不应当收下 ${otherType} 的样例——两份 schema 若互相都能通过，“按版本校验” 就是句空话`,
+        )
+      }
     }
   }
 })

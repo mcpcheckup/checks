@@ -38,7 +38,7 @@ const SCRIPT = fileURLToPath(new URL('./verify-attestation.mjs', import.meta.url
 const PAYLOAD_TYPE = 'application/vnd.mcpcheckup.attestation+json;version=0.1'
 const OBSERVED_AT = '2026-09-01T12:00:00.000Z'
 
-// Every payloadType the schema package says it has ever signed, taken from what
+// Every payloadType the schema package says it accepts, taken from what
 // the package already exports: attestationSchemaForPayloadType throws on an
 // unknown type and its message lists every type it does know. Each listed type is
 // then confirmed to dispatch without throwing, and the current ATTESTATION_PAYLOAD_TYPE
@@ -46,7 +46,7 @@ const OBSERVED_AT = '2026-09-01T12:00:00.000Z'
 function schemaPayloadTypes() {
   let message = ''
   try { attestationSchemaForPayloadType('application/x-not-a-payload-type') } catch (e) { message = String(e && e.message) }
-  const marker = 'has only ever signed '
+  const marker = 'accepts only '
   const at = message.indexOf(marker)
   assert.ok(at >= 0, `the schema package's unknown-type message changed shape: ${message}`)
   const types = [...message.slice(at + marker.length).matchAll(/"([^"]+)"/g)].map((m) => m[1])
@@ -254,8 +254,8 @@ await t('--keys 路径下同样先查白名单', async () => {
   assertFails(runVerify(envelope, { keys: keyDoc(keyEntry(k)) }), /payloadType check: FAIL/)
 })
 
-await t('0.1 / 0.2 / 0.3 三个允许的类型各自（被正确签名后）都能通过', async () => {
-  for (const v of ['0.1', '0.2', '0.3']) {
+await t('0.1 / 0.2 / 0.3 / 0.4 四个允许的类型各自（被正确签名后）都能通过', async () => {
+  for (const v of ['0.1', '0.2', '0.3', '0.4']) {
     const payloadType = `application/vnd.mcpcheckup.attestation+json;version=${v}`
     const { envelope, pubkeyBase64 } = await buildEnvelope({ payloadType })
     const r = runVerify(envelope, { pubkey: pubkeyBase64 })
@@ -489,6 +489,41 @@ await t('schema 包的每个 payloadType，verifier 实际都接受（行为一�
     const { envelope, pubkeyBase64 } = await buildEnvelope({ payloadType })
     const r = runVerify(envelope, { pubkey: pubkeyBase64 })
     assert.ok(passed(r), `${payloadType}: expected PASS\n${r.stdout}\n${r.stderr}`)
+  }
+})
+
+await t('--help 列出的 payloadType 与 attestation-schema 的列表逐项相同（含顺序），一行一个', () => {
+  const r = runNode([SCRIPT, '--help'], undefined)
+  assert.equal(r.status, 0, r.stderr)
+  const lines = r.stdout.split('\n')
+  const at = lines.findIndex((line) => line.startsWith('Accepted payloadTypes'))
+  assert.ok(at >= 0, `no "Accepted payloadTypes" section in --help:\n${r.stdout}`)
+  const listed = []
+  for (const line of lines.slice(at + 1)) {
+    if (!line.startsWith('  ')) break
+    listed.push(line.trim())
+  }
+  assert.deepEqual(listed, schemaPayloadTypes())
+})
+
+console.log('\n真实形状的载荷：已提交的样例按各自的 payloadType 签名后都能验证')
+
+await t('v0.3 样例用 v0.3 签、v0.4 的 full / auth_gated 样例用 v0.4 签 -> --keys 下都 PASS；同一信封翻一个签名字节 -> FAIL', async () => {
+  const fixtures = new URL('../attestation-schema/test/fixtures/', import.meta.url)
+  const cases = [
+    ['attestation-v0.3.sample.json', 'application/vnd.mcpcheckup.attestation+json;version=0.3'],
+    ['attestation.sample.json', 'application/vnd.mcpcheckup.attestation+json;version=0.4'],
+    ['attestation-auth-gated.sample.json', 'application/vnd.mcpcheckup.attestation+json;version=0.4'],
+  ]
+  for (const [file, payloadType] of cases) {
+    const payloadObj = JSON.parse(readFileSync(new URL(file, fixtures), 'utf8'))
+    const k = await makeKey()
+    const { envelope } = await buildEnvelope({ payloadObj, key: k, payloadType })
+    const keys = keyDoc(keyEntry(k))
+    const r = runVerify(envelope, { keys })
+    assert.ok(passed(r), `${file} under ${payloadType}: expected PASS\n${r.stdout}\n${r.stderr}`)
+    envelope.signatures[0].sig = flipOneByte(envelope.signatures[0].sig)
+    assertFails(runVerify(envelope, { keys }), /RESULT:\s*FAIL/, file)
   }
 })
 

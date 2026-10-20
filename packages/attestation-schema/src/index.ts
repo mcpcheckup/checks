@@ -1,9 +1,19 @@
 import attestationSchema from '../schema/attestation.schema.json' with { type: 'json' }
+import attestationSchemaV03 from '../schema/attestation-payload-v0.3.json' with { type: 'json' }
 import attestationSchemaV02 from '../schema/attestation-payload-v0.2.json' with { type: 'json' }
 import attestationSchemaV01 from '../schema/attestation-payload-v0.1.json' with { type: 'json' }
-import { ATTESTATION_PAYLOAD_TYPE } from './attestation.ts'
+import { ATTESTATION_PAYLOAD_TYPE_V0_4 } from './attestation.ts'
 
 export const ATTESTATION_SCHEMA = attestationSchema
+
+/**
+ * ARCHIVED — the payload schema for payloadType
+ * 'application/vnd.mcpcheckup.attestation+json;version=0.3', byte-for-byte the
+ * schema/attestation.schema.json that v0.3 envelopes were signed against
+ * (schema-v04.test.ts pins its sha256). Unlike v0.1 and v0.2 it is still the shape
+ * ATTESTATION_PAYLOAD_TYPE signs today; v0.4 is defined ahead of that switch.
+ */
+export const ATTESTATION_SCHEMA_V0_3 = attestationSchemaV03
 
 /**
  * ARCHIVED — the payload schema for payloadType
@@ -26,7 +36,7 @@ export const ATTESTATION_SCHEMA_V0_2 = attestationSchemaV02
 export const ATTESTATION_SCHEMA_V0_1 = attestationSchemaV01
 
 /**
- * Every payloadType this package has ever signed, mapped to the schema that
+ * Every payloadType this package defines, mapped to the schema that
  * validates payloads carrying it.
  *
  * Keyed on the whole payloadType string rather than on a version number parsed
@@ -39,14 +49,17 @@ export const ATTESTATION_SCHEMA_V0_1 = attestationSchemaV01
  * those three strings would come back as something other than undefined and be
  * dispatched to instead of rejected.
  *
- * The current entry is keyed off ATTESTATION_PAYLOAD_TYPE itself instead of a
- * second copy of the same literal, so the schema this package validates against
- * cannot drift from the payloadType it stamps.
+ * The current entry is keyed off ATTESTATION_PAYLOAD_TYPE_V0_4 itself instead of
+ * a second copy of the same literal. The archived entries are literals on
+ * purpose: ATTESTATION_PAYLOAD_TYPE moves from v0.3 to v0.4 when signing does,
+ * and a v0.3 entry keyed off it would then silently collide with the v0.4 one
+ * and drop v0.3 from this map.
  */
 const SCHEMA_BY_PAYLOAD_TYPE = new Map<string, object>([
   ['application/vnd.mcpcheckup.attestation+json;version=0.1', ATTESTATION_SCHEMA_V0_1],
   ['application/vnd.mcpcheckup.attestation+json;version=0.2', ATTESTATION_SCHEMA_V0_2],
-  [ATTESTATION_PAYLOAD_TYPE, ATTESTATION_SCHEMA],
+  ['application/vnd.mcpcheckup.attestation+json;version=0.3', ATTESTATION_SCHEMA_V0_3],
+  [ATTESTATION_PAYLOAD_TYPE_V0_4, ATTESTATION_SCHEMA],
 ])
 
 /**
@@ -71,7 +84,7 @@ export function attestationSchemaForPayloadType(payloadType: string): object {
   const schema = SCHEMA_BY_PAYLOAD_TYPE.get(payloadType)
   if (schema === undefined) {
     const known = [...SCHEMA_BY_PAYLOAD_TYPE.keys()].map((k) => JSON.stringify(k)).join(', ')
-    throw new Error(`unknown attestation payloadType ${JSON.stringify(payloadType)} — this package has only ever signed ${known}`)
+    throw new Error(`unknown attestation payloadType ${JSON.stringify(payloadType)} — this package accepts only ${known}`)
   }
   return schema
 }
@@ -79,9 +92,10 @@ export function attestationSchemaForPayloadType(payloadType: string): object {
 export { pae, base64Encode, base64Decode, signDsseEnvelope, verifyDsseEnvelope, verifyDsseSignature } from './dsse.ts'
 export type { DsseSignature, DsseEnvelope } from './dsse.ts'
 
-export { ATTESTATION_PAYLOAD_TYPE, signAttestationPayload } from './attestation.ts'
+export { ATTESTATION_PAYLOAD_TYPE, ATTESTATION_PAYLOAD_TYPE_V0_4, signAttestationPayload } from './attestation.ts'
+export type { AttestationPayloadV0_3 } from './attestation.ts'
 
 export { assertUnverifiedHasReason, AssertionInvariantError } from './invariants.ts'
 export type { AssertionInvariantErrorCode, AssertionReasonFields } from './invariants.ts'
 
-export type { AttestationPayload, RemoteTarget, StdioTarget, Assertion, AssertionBase } from './generated-types.ts'
+export type { AttestationPayload, AuthObservation, RemoteTarget, StdioTarget, Assertion, AssertionBase } from './generated-types.ts'

@@ -80,6 +80,7 @@ const ALLOWED_PAYLOAD_TYPES = Object.freeze([
   'application/vnd.mcpcheckup.attestation+json;version=0.1',
   'application/vnd.mcpcheckup.attestation+json;version=0.2',
   'application/vnd.mcpcheckup.attestation+json;version=0.3',
+  'application/vnd.mcpcheckup.attestation+json;version=0.4',
 ])
 
 // DER prefix of an Ed25519 SubjectPublicKeyInfo; the 32 key bytes follow it.
@@ -105,6 +106,9 @@ function printUsageAndExit(code) {
                signature's keyid must equal the first 16 hex characters of
                sha256 over the key's SPKI bytes.
   Give exactly one of --keys and --pubkey.
+
+Accepted payloadTypes (any other is refused before any signature work):
+${ALLOWED_PAYLOAD_TYPES.map((type) => `  ${type}`).join('\n')}
 
 Requires Node.js 22.18 or later on the 22 line, or Node.js 24 or later.
 This script imports @mcpcheckup/canonicalizer's .ts source directly and

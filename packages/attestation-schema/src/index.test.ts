@@ -20,6 +20,7 @@ t('导出 DSSE 原语', () => {
 
 t('导出 attestation 专属常量与签名助手', () => {
   assert.equal(pkg.ATTESTATION_PAYLOAD_TYPE, 'application/vnd.mcpcheckup.attestation+json;version=0.3')
+  assert.equal(pkg.ATTESTATION_PAYLOAD_TYPE_V0_4, 'application/vnd.mcpcheckup.attestation+json;version=0.4')
   assert.equal(typeof pkg.signAttestationPayload, 'function')
 })
 
@@ -42,9 +43,16 @@ t('导出归档的 v0.2 schema 本体，且与当前 schema、v0.1 schema 是三
   assert.notEqual(pkg.ATTESTATION_SCHEMA_V0_2, pkg.ATTESTATION_SCHEMA_V0_1)
 })
 
+t('导出归档的 v0.3 schema 本体，且与当前 schema、v0.2、v0.1 是四个不同对象', () => {
+  assert.equal(typeof pkg.ATTESTATION_SCHEMA_V0_3, 'object')
+  assert.equal(pkg.ATTESTATION_SCHEMA_V0_3.$id, 'https://mcpcheckup.com/schema/attestation-payload-v0.3.json')
+  assert.equal(pkg.ATTESTATION_SCHEMA.$id, 'https://mcpcheckup.com/schema/attestation-payload-v0.4.json')
+  assert.equal(new Set([pkg.ATTESTATION_SCHEMA, pkg.ATTESTATION_SCHEMA_V0_3, pkg.ATTESTATION_SCHEMA_V0_2, pkg.ATTESTATION_SCHEMA_V0_1]).size, 4)
+})
+
 console.log('\nattestationSchemaForPayloadType：按 DSSE 的 payloadType 派发 schema')
 
-t('三个已签发过的 payloadType 各自派发到对应的 schema', () => {
+t('四个 payloadType 各自派发到对应的 schema', () => {
   assert.equal(
     pkg.attestationSchemaForPayloadType('application/vnd.mcpcheckup.attestation+json;version=0.1'),
     pkg.ATTESTATION_SCHEMA_V0_1,
@@ -55,17 +63,22 @@ t('三个已签发过的 payloadType 各自派发到对应的 schema', () => {
   )
   assert.equal(
     pkg.attestationSchemaForPayloadType('application/vnd.mcpcheckup.attestation+json;version=0.3'),
+    pkg.ATTESTATION_SCHEMA_V0_3,
+  )
+  assert.equal(
+    pkg.attestationSchemaForPayloadType('application/vnd.mcpcheckup.attestation+json;version=0.4'),
     pkg.ATTESTATION_SCHEMA,
   )
 })
 
-t('本包当前签发用的 ATTESTATION_PAYLOAD_TYPE 派发到 ATTESTATION_SCHEMA（签什么就按什么校验，不会各走各的）', () => {
-  assert.equal(pkg.attestationSchemaForPayloadType(pkg.ATTESTATION_PAYLOAD_TYPE), pkg.ATTESTATION_SCHEMA)
+t('ATTESTATION_PAYLOAD_TYPE（今天签发用的，v0.3）派发到 v0.3 归档；ATTESTATION_PAYLOAD_TYPE_V0_4 派发到 ATTESTATION_SCHEMA', () => {
+  assert.equal(pkg.attestationSchemaForPayloadType(pkg.ATTESTATION_PAYLOAD_TYPE), pkg.ATTESTATION_SCHEMA_V0_3)
+  assert.equal(pkg.attestationSchemaForPayloadType(pkg.ATTESTATION_PAYLOAD_TYPE_V0_4), pkg.ATTESTATION_SCHEMA)
 })
 
 t('未知 / 缺版本的 payloadType → 抛错，绝不静默回落到当前 schema', () => {
   const unknown = [
-    'application/vnd.mcpcheckup.attestation+json;version=0.4', // 未来版本
+    'application/vnd.mcpcheckup.attestation+json;version=0.5', // 未来版本
     'application/vnd.mcpcheckup.attestation+json;version=0.0', // 从未签发过
     'application/vnd.mcpcheckup.attestation+json', // 整个 version 参数缺失
     'application/vnd.mcpcheckup.attestation+json;version=0.3 ', // 尾随空格：不是同一个字符串
@@ -102,7 +115,7 @@ t('抛出的错误信息里带上收到的 payloadType 和本包签发过的全�
     message = (e as Error).message
   }
   assert.ok(message.includes('version=9.9'), `错误信息应当带上收到的值，实际是 ${JSON.stringify(message)}`)
-  for (const known of ['version=0.1', 'version=0.2', 'version=0.3']) {
+  for (const known of ['version=0.1', 'version=0.2', 'version=0.3', 'version=0.4']) {
     assert.ok(message.includes(known), `错误信息应当列出 ${known}，实际是 ${JSON.stringify(message)}`)
   }
 })

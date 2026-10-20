@@ -21,9 +21,10 @@ await t('重新生成 与 已提交的 src/generated-types.ts 逐字节一致（
   const schema = JSON.parse(readFileSync(new URL('../schema/attestation.schema.json', import.meta.url), 'utf8'))
   const fresh = await compile(schema, 'AttestationPayload', {
     additionalProperties: false,
+    maxItems: 0, // same option, same reason as scripts/generate-types.mjs
     bannerComment: GENERATED_BANNER,
     customName: (schema, keyNameFromDefinition) =>
-      schema.$id === 'https://mcpcheckup.com/schema/attestation-payload-v0.3.json' ? 'AttestationPayload' : undefined,
+      schema.$id === 'https://mcpcheckup.com/schema/attestation-payload-v0.4.json' ? 'AttestationPayload' : undefined,
   })
   const committed = readFileSync(new URL('./generated-types.ts', import.meta.url), 'utf8')
   // Normalize CRLF -> LF before comparing: `compile()` always emits LF, but a

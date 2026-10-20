@@ -1,0 +1,56 @@
+{
+  "canonicalization": "nfc-jcs/v1",
+  "suite_id": "remote-baseline-v0.1",
+  "suite_version": "0.3.2",
+  "suite_digest": "sha512-OHe5u+XVsuchkF2qZaGT/lVv8HE4uHNDt9fqr8tQ+iC89dtB2Wj9EIdPrA98OS1P28xstruqlua4ccjX4WBS+A==",
+  "suite_commit": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+  "registry_version": "0.1.0",
+  "toolset_projection_version": "v1",
+  "protocol_revision": "2026-07-28",
+  "launch_config_digest": null,
+  "target": {
+    "provider": "example-notes-co",
+    "name": "notes-mcp",
+    "transport": "remote",
+    "endpoint_url": "https://notes-mcp.example.com/mcp",
+    "package_ref": null
+  },
+  "observed_at": "2026-08-18T09:15:00.000Z",
+  "run": {
+    "started_at": "2026-08-18T09:14:50.000Z",
+    "finished_at": "2026-08-18T09:15:03.500Z"
+  },
+  "probe_region": "us-east-1",
+  "probe_dns_answer_changed": false,
+  "assertions": [
+    {
+      "check_id": "reachability",
+      "docs_version": "v0.1.0",
+      "execution_status": "COMPLETED",
+      "assertion_status": "VERIFIED",
+      "evidence_provenance": "INDEPENDENTLY_OBSERVED",
+      "reason": null,
+      "unverified_reason": null
+    },
+    {
+      "check_id": "auth_metadata",
+      "docs_version": "v0.1.0",
+      "execution_status": "COMPLETED",
+      "assertion_status": "UNVERIFIED",
+      "evidence_provenance": "INDEPENDENTLY_OBSERVED",
+      "reason": null,
+      "unverified_reason": { "key": "auth_metadata_no_challenge_observed" }
+    },
+    {
+      "check_id": "toolset_unchanged_vs_approved",
+      "docs_version": "v0.1.0",
+      "execution_status": "SKIPPED",
+      "assertion_status": "UNVERIFIED",
+      "evidence_provenance": "SELF_ATTESTED",
+      "reason": { "key": "no_baseline_reason", "params": { "check_id": "toolset_unchanged_vs_approved" } },
+      "unverified_reason": null
+    }
+  ],
+  "toolset_fingerprint": "sha256:020a60d1dde5ea3696e18d3c6930eacd8a9a9964ce3683c15aa39ba5dadb7645",
+  "schema_fingerprint": "sha256:bc2583a91e92d20b538db2bba0619427f7930bbe4b1f57ad2b6fbdad4831da99"
+}

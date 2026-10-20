@@ -6,7 +6,7 @@
  */
 
 /**
- * The content that goes inside a DSSE envelope's `payload` field (base64-decoded, UTF-8-decoded, then parsed as JSON) for payloadType 'application/vnd.mcpcheckup.attestation+json;version=0.3'. Every property is required so that no field can be silently omitted; nullable fields use an explicit null rather than an absent key, so 'we recorded nothing here' and 'we forgot to ask' are never confused with each other.
+ * The content that goes inside a DSSE envelope's `payload` field (base64-decoded, UTF-8-decoded, then parsed as JSON) for payloadType 'application/vnd.mcpcheckup.attestation+json;version=0.4'. Every property except auth_observation is required so that no field can be silently omitted; nullable fields use an explicit null rather than an absent key, so 'we recorded nothing here' and 'we forgot to ask' are never confused with each other. auth_observation is the one key whose presence is itself the information: it is present exactly when coverage is 'auth_gated' (see the second `allOf` entry), so a 'full' payload carries exactly the v0.3 fields, under the same constraints, plus coverage and run_id.
  */
 export type AttestationPayload = {
   [k: string]: unknown;
@@ -40,9 +40,9 @@ export type AttestationPayload = {
    */
   toolset_projection_version: string;
   /**
-   * The MCP protocol revision the tested server was observed speaking, e.g. '2026-07-28'. One of the dates in packages/checks/checks.json's protocol_revision check's revision_matrix. format:"date" additionally rejects calendar-impossible values (month 13, day 40, Feb 30, ...) that the shape-only pattern alone would let through.
+   * The MCP protocol revision the tested server was observed speaking, e.g. '2026-07-28'. One of the dates in packages/checks/checks.json's protocol_revision check's revision_matrix. format:"date" additionally rejects calendar-impossible values (month 13, day 40, Feb 30, ...) that the shape-only pattern alone would let through. Always a date under coverage 'full'. Under 'auth_gated' it is a date when a handshake response declared one before the authentication challenge stopped the run, and null when the challenge came first (the cross-field rule is the second `allOf` entry).
    */
-  protocol_revision: string;
+  protocol_revision: null | string;
   /**
    * sha256:<64 lowercase hex> digest of the stdio launch configuration (command, args, relevant env keys) used for this run. REQUIRED (non-null) when target.transport is 'stdio', because a stdio server's toolset can vary with its launch environment (PRD §12.1) — comparisons across runs are only meaningful for the same launch config. MUST be null for target.transport 'remote', which has no launch config to pin. (The precise cross-field rule — which value is legal for which transport — is enforced by the top-level `allOf` below, not by this subschema alone; a bare TypeScript consumer sees `string | null` here rather than a fully narrowed type, because that specific rule spans two different parts of the object and TypeScript has no clean way to express 'this sibling field's type depends on a nested field two levels away' as a plain type alias.)
    */
@@ -69,13 +69,22 @@ export type AttestationPayload = {
    */
   assertions: [Assertion, ...Assertion[]];
   /**
-   * digest() of projectToolset(tools) from @mcpcheckup/canonicalizer, under the canonicalization scheme named in the `canonicalization` field.
+   * digest() of projectToolset(tools) from @mcpcheckup/canonicalizer, under the canonicalization scheme named in the `canonicalization` field. Always present under coverage 'full'; always null under 'auth_gated', where the tool list sits behind the authentication challenge and was never observed.
    */
-  toolset_fingerprint: string;
+  toolset_fingerprint: null | string;
   /**
-   * digest() of projectSchemas(tools) from @mcpcheckup/canonicalizer, under the canonicalization scheme named in the `canonicalization` field.
+   * digest() of projectSchemas(tools) from @mcpcheckup/canonicalizer, under the canonicalization scheme named in the `canonicalization` field. Always present under coverage 'full'; always null under 'auth_gated', for the same reason as toolset_fingerprint.
    */
-  schema_fingerprint: string;
+  schema_fingerprint: null | string;
+  /**
+   * How far the run got, and so what the assertions can speak to. 'full': the run reached the tool list, as the run behind every v0.3 payload did. 'auth_gated': the server answered the probe's credential-free request with HTTP 401 and a well-formed authentication challenge, and the probe went no further, since it never sends credentials. Only the checks observable from outside that wall were run; every other assertion is UNVERIFIED with its reason, toolset_fingerprint and schema_fingerprint are null, and auth_observation records what the challenge said.
+   */
+  coverage: "full" | "auth_gated";
+  /**
+   * Identifies the probe run that produced this payload: a UUID in lowercase hyphenated form (8-4-4-4-12 hex digits). A new one is generated for every run, a retried run included.
+   */
+  run_id: string;
+  auth_observation?: AuthObservation;
 };
 /**
  * RFC 3339, always millisecond precision, always a literal 'Z' offset — exactly what Date.prototype.toISOString() produces, and nothing else. format:"date-time" alone would accept several other legal RFC 3339 spellings of the same or a nearby instant (no fractional seconds, six-digit fractional seconds, a numeric +00:00 offset instead of Z, a non-UTC offset) — every one of those is a different byte sequence and therefore canonicalizes to a different fingerprint even when it names the same moment, so exactly one spelling has to be the only legal one.
@@ -162,4 +171,31 @@ export interface AssertionBase {
   evidence_provenance: EvidenceProvenance;
   reason: ReasonRef;
   unverified_reason: ReasonRef;
+}
+/**
+ * What the authentication challenge that stopped an 'auth_gated' run said, reduced to names, at most one URL and at most one digest. Apart from resource_metadata_url, which is recorded only under the rules in its own description, no auth-param value is recorded: not realm, not scope, not any other. Of the RFC 9728 protected resource metadata document only a digest of its bytes is kept.
+ */
+export interface AuthObservation {
+  /**
+   * The challenge's auth-scheme, lowercased, e.g. 'bearer': one HTTP token (letters, digits and ! # $ % & ' * + - . ^ _ ` | ~), at most 64 characters.
+   */
+  scheme: string;
+  /**
+   * The names of the challenge's auth-params, lowercased, without duplicates and sorted in ascending code-point order: names only, never their values. Each name is 1 to 32 characters of a-z, 0-9, '_' and '-'; at most 16 names. The order is part of the format, because two orders canonicalize to different bytes, but JSON Schema cannot express it, so a schema validator does not check it.
+   *
+   * @maxItems 16
+   */
+  param_names: string[];
+  /**
+   * The resource_metadata URL the challenge named, recorded only when it is https, carries no userinfo, query or fragment, and is at most 512 characters long. null when the challenge named none, and also null when it named one that breaks any of those rules; resource_metadata_url_withheld tells the two apart.
+   */
+  resource_metadata_url: null | string;
+  /**
+   * true when the challenge named a resource_metadata URL that was not recorded because it broke a rule stated under resource_metadata_url, which is then null. false otherwise.
+   */
+  resource_metadata_url_withheld: boolean;
+  /**
+   * sha256:<64 lowercase hex> over the exact bytes of the body of the HTTP 200 response to the request for the RFC 9728 protected resource metadata document, as the HTTP client delivered them: after any Content-Encoding is removed, before any character decoding or JSON parsing. The document itself is never recorded. null when no such response was received, which is always the case when the challenge named no resource_metadata URL.
+   */
+  resource_metadata_body_digest: null | string;
 }

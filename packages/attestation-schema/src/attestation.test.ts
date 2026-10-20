@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs'
 import { canonicalize } from '@mcpcheckup/canonicalizer'
 import Ajv2020 from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
-import { ATTESTATION_PAYLOAD_TYPE, signAttestationPayload } from './attestation.ts'
+import { ATTESTATION_PAYLOAD_TYPE, ATTESTATION_PAYLOAD_TYPE_V0_4, signAttestationPayload } from './attestation.ts'
 import { verifyDsseEnvelope, base64Decode, base64Encode } from './dsse.ts'
+import { attestationSchemaForPayloadType } from './index.ts'
 
 let pass = 0, fail = 0
 async function t(name: string, fn: () => void | Promise<void>) {
@@ -16,19 +17,25 @@ async function generateKeyPair() {
   return crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']) as Promise<CryptoKeyPair>
 }
 
-const schema = JSON.parse(readFileSync(new URL('../schema/attestation.schema.json', import.meta.url), 'utf8'))
-const sample = JSON.parse(readFileSync(new URL('../test/fixtures/attestation.sample.json', import.meta.url), 'utf8'))
+// signAttestationPayload stamps ATTESTATION_PAYLOAD_TYPE, still v0.3, so it is
+// exercised with the v0.3 sample and checked against the schema that payloadType
+// dispatches to: the label and the shape it labels must agree.
+const sample = JSON.parse(readFileSync(new URL('../test/fixtures/attestation-v0.3.sample.json', import.meta.url), 'utf8'))
 
 function validator() {
   const ajv = new Ajv2020({ allErrors: true, strict: true })
   addFormats(ajv)
-  return ajv.compile(schema)
+  return ajv.compile(attestationSchemaForPayloadType(ATTESTATION_PAYLOAD_TYPE))
 }
 
 console.log('attestation: payloadType 常量')
 
-await t('ATTESTATION_PAYLOAD_TYPE 是给定的确切字符串', () => {
+await t('ATTESTATION_PAYLOAD_TYPE 是给定的确切字符串（仍是 v0.3：签发切到 v0.4 之前它不动）', () => {
   assert.equal(ATTESTATION_PAYLOAD_TYPE, 'application/vnd.mcpcheckup.attestation+json;version=0.3')
+})
+
+await t('ATTESTATION_PAYLOAD_TYPE_V0_4 是给定的确切字符串', () => {
+  assert.equal(ATTESTATION_PAYLOAD_TYPE_V0_4, 'application/vnd.mcpcheckup.attestation+json;version=0.4')
 })
 
 console.log('\nattestation: signAttestationPayload 端到端')

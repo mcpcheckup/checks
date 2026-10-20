@@ -52,5 +52,7 @@
     }
   ],
   "toolset_fingerprint": "sha256:020a60d1dde5ea3696e18d3c6930eacd8a9a9964ce3683c15aa39ba5dadb7645",
-  "schema_fingerprint": "sha256:bc2583a91e92d20b538db2bba0619427f7930bbe4b1f57ad2b6fbdad4831da99"
+  "schema_fingerprint": "sha256:bc2583a91e92d20b538db2bba0619427f7930bbe4b1f57ad2b6fbdad4831da99",
+  "coverage": "full",
+  "run_id": "6f1c2e8a-4b7d-4c3e-9a51-2d8f0b7e4c19"
 }

@@ -18,6 +18,12 @@ const GENERATED_BANNER = `/**
 const schema = JSON.parse(readFileSync(schemaPath, 'utf8'))
 const ts = await compile(schema, 'AttestationPayload', {
   additionalProperties: false,
+  // A variable-length array with a maxItems (auth_observation.param_names, at
+  // most 16) would otherwise come out as a union of 17 tuple types. 0 makes
+  // every such array a plain T[]; the bound stays in the schema, where ajv
+  // enforces it, and in the generated @maxItems doc tag. Arrays with only a
+  // minItems (assertions) keep their non-empty tuple type.
+  maxItems: 0,
   bannerComment: GENERATED_BANNER,
   // json-schema-to-typescript names the root type from schema.title || schema.$id
   // before it ever looks at the name argument above. The schema deliberately has
@@ -25,7 +31,7 @@ const ts = await compile(schema, 'AttestationPayload', {
   // properly identified JSON Schema) — so the root type specifically needs this
   // override, or it would come out named after the $id URL.
   customName: (schema, keyNameFromDefinition) =>
-    schema.$id === 'https://mcpcheckup.com/schema/attestation-payload-v0.3.json' ? 'AttestationPayload' : undefined,
+    schema.$id === 'https://mcpcheckup.com/schema/attestation-payload-v0.4.json' ? 'AttestationPayload' : undefined,
 })
 
 writeFileSync(outPath, ts)

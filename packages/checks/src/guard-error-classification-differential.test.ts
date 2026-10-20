@@ -165,13 +165,15 @@ const FROZEN_080_BLOBS: Record<string, string> = {
  *  ProbeBudget type, and nothing they run calls guardedFetch, classifyIp or
  *  parseGuardedTarget. */
 const CLOSURE_080_BLOBS: Record<string, string> = {
+  // Re-pinned for the attestation-schema v0.4 dispatch; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
-  'packages/attestation-schema/schema/attestation.schema.json': 'e530a30f249389a72c1370c6d114bc0bd81ad66a',
-  'packages/attestation-schema/src/attestation.ts': '246bfcbdc3de280a1ff407a6ba62d52b85cc6995',
+  'packages/attestation-schema/schema/attestation-payload-v0.3.json': 'e530a30f249389a72c1370c6d114bc0bd81ad66a',
+  'packages/attestation-schema/schema/attestation.schema.json': '3b0fa57284424bbf673675dfa75b425c7a2d6a9a',
+  'packages/attestation-schema/src/attestation.ts': '48e42071716e97f0eceab463935494a0c26d00da',
   'packages/attestation-schema/src/dsse.ts': 'abc02f6c5e793b80c06bd825f2da79c72dfb3c08',
-  'packages/attestation-schema/src/generated-types.ts': '70654ab8e9b79bdca5bb5fba29f6263afc17705e',
-  'packages/attestation-schema/src/index.ts': '04972eaf8326370bc4d881ddcdfd954e0e680e5b',
+  'packages/attestation-schema/src/generated-types.ts': '310edbdd089fb650fb08929be7e8f8aa33db6ade',
+  'packages/attestation-schema/src/index.ts': '0bcd8d1de2d8de7b2f4e41f2a26476497ae9793b',
   'packages/attestation-schema/src/invariants.ts': '78c4296f187921cf90b19686fe95fbfc61abba8e',
   'packages/canonicalizer/src/canonicalize.ts': '45e467e746de5fa2ba40cae72af915eafdceb27b',
   'packages/canonicalizer/src/digest.ts': '037a30ced41ba496f49b4b0643c181dd60c3bc68',

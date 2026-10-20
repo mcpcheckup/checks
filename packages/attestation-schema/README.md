@@ -13,14 +13,16 @@ the whole contract. There's nothing else to reverse-engineer.
 ```
 DSSE envelope (secure-systems-lab/dsse, unmodified)
 ├─ payloadType: "application/vnd.mcpcheckup.attestation+json;version=0.3"
-│    (or ";version=0.2" / ";version=0.1" for envelopes signed before the
+│    (attestations are signed as v0.3 today; ";version=0.4" is defined by
+│    the current schema and accepted ahead of signing switching to it;
+│    ";version=0.2" / ";version=0.1" for envelopes signed before the
 │    respective payload bumps — see "Verifying an archived-version envelope"
-│    below; new attestations are always v0.3)
+│    below)
 ├─ payload: base64(SERIALIZED_BODY)
 │    SERIALIZED_BODY = canonicalize(attestation payload)  — nfc-jcs/v1, see below
 └─ signatures[]: [{ keyid?, sig: base64(Ed25519(PAE(payloadType, SERIALIZED_BODY))) }]
 
-attestation payload (schema/attestation.schema.json, draft 2020-12; schema/attestation-payload-v0.2.json and schema/attestation-payload-v0.1.json for the archived shapes)
+attestation payload (schema/attestation.schema.json, draft 2020-12, v0.4; schema/attestation-payload-v0.3.json, -v0.2.json and -v0.1.json for the archived shapes)
 ├─ canonicalization, suite_id, suite_version, suite_digest, suite_commit,
 │  registry_version, toolset_projection_version, protocol_revision,
 │  launch_config_digest              — every rule that produced this attestation, versioned
@@ -28,7 +30,8 @@ attestation payload (schema/attestation.schema.json, draft 2020-12; schema/attes
 ├─ observed_at, run, probe_region,
 │  probe_dns_answer_changed          — when, from where, and under what run conditions
 ├─ assertions[]                      — one four-state result per check
-└─ toolset_fingerprint, schema_fingerprint
+├─ toolset_fingerprint, schema_fingerprint
+└─ coverage, run_id, auth_observation — v0.4: how far the run got, which run, and what an authentication challenge said
 ```
 
 ## The outer layer: DSSE, not invented here
@@ -145,8 +148,10 @@ payload, which is entirely ours to define.
 `schema/attestation.schema.json` is JSON Schema draft 2020-12. Every object
 in it sets `"additionalProperties": false` and lists every one of its own
 keys in `"required"` — including nullable ones (they're always present as a
-key; `null` is how "not applicable" is spelled, never an absent key). An
-attestation with an unrecognized field is invalid, full stop. The reasoning:
+key; `null` is how "not applicable" is spelled, never an absent key). The one
+exception is v0.4's top-level `auth_observation`, whose presence is itself the
+information: it is present exactly when `coverage` is `"auth_gated"` (see
+below). An attestation with an unrecognized field is invalid, full stop. The reasoning:
 this is the one artifact meant to be picked apart by strangers forever; if
 we ever start silently accepting fields nobody validates, nobody — including
 us, eighteen months later — can tell whether that field was ever meaningful.
@@ -260,6 +265,32 @@ database CHECK constraint, the `if`/`then` clause in this schema, and
 doesn't depend on a JSON Schema validator or a database being reachable at
 all). None of the three trusts the others.
 
+### `coverage`, `run_id` and `auth_observation` (v0.4)
+
+`coverage` says how far the run got. `"full"`: the run reached the tool list,
+and the payload carries exactly the v0.3 fields under the same constraints, plus
+`coverage` and `run_id` — so a `"full"` payload with those two keys removed is a
+valid v0.3 payload. `"auth_gated"`: the server answered the probe's
+credential-free request with HTTP 401 and a well-formed authentication
+challenge, and the probe went no further (it never sends credentials). Only the
+checks observable from outside that wall were run; every other assertion is
+`UNVERIFIED` with its reason, both fingerprints are `null`, and
+`protocol_revision` is `null` unless a handshake response declared one before
+the challenge.
+
+`run_id` is a lowercase UUID identifying the run that produced the payload,
+new for every run.
+
+`auth_observation` records the challenge reduced to names and digests: its
+auth-scheme (lowercased), its parameter names (sorted, without duplicates,
+never their values), the `resource_metadata` URL only when it is https with no
+userinfo, query or fragment and at most 512 characters (otherwise
+`resource_metadata_url_withheld` is `true` and the URL is `null`), and a sha256
+digest of the RFC 9728 protected resource metadata document's body instead of
+the document itself. The schema descriptions state each rule exactly. One rule
+JSON Schema cannot express: `param_names` must be in ascending code-point
+order, so a schema validator does not check it.
+
 ### Fingerprints
 
 `toolset_fingerprint`/`schema_fingerprint` are `digest()` output from
@@ -309,25 +340,28 @@ directly — see `digest()` in `@mcpcheckup/canonicalizer`.)
    described above and apply its `revoked_at`, `valid_from` and `valid_until` to the
    payload's `observed_at` as described there.
    Reject if `envelope.payloadType` isn't one of the payload types this
-   package has ever signed —
-   `"application/vnd.mcpcheckup.attestation+json;version=0.3"` (current),
-   `";version=0.2"` or `";version=0.1"` (archived — see "Verifying an
-   archived-version envelope" below) — and if no signature verifies.
+   package defines —
+   `"application/vnd.mcpcheckup.attestation+json;version=0.4"` (the current
+   schema), `";version=0.3"` (what attestations are signed as today),
+   `";version=0.2"` or `";version=0.1"` (see "Verifying an archived-version
+   envelope" below) — and if no signature verifies.
 3. **Parse** `SERIALIZED_BODY` as UTF-8 JSON. Per DSSE's own security
    guidance, use *these exact verified bytes* — don't re-serialize the
    parsed object and re-verify against that; that reopens exactly the
    confusion PAE closes.
 4. **Validate the parsed object** against the schema matching
    `envelope.payloadType` — `schema/attestation.schema.json` for
-   `;version=0.3`, `schema/attestation-payload-v0.2.json` for `;version=0.2`,
+   `;version=0.4`, `schema/attestation-payload-v0.3.json` for `;version=0.3`,
+   `schema/attestation-payload-v0.2.json` for `;version=0.2`,
    `schema/attestation-payload-v0.1.json` for `;version=0.1` — with any draft
    2020-12 validator. `attestationSchemaForPayloadType(envelope.payloadType)`
    does exactly this mapping and throws on any other value; it never falls
    back to the current schema. Reject on failure — a signature only proves
    who sent it, not that it's shaped like an attestation. **Always branch on
-   `payloadType` before picking a schema**: the three payload shapes differ
-   (v0.1's `reason`/`unverified_reason` are bare strings, v0.2's and v0.3's
-   are `{key, params?}` objects; v0.3 adds a required `suite_commit`), so
+   `payloadType` before picking a schema**: the four payload shapes differ
+   (v0.1's `reason`/`unverified_reason` are bare strings, later versions'
+   are `{key, params?}` objects; v0.3 adds a required `suite_commit`; v0.4
+   adds `coverage` and `run_id`), so
    validating a payload against another version's schema fails even though
    the envelope and signature are both completely valid.
 5. Optionally, **recompute** `canonicalize(payload)` and compare it byte for
@@ -358,7 +392,7 @@ if (!sigOk) throw new Error('signature does not verify')
 const payload = JSON.parse(new TextDecoder().decode(base64Decode(envelope.payload))) // step 3
 
 // step 4: validate against the schema that payloadType selected — never against
-// ATTESTATION_SCHEMA unconditionally, which only matches ;version=0.3 envelopes.
+// ATTESTATION_SCHEMA unconditionally, which only matches ;version=0.4 envelopes.
 const ajv = new Ajv2020({ allErrors: true, strict: true })
 addFormats(ajv)
 const validate = ajv.compile(schema)
@@ -367,7 +401,7 @@ if (!validate(payload)) throw new Error('payload does not match schema: ' + JSON
 
 ### Verifying an archived-version envelope
 
-Two payload shapes predate the current one, and envelopes carrying them are
+Three payload shapes predate the current one, and envelopes carrying them are
 exactly as genuine and exactly as independently verifiable as a current one —
 in each case the payload *shape* changed, not the trust model, the signing
 key, or the meaning of any assertion:
@@ -380,13 +414,17 @@ key, or the meaning of any assertion:
   field's description in `schema/attestation.schema.json` for why no value
   produced under that definition is reproducible). Schema:
   `schema/attestation-payload-v0.2.json`, exported as `ATTESTATION_SCHEMA_V0_2`.
+- `;version=0.3` — no `coverage`, `run_id` or `auth_observation`; every
+  payload is what v0.4 calls `"full"`. Schema: `schema/attestation-payload-v0.3.json`,
+  exported as `ATTESTATION_SCHEMA_V0_3`. Unlike the other two it is still the
+  shape attestations are signed as today.
 
 Each archived file is the exact schema those envelopes were validated against
 at signing time. Follow the same five steps above; the only difference is which
 `payloadType` you expect and which schema step 4 validates against —
-`attestationSchemaForPayloadType()` picks it for you. This package never
-produces new envelopes under an archived shape; these schemas exist only so the
-ones that already exist stay verifiable forever.
+`attestationSchemaForPayloadType()` picks it for you. Once signing moves to
+v0.4, no new envelope is produced under an archived shape; these schemas exist
+so the ones that already exist stay verifiable forever.
 
 ## API
 
@@ -403,9 +441,11 @@ import {
   type DsseEnvelope,
 
   // attestation-specific
-  ATTESTATION_PAYLOAD_TYPE,
-  signAttestationPayload,     // canonicalize(payload) via nfc-jcs/v1, then DSSE-sign it
-  ATTESTATION_SCHEMA,          // the parsed schema/attestation.schema.json object (current, v0.3)
+  ATTESTATION_PAYLOAD_TYPE,    // ";version=0.3", what attestations are signed as today
+  ATTESTATION_PAYLOAD_TYPE_V0_4,
+  signAttestationPayload,     // canonicalize(payload) via nfc-jcs/v1, then DSSE-sign it under ATTESTATION_PAYLOAD_TYPE
+  ATTESTATION_SCHEMA,          // the parsed schema/attestation.schema.json object (current, v0.4)
+  ATTESTATION_SCHEMA_V0_3,     // the parsed schema/attestation-payload-v0.3.json object (archived)
   ATTESTATION_SCHEMA_V0_2,     // the parsed schema/attestation-payload-v0.2.json object (archived)
   ATTESTATION_SCHEMA_V0_1,     // the parsed schema/attestation-payload-v0.1.json object (archived)
   attestationSchemaForPayloadType, // envelope.payloadType -> the schema that validates it; throws on anything unknown
@@ -416,6 +456,8 @@ import {
 
   // generated from schema/attestation.schema.json — see below
   type AttestationPayload,
+  type AuthObservation,
+  type AttestationPayloadV0_3, // derived from AttestationPayload: the v0.3 shape signAttestationPayload takes
   type RemoteTarget,
   type StdioTarget,
   type Assertion,
@@ -437,8 +479,9 @@ commit the result, or CI fails.
 (`AttestationPayload` and `Assertion`) carry an extra
 `& { [k: string]: unknown }` in their generated form. Both come from a
 cross-field rule expressed as `allOf`/`if`/`then` (`launch_config_digest`'s
-dependency on `target.transport`; `reason`/`unverified_reason`'s dependency
-on `assertion_status`) — `json-schema-to-typescript` doesn't fully close
+dependency on `target.transport` and the fingerprints' and `auth_observation`'s
+on `coverage`; `reason`/`unverified_reason`'s dependency on
+`assertion_status`) — `json-schema-to-typescript` doesn't fully close
 `additionalProperties` across that pattern. The **runtime** schema is fully
 strict regardless (ajv enforces `additionalProperties: false` correctly in
 every case — see the additionalProperties-rejection tests in
@@ -468,6 +511,13 @@ such gap — see `RemoteTarget | StdioTarget`.
   verify it, confirm the signed bytes are genuinely `canonicalize(payload)`
   and that decoding them back still validates against the schema, and that
   a tampered payload fails verification.
+- `src/schema-v04.test.ts` — the v0.3 archive's sha256; `"full"` is exactly
+  v0.3 plus `coverage` and `run_id`; every `coverage`/`run_id`/
+  `auth_observation` rule, accepted and rejected.
+- `src/auth-observation-credentials.test.ts` — no credential-shaped string
+  (a JWT, an authorization header value, a vendor key, a long hex or
+  high-entropy token, a private key block) placed in any string of
+  `auth_observation` gets through both the schema and a whole-payload scan.
 - `src/generated-types-freshness.test.ts` — schema and generated types stay
   in sync.
 

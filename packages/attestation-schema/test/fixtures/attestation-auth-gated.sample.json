@@ -1,0 +1,65 @@
+{
+  "canonicalization": "nfc-jcs/v1",
+  "suite_id": "remote-baseline-v0.1",
+  "suite_version": "0.3.2",
+  "suite_digest": "sha512-OHe5u+XVsuchkF2qZaGT/lVv8HE4uHNDt9fqr8tQ+iC89dtB2Wj9EIdPrA98OS1P28xstruqlua4ccjX4WBS+A==",
+  "suite_commit": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+  "registry_version": "0.1.0",
+  "toolset_projection_version": "v1",
+  "protocol_revision": null,
+  "launch_config_digest": null,
+  "target": {
+    "provider": "example-notes-co",
+    "name": "notes-mcp",
+    "transport": "remote",
+    "endpoint_url": "https://notes-mcp.example.com/mcp",
+    "package_ref": null
+  },
+  "observed_at": "2026-08-18T09:15:00.000Z",
+  "run": {
+    "started_at": "2026-08-18T09:14:50.000Z",
+    "finished_at": "2026-08-18T09:15:03.500Z"
+  },
+  "probe_region": "us-east-1",
+  "probe_dns_answer_changed": false,
+  "assertions": [
+    {
+      "check_id": "reachability",
+      "docs_version": "v0.1.0",
+      "execution_status": "COMPLETED",
+      "assertion_status": "VERIFIED",
+      "evidence_provenance": "INDEPENDENTLY_OBSERVED",
+      "reason": null,
+      "unverified_reason": null
+    },
+    {
+      "check_id": "auth_metadata",
+      "docs_version": "v0.1.0",
+      "execution_status": "COMPLETED",
+      "assertion_status": "VERIFIED",
+      "evidence_provenance": "INDEPENDENTLY_OBSERVED",
+      "reason": null,
+      "unverified_reason": null
+    },
+    {
+      "check_id": "discovery_handshake",
+      "docs_version": "v0.1.0",
+      "execution_status": "SKIPPED",
+      "assertion_status": "UNVERIFIED",
+      "evidence_provenance": "INDEPENDENTLY_OBSERVED",
+      "reason": null,
+      "unverified_reason": { "key": "credential_required", "params": { "scheme": "bearer" } }
+    }
+  ],
+  "toolset_fingerprint": null,
+  "schema_fingerprint": null,
+  "coverage": "auth_gated",
+  "run_id": "0b9e4d27-51a3-4f6c-8e02-7c4a1d3f9b58",
+  "auth_observation": {
+    "scheme": "bearer",
+    "param_names": ["realm", "resource_metadata"],
+    "resource_metadata_url": "https://notes-mcp.example.com/.well-known/oauth-protected-resource",
+    "resource_metadata_url_withheld": false,
+    "resource_metadata_body_digest": "sha256:5636c76419a211c1efec547f90d889bf5ee7c42f3ad5b0defefd1703618833f2"
+  }
+}
