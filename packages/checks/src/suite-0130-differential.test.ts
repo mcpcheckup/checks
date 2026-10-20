@@ -56,6 +56,9 @@ import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { LEGACY_OFFER_0130, LEGACY_OFFER_BEFORE_0130, MODERN_OFFER, offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0130-remap.ts'
+// Suite 0.14.0: the live result's authObservation is set aside before every comparison with the frozen result
+// (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
+import { withoutAuthObservation } from './suite-0140-remap.ts'
 import { runProbe as frozen0120RunProbe } from './frozen/suite-0.12.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.12.0/src/other-host-declined.ts'
@@ -108,15 +111,16 @@ const FROZEN_0120_BLOBS: Record<string, string> = {
  *  reach it. If this test goes red for any file, the frozen run no longer
  *  computes 0.12.0: freeze that file's 0.12.0 version first. */
 const CLOSURE_0120_BLOBS: Record<string, string> = {
-  // Re-pinned for the attestation-schema v0.4 dispatch; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
+  // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
   'packages/attestation-schema/schema/attestation-payload-v0.3.json': 'e530a30f249389a72c1370c6d114bc0bd81ad66a',
-  'packages/attestation-schema/schema/attestation.schema.json': '3b0fa57284424bbf673675dfa75b425c7a2d6a9a',
-  'packages/attestation-schema/src/attestation.ts': '48e42071716e97f0eceab463935494a0c26d00da',
+  'packages/attestation-schema/schema/attestation.schema.json': 'c8a12527aad29cc7f26b68e8765bd4320cb18d3c',
+  'packages/attestation-schema/src/attestation.ts': '1dff1543b9d4890f17221ac5825dfe4fb9ea50b6',
+  'packages/attestation-schema/src/credential-shapes.ts': '4e1957c82d8797c7db68371a9770fac348a1fe8c',
   'packages/attestation-schema/src/dsse.ts': 'abc02f6c5e793b80c06bd825f2da79c72dfb3c08',
-  'packages/attestation-schema/src/generated-types.ts': '310edbdd089fb650fb08929be7e8f8aa33db6ade',
-  'packages/attestation-schema/src/index.ts': '0bcd8d1de2d8de7b2f4e41f2a26476497ae9793b',
+  'packages/attestation-schema/src/generated-types.ts': 'e255d176c73c5c30dd9ac07c0149f204be1b4df8',
+  'packages/attestation-schema/src/index.ts': 'dbe2f24752372c7b49b622474665080aba39754d',
   'packages/attestation-schema/src/invariants.ts': '78c4296f187921cf90b19686fe95fbfc61abba8e',
   'packages/canonicalizer/src/canonicalize.ts': '45e467e746de5fa2ba40cae72af915eafdceb27b',
   'packages/canonicalizer/src/digest.ts': '037a30ced41ba496f49b4b0643c181dd60c3bc68',
@@ -400,7 +404,7 @@ function compare(id: string, now: Run, old: Run) {
   const problem = offerSubstitutionProblem(old.result, old.substituted)
   if (problem) violation(id, problem)
   const want = suite0130Remap(old.result, old.requests)
-  if (!identical(now.result, want)) {
+  if (!identical(withoutAuthObservation(now.result), want)) {
     violation(id, `ProbeResult is not 0.12.0's with probeOfferedRevision and nothing else\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
   }
   honest(id, now)

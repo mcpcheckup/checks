@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import Ajv2020 from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
+import { AUTH_GATED_CHECK_IDS } from './attestation.ts'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -134,9 +135,36 @@ t('auth_gated 只对 remote target 成立：stdio target（HTTP 401 无从谈起
   accepts(edit(stdio, [['coverage'], 'full'], [AO, undefined], [['protocol_revision'], '2026-07-28'], [['toolset_fingerprint'], sampleFull.toolset_fingerprint], [['schema_fingerprint'], sampleFull.schema_fingerprint]), 'the same stdio payload as full')
 })
 
+t('N1：auth_gated 下 4 项之外的断言一律 UNVERIFIED 且带 unverified_reason；tools_list VERIFIED → 拒绝', () => {
+  const withRow = (row: Record<string, unknown>) => edit(sampleAuthGated, [['assertions'], [...sampleAuthGated.assertions, row]])
+  const row = (check_id: string, assertion_status: string, unverified_reason: unknown) => ({
+    check_id, docs_version: 'v0.1.0', execution_status: 'COMPLETED', assertion_status, evidence_provenance: 'INDEPENDENTLY_OBSERVED',
+    reason: assertion_status === 'UNVERIFIED' ? null : { key: 'x_observed' }, unverified_reason,
+  })
+  const because = { key: 'credential_required', params: { scheme: 'bearer' } }
+  rejects(withRow(row('tools_list', 'VERIFIED', null)), 'tools_list VERIFIED under auth_gated')
+  for (const status of ['VERIFIED', 'FAILED', 'OBSERVED_RISK']) {
+    for (const check_id of ['discovery_handshake', 'protocol_revision', 'error_taxonomy', 'toolset_fingerprint']) rejects(withRow(row(check_id, status, null)), `${check_id} ${status} under auth_gated`)
+    // Carrying an unverified_reason does not make another status acceptable: the status itself must be UNVERIFIED.
+    rejects(withRow(row('tools_list', status, because)), `tools_list ${status} with an unverified_reason under auth_gated`)
+  }
+  // UNVERIFIED with only `reason` passes the base assertion rule but not this one: the reason must sit in unverified_reason.
+  rejects(withRow({ ...row('tools_list', 'UNVERIFIED', null), reason: because }), 'tools_list UNVERIFIED with reason only')
+  accepts(withRow(row('tools_list', 'UNVERIFIED', because)), 'tools_list UNVERIFIED with its unverified_reason')
+  for (const status of ['VERIFIED', 'FAILED', 'OBSERVED_RISK']) {
+    for (const check_id of ['reachability', 'redirect_policy', 'transport_type', 'auth_metadata']) accepts(withRow(row(check_id, status, null)), `${check_id} ${status} under auth_gated`)
+  }
+  // The rule belongs to auth_gated alone: the same row is fine in a full payload.
+  accepts(edit(sampleFull, [['assertions'], [...sampleFull.assertions, row('tools_list', 'VERIFIED', null)]]), 'tools_list VERIFIED under full')
+})
+
+t('N1 的 4 项就是 AUTH_GATED_CHECK_IDS：逐字相同、同序', () => {
+  assert.deepStrictEqual(schema.allOf[1].then.properties.assertions.items.if.properties.check_id.not.enum, [...AUTH_GATED_CHECK_IDS])
+})
+
 console.log('\nv0.4：auth_observation 的形状')
 
-t('五个键缺一不可，多一个也不行，整体不能是 null', () => {
+t('六个键缺一不可，多一个也不行，整体不能是 null', () => {
   for (const key of Object.keys(sampleAuthGated.auth_observation)) rejects(edit(sampleAuthGated, [[...AO, key], undefined]), `auth_observation.${key} missing`)
   rejects(edit(sampleAuthGated, [[...AO, 'realm'], 'mcp']), 'auth_observation with an extra key')
   rejects(edit(sampleAuthGated, [AO, null]), 'auth_observation null')
@@ -155,6 +183,11 @@ t('param_names：每个 1 到 32 个 [a-z0-9_-]，不重复，最多 16 个；�
   for (const bad of [['Realm'], ['re.alm'], [''], ['a'.repeat(33)], ['realm', 'realm'], [...sixteen, 'p16'], ['realm', 1], ['realm=mcp'], 'realm']) {
     rejects(edit(sampleAuthGated, [[...AO, 'param_names'], bad]), `param_names=${JSON.stringify(bad)}`)
   }
+})
+
+t('param_names_truncated：必填布尔值', () => {
+  accepts(edit(sampleAuthGated, [[...AO, 'param_names_truncated'], true]), 'truncated true')
+  for (const bad of ['false', 0, null]) rejects(edit(sampleAuthGated, [[...AO, 'param_names_truncated'], bad]), `truncated=${JSON.stringify(bad)}`)
 })
 
 t('resource_metadata_url：只收 https、无 userinfo / query / fragment、不超过 512 个字符的 URL', () => {

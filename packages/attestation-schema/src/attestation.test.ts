@@ -17,7 +17,7 @@ async function generateKeyPair() {
   return crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']) as Promise<CryptoKeyPair>
 }
 
-// signAttestationPayload stamps ATTESTATION_PAYLOAD_TYPE, still v0.3, so it is
+// signAttestationPayload stamps ATTESTATION_PAYLOAD_TYPE, the v0.3 label, so it is
 // exercised with the v0.3 sample and checked against the schema that payloadType
 // dispatches to: the label and the shape it labels must agree.
 const sample = JSON.parse(readFileSync(new URL('../test/fixtures/attestation-v0.3.sample.json', import.meta.url), 'utf8'))
@@ -30,7 +30,7 @@ function validator() {
 
 console.log('attestation: payloadType 常量')
 
-await t('ATTESTATION_PAYLOAD_TYPE 是给定的确切字符串（仍是 v0.3：签发切到 v0.4 之前它不动）', () => {
+await t('ATTESTATION_PAYLOAD_TYPE 是给定的确切字符串（v0.3 的标签；probe 自 suite 0.14.0 起用 ATTESTATION_PAYLOAD_TYPE_V0_4 签发）', () => {
   assert.equal(ATTESTATION_PAYLOAD_TYPE, 'application/vnd.mcpcheckup.attestation+json;version=0.3')
 })
 

@@ -12,12 +12,10 @@ the whole contract. There's nothing else to reverse-engineer.
 
 ```
 DSSE envelope (secure-systems-lab/dsse, unmodified)
-├─ payloadType: "application/vnd.mcpcheckup.attestation+json;version=0.3"
-│    (attestations are signed as v0.3 today; ";version=0.4" is defined by
-│    the current schema and accepted ahead of signing switching to it;
-│    ";version=0.2" / ";version=0.1" for envelopes signed before the
-│    respective payload bumps — see "Verifying an archived-version envelope"
-│    below)
+├─ payloadType: "application/vnd.mcpcheckup.attestation+json;version=0.4"
+│    (";version=0.3" / ";version=0.2" / ";version=0.1" for envelopes signed
+│    before the respective payload bumps — see "Verifying an archived-version
+│    envelope" below)
 ├─ payload: base64(SERIALIZED_BODY)
 │    SERIALIZED_BODY = canonicalize(attestation payload)  — nfc-jcs/v1, see below
 └─ signatures[]: [{ keyid?, sig: base64(Ed25519(PAE(payloadType, SERIALIZED_BODY))) }]
@@ -272,8 +270,8 @@ and the payload carries exactly the v0.3 fields under the same constraints, plus
 `coverage` and `run_id` — so a `"full"` payload with those two keys removed is a
 valid v0.3 payload. `"auth_gated"`: the server answered the probe's
 credential-free request with HTTP 401 and a well-formed authentication
-challenge, and the probe went no further (it never sends credentials). Only the
-checks observable from outside that wall were run; every other assertion is
+challenge, and the probe sent no credentials in any request, before or after
+the challenge. Only the checks observable from outside that wall were run; every other assertion is
 `UNVERIFIED` with its reason, both fingerprints are `null`, and
 `protocol_revision` is `null` unless a handshake response declared one before
 the challenge.
@@ -281,15 +279,24 @@ the challenge.
 `run_id` is a lowercase UUID identifying the run that produced the payload,
 new for every run.
 
-`auth_observation` records the challenge reduced to names and digests: its
-auth-scheme (lowercased), its parameter names (sorted, without duplicates,
-never their values), the `resource_metadata` URL only when it is https with no
-userinfo, query or fragment and at most 512 characters (otherwise
+`auth_observation` records the challenge reduced to names, at most one URL and
+at most one digest: its auth-scheme (lowercased), its parameter names (sorted,
+without duplicates, at most 16, never their values; `param_names_truncated`
+says whether any name was left out), the `resource_metadata` URL only under the
+rules in the schema's `resource_metadata_url` description (otherwise
 `resource_metadata_url_withheld` is `true` and the URL is `null`), and a sha256
 digest of the RFC 9728 protected resource metadata document's body instead of
 the document itself. The schema descriptions state each rule exactly. One rule
 JSON Schema cannot express: `param_names` must be in ascending code-point
-order, so a schema validator does not check it.
+order, so a schema validator does not check it. When the challenge header
+carries more than one challenge, `scheme` and `param_names` describe the first
+one only.
+
+None of it may carry a credential. Besides the shapes above,
+`credentialShapes()` (`src/credential-shapes.ts`) names every credential-shaped
+string in a payload, as written and percent-decoded; the probe runs it before it
+records a scheme, a parameter name or a URL, and leaves out (or, for the scheme,
+does not sign) whatever it flags.
 
 ### Fingerprints
 
@@ -342,7 +349,7 @@ directly — see `digest()` in `@mcpcheckup/canonicalizer`.)
    Reject if `envelope.payloadType` isn't one of the payload types this
    package defines —
    `"application/vnd.mcpcheckup.attestation+json;version=0.4"` (the current
-   schema), `";version=0.3"` (what attestations are signed as today),
+   schema, and what attestations are signed as), `";version=0.3"`,
    `";version=0.2"` or `";version=0.1"` (see "Verifying an archived-version
    envelope" below) — and if no signature verifies.
 3. **Parse** `SERIALIZED_BODY` as UTF-8 JSON. Per DSSE's own security
@@ -416,14 +423,14 @@ key, or the meaning of any assertion:
   `schema/attestation-payload-v0.2.json`, exported as `ATTESTATION_SCHEMA_V0_2`.
 - `;version=0.3` — no `coverage`, `run_id` or `auth_observation`; every
   payload is what v0.4 calls `"full"`. Schema: `schema/attestation-payload-v0.3.json`,
-  exported as `ATTESTATION_SCHEMA_V0_3`. Unlike the other two it is still the
-  shape attestations are signed as today.
+  exported as `ATTESTATION_SCHEMA_V0_3`. Attestations were signed as v0.3 up
+  to suite 0.13.0 of `@mcpcheckup/checks`.
 
 Each archived file is the exact schema those envelopes were validated against
 at signing time. Follow the same five steps above; the only difference is which
 `payloadType` you expect and which schema step 4 validates against —
-`attestationSchemaForPayloadType()` picks it for you. Once signing moves to
-v0.4, no new envelope is produced under an archived shape; these schemas exist
+`attestationSchemaForPayloadType()` picks it for you. Attestations are signed
+as v0.4 now, so no new envelope is produced under an archived shape; these schemas exist
 so the ones that already exist stay verifiable forever.
 
 ## API
@@ -441,8 +448,9 @@ import {
   type DsseEnvelope,
 
   // attestation-specific
-  ATTESTATION_PAYLOAD_TYPE,    // ";version=0.3", what attestations are signed as today
-  ATTESTATION_PAYLOAD_TYPE_V0_4,
+  ATTESTATION_PAYLOAD_TYPE,    // ";version=0.3", the archived v0.3 label
+  ATTESTATION_PAYLOAD_TYPE_V0_4, // ";version=0.4", what attestations are signed as
+  AUTH_GATED_CHECK_IDS,        // the four checks an "auth_gated" payload carries as observed
   signAttestationPayload,     // canonicalize(payload) via nfc-jcs/v1, then DSSE-sign it under ATTESTATION_PAYLOAD_TYPE
   ATTESTATION_SCHEMA,          // the parsed schema/attestation.schema.json object (current, v0.4)
   ATTESTATION_SCHEMA_V0_3,     // the parsed schema/attestation-payload-v0.3.json object (archived)
@@ -454,10 +462,16 @@ import {
   assertUnverifiedHasReason,
   AssertionInvariantError,
 
+  // credential-shaped strings in a payload (credential-shapes.ts)
+  credentialShapes,            // every credential-shaped string in a value, as "<path>: <rule>"
+  CREDENTIAL_SHAPE_RULES,      // the rules it applies, by name
+  percentDecoded,              // %XX escapes decoded until nothing changes
+
   // generated from schema/attestation.schema.json — see below
   type AttestationPayload,
   type AuthObservation,
   type AttestationPayloadV0_3, // derived from AttestationPayload: the v0.3 shape signAttestationPayload takes
+  type AttestationPayloadV0_4, // the v0.4 shape, either coverage
   type RemoteTarget,
   type StdioTarget,
   type Assertion,
@@ -513,11 +527,14 @@ such gap — see `RemoteTarget | StdioTarget`.
   a tampered payload fails verification.
 - `src/schema-v04.test.ts` — the v0.3 archive's sha256; `"full"` is exactly
   v0.3 plus `coverage` and `run_id`; every `coverage`/`run_id`/
-  `auth_observation` rule, accepted and rejected.
+  `auth_observation` rule, accepted and rejected, including that an
+  `"auth_gated"` payload carries every check but the four of
+  `AUTH_GATED_CHECK_IDS` as `UNVERIFIED` with a reason.
 - `src/auth-observation-credentials.test.ts` — no credential-shaped string
   (a JWT, an authorization header value, a vendor key, a long hex or
   high-entropy token, a private key block) placed in any string of
-  `auth_observation` gets through both the schema and a whole-payload scan.
+  `auth_observation` gets through both the schema and a whole-payload scan,
+  percent-encoded (once or twice) included.
 - `src/generated-types-freshness.test.ts` — schema and generated types stay
   in sync.
 

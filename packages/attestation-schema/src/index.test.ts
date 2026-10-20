@@ -22,6 +22,10 @@ t('导出 attestation 专属常量与签名助手', () => {
   assert.equal(pkg.ATTESTATION_PAYLOAD_TYPE, 'application/vnd.mcpcheckup.attestation+json;version=0.3')
   assert.equal(pkg.ATTESTATION_PAYLOAD_TYPE_V0_4, 'application/vnd.mcpcheckup.attestation+json;version=0.4')
   assert.equal(typeof pkg.signAttestationPayload, 'function')
+  assert.deepEqual(pkg.AUTH_GATED_CHECK_IDS, ['reachability', 'redirect_policy', 'transport_type', 'auth_metadata'])
+  assert.equal(typeof pkg.credentialShapes, 'function')
+  assert.equal(typeof pkg.percentDecoded, 'function')
+  assert.ok(Array.isArray(pkg.CREDENTIAL_SHAPE_RULES) && pkg.CREDENTIAL_SHAPE_RULES.length > 0)
 })
 
 t('导出 JSON Schema 本体（不是路径，是已经 parse 好的对象）', () => {
@@ -71,7 +75,7 @@ t('四个 payloadType 各自派发到对应的 schema', () => {
   )
 })
 
-t('ATTESTATION_PAYLOAD_TYPE（今天签发用的，v0.3）派发到 v0.3 归档；ATTESTATION_PAYLOAD_TYPE_V0_4 派发到 ATTESTATION_SCHEMA', () => {
+t('ATTESTATION_PAYLOAD_TYPE（v0.3）派发到 v0.3 归档；ATTESTATION_PAYLOAD_TYPE_V0_4 派发到 ATTESTATION_SCHEMA', () => {
   assert.equal(pkg.attestationSchemaForPayloadType(pkg.ATTESTATION_PAYLOAD_TYPE), pkg.ATTESTATION_SCHEMA_V0_3)
   assert.equal(pkg.attestationSchemaForPayloadType(pkg.ATTESTATION_PAYLOAD_TYPE_V0_4), pkg.ATTESTATION_SCHEMA)
 })

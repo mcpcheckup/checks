@@ -5,8 +5,8 @@
 //   1. the schema's own shapes (lowercase token, [a-z0-9_-]{1,32} names, an https
 //      URL with no userinfo, query or fragment) exclude most credential forms;
 //   2. what a shape cannot exclude (a lowercase key in a scheme or a name, anything
-//      in a URL path) is caught by credentialShapes() below, run over every string
-//      in the payload.
+//      in a URL path) is caught by credentialShapes() (credential-shapes.ts), run
+//      over every string in the payload, as written and percent-decoded.
 //
 // The test proves, for every string slot of auth_observation and every credential
 // shape, that a payload carrying it is refused by at least one layer; and it pins
@@ -18,6 +18,7 @@ import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
 import Ajv2020 from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
+import { CREDENTIAL_SHAPE_RULES, credentialShapes, percentDecoded } from './credential-shapes.ts'
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -33,45 +34,9 @@ const ajv = new Ajv2020({ allErrors: true, strict: true })
 addFormats(ajv)
 const validate = ajv.compile(schema)
 
-// ---- the detector ------------------------------------------------------------
+// ---- the detector: credential-shapes.ts, the one the probe runs too -----------
 
-/** Values we compute ourselves (hashes, commit and run ids). A string at one of
- *  these paths is skipped only when it matches that field's own schema pattern,
- *  read from the schema rather than restated, so anything else placed there is
- *  still scanned. */
-const OWN_DIGEST_PATHS = [
-  ['suite_digest'], ['suite_commit'], ['launch_config_digest'], ['toolset_fingerprint'], ['schema_fingerprint'], ['run_id'],
-  ['auth_observation', 'resource_metadata_body_digest'],
-]
-function schemaPatternAt(path: string[]): RegExp {
-  let node = schema
-  for (const [i, key] of path.entries()) node = i === 0 ? node.properties[key] : schema.$defs.authObservation.properties[key]
-  const pattern = node.pattern ?? node.oneOf?.find((b: { pattern?: string }) => b.pattern)?.pattern
-  assert.equal(typeof pattern, 'string', `no pattern in the schema for ${path.join('.')}`)
-  return new RegExp(pattern)
-}
-const OWN_DIGESTS = OWN_DIGEST_PATHS.map((path) => ({ key: path.join('.'), pattern: schemaPatternAt(path) }))
-
-const RULES: Array<[string, (s: string) => boolean]> = [
-  ['jwt', (s) => /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/.test(s)],
-  ['authorization header value', (s) => /\b(?:bearer|basic|token|dpop)\s+[A-Za-z0-9._~+/-]{8,}/i.test(s)],
-  ['private key block', (s) => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(s)],
-  ['vendor key prefix', (s) => /(?:^|[^A-Za-z0-9])(?:(?:sk|rk|pk)_(?:live|test)_|gh[pousr]_|github_pat_|xox[abprs]-|glpat-|whsec_|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{20})/.test(s)],
-  ['long hex run', (s) => /(?:^|[^0-9A-Za-z])[0-9a-fA-F]{32,}(?![0-9A-Za-z])/.test(s)],
-  ['high-entropy token', (s) => s.split(/[^A-Za-z0-9+/=_-]+/).some((p) => p.length >= 24 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p))],
-]
-
-/** Every credential-shaped string anywhere in `value`, as "<path>: <rule>". */
-function credentialShapes(value: unknown, path: string[] = []): string[] {
-  if (typeof value === 'string') {
-    const own = OWN_DIGESTS.find((d) => d.key === path.join('.'))
-    if (own && own.pattern.test(value)) return []
-    return RULES.filter(([, hit]) => hit(value)).map(([rule]) => `${path.join('.')}: ${rule}`)
-  }
-  if (Array.isArray(value)) return value.flatMap((v, i) => credentialShapes(v, [...path, String(i)]))
-  if (value !== null && typeof value === 'object') return Object.entries(value).flatMap(([k, v]) => credentialShapes(v, [...path, k]))
-  return []
-}
+const RULES = CREDENTIAL_SHAPE_RULES
 
 // ---- synthetic credential shapes, assembled at run time ----------------------
 
@@ -168,6 +133,41 @@ t('每个槽位 × 每种形状：要么 schema 拒收，要么全载荷扫描�
       const hits = credentialShapes(payload)
       assert.ok(hits.some((h) => h.startsWith(slotPath[slot] + ': ')), `${shape} in ${slot} passed the schema AND the scan: ${JSON.stringify(hits)}`)
     }
+  }
+})
+
+// Percent-encode every character of `s` (escapes in upper or lower case), so a
+// shape survives only through the decoder.
+const encodeAll = (s: string, lower = false) => [...s].map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')[lower ? 'toLowerCase' : 'toUpperCase']()).join('')
+
+t('百分号编码过的凭证形状：放进 URL 路径能同时过 schema，检测器解码后照样报出', () => {
+  // The case TODO 1009 (2) names: a lowercase test key in a path, with its first letter escaped.
+  const lowerKey = SHAPES.stripeShapedLowercase!
+  const escaped = '%' + lowerKey.charCodeAt(0).toString(16) + lowerKey.slice(1)
+  const payload = withSlot('resource_metadata_url path', escaped)
+  assert.equal(validate(payload), true, `the escaped key should pass the schema, so only the scan can stop it: ${JSON.stringify(validate.errors)}`)
+  assert.deepEqual(credentialShapes(escaped.slice(0)), [': vendor key prefix'])
+  assert.ok(credentialShapes(payload).some((h) => h.startsWith('auth_observation.resource_metadata_url: ')), JSON.stringify(credentialShapes(payload)))
+  for (const [name, value] of Object.entries(SHAPES)) {
+    for (const lower of [false, true]) {
+      const hits = credentialShapes(encodeAll(value, lower))
+      assert.ok(hits.length > 0, `${name}, every character escaped (${lower ? 'lower' : 'upper'}-case hex), was not flagged`)
+    }
+    const twice = encodeAll(encodeAll(value)) // %25XX%25YY…: decoded twice
+    assert.ok(credentialShapes(twice).length > 0, `${name}, escaped twice, was not flagged`)
+  }
+})
+
+t('percentDecoded：只解 %XX，坏的转义原样留着，反复解到不再变化', () => {
+  assert.equal(percentDecoded('a%2Fb%2fc'), 'a/b/c')
+  assert.equal(percentDecoded('%zz%4'), '%zz%4')
+  assert.equal(percentDecoded('%2541'), 'A')
+  assert.equal(percentDecoded('plain'), 'plain')
+})
+
+t('解码不会让良性 URL 变成误报：样例与常见的 RFC 9728 路径照样干净', () => {
+  for (const benign of ['https://notes-mcp.example.com/.well-known/oauth-protected-resource/mcp', 'https://notes-mcp.example.com/a%20b', 'https://notes-mcp.example.com/%7Euser/mcp']) {
+    assert.deepEqual(credentialShapes(benign), [], benign)
   }
 })
 

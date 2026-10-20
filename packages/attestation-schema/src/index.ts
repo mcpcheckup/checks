@@ -10,8 +10,8 @@ export const ATTESTATION_SCHEMA = attestationSchema
  * ARCHIVED — the payload schema for payloadType
  * 'application/vnd.mcpcheckup.attestation+json;version=0.3', byte-for-byte the
  * schema/attestation.schema.json that v0.3 envelopes were signed against
- * (schema-v04.test.ts pins its sha256). Unlike v0.1 and v0.2 it is still the shape
- * ATTESTATION_PAYLOAD_TYPE signs today; v0.4 is defined ahead of that switch.
+ * (schema-v04.test.ts pins its sha256), retained so the v0.3 envelopes signed
+ * before suite 0.14.0 switched signing to v0.4 remain independently verifiable.
  */
 export const ATTESTATION_SCHEMA_V0_3 = attestationSchemaV03
 
@@ -51,9 +51,9 @@ export const ATTESTATION_SCHEMA_V0_1 = attestationSchemaV01
  *
  * The current entry is keyed off ATTESTATION_PAYLOAD_TYPE_V0_4 itself instead of
  * a second copy of the same literal. The archived entries are literals on
- * purpose: ATTESTATION_PAYLOAD_TYPE moves from v0.3 to v0.4 when signing does,
- * and a v0.3 entry keyed off it would then silently collide with the v0.4 one
- * and drop v0.3 from this map.
+ * purpose: a v0.3 entry keyed off ATTESTATION_PAYLOAD_TYPE would silently
+ * collide with the v0.4 one, and drop v0.3 from this map, the moment that
+ * constant named v0.4.
  */
 const SCHEMA_BY_PAYLOAD_TYPE = new Map<string, object>([
   ['application/vnd.mcpcheckup.attestation+json;version=0.1', ATTESTATION_SCHEMA_V0_1],
@@ -92,8 +92,10 @@ export function attestationSchemaForPayloadType(payloadType: string): object {
 export { pae, base64Encode, base64Decode, signDsseEnvelope, verifyDsseEnvelope, verifyDsseSignature } from './dsse.ts'
 export type { DsseSignature, DsseEnvelope } from './dsse.ts'
 
-export { ATTESTATION_PAYLOAD_TYPE, ATTESTATION_PAYLOAD_TYPE_V0_4, signAttestationPayload } from './attestation.ts'
-export type { AttestationPayloadV0_3 } from './attestation.ts'
+export { ATTESTATION_PAYLOAD_TYPE, ATTESTATION_PAYLOAD_TYPE_V0_4, AUTH_GATED_CHECK_IDS, signAttestationPayload } from './attestation.ts'
+export type { AttestationPayloadV0_3, AttestationPayloadV0_4 } from './attestation.ts'
+
+export { credentialShapes, CREDENTIAL_SHAPE_RULES, percentDecoded } from './credential-shapes.ts'
 
 export { assertUnverifiedHasReason, AssertionInvariantError } from './invariants.ts'
 export type { AssertionInvariantErrorCode, AssertionReasonFields } from './invariants.ts'

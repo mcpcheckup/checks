@@ -298,6 +298,16 @@ and asserting the broader, false claim just because the narrower one is
 inconvenient to report is exactly the failure mode CLAUDE.md's
 `不确定时的出口是 UNVERIFIED` rule exists to rule out.
 
+Since suite 0.14.0 a run stopped at either gate whose `auth_metadata` was
+judged from that gate's challenge also returns `ProbeResult.authObservation`:
+the challenge reduced to what an `auth_gated` attestation payload records
+(`auth-observation.ts`; each rule is stated in the attestation schema's
+`auth_observation` descriptions), except when `credentialShapes()` flags the
+challenge's auth-scheme, as sent or lowercased: then `authObservation` is
+absent. It adds no request and changes no assertion.
+Whether such a run can be signed as `auth_gated` is decided from its
+assertions by whoever builds the payload, not here.
+
 This exemption is narrow on purpose and does **not** apply to every 4xx a
 handshake attempt can produce:
 

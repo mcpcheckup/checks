@@ -24,7 +24,7 @@ export type AttestationPayload = {
    */
   suite_version: string;
   /**
-   * A Subresource-Integrity-formatted sha512 digest identifying the exact check-suite source tree that produced these assertions. The recipe, exactly: sha512 (SRI base64) over the raw bytes of `git ls-tree -r -z --full-tree <commit> -- packages/checks`, where <commit> is this payload's own suite_commit. That command's output is the only input — no packaging step, no npm, no build — so the value is recomputable by anyone who can read the repository at that commit, with no build tooling and nothing published anywhere. Two things are needed before a third party can actually exercise that: the repository has to be public, and the deploy path has to compute and inject this value. The second is now met — scripts/deploy-probe.mjs computes this value from the commit being deployed and injects it with `wrangler deploy --var`, and apps/probe/wrangler.jsonc ships a deliberately invalid placeholder so a deploy that skipped that script refuses to probe rather than signing a stale value. The first is NOT: the repository is not public yet, so nobody outside the project can run the command above at all, and until that changes this field is reproducible in principle and unverifiable in practice by anyone else — see packages/checks/README.md and apps/probe/README.md for the current state. The `-z` flag is mandatory, not stylistic: without it git renders path names through core.quotePath, a per-user git config, so the moment any file under packages/checks has a non-ASCII name the same commit produces two different byte sequences — and therefore two different digests — depending only on whose config ran the command. With `-z` the paths are emitted raw and NUL-terminated and both configurations agree. Restricted to sha512 specifically: a SHA-512 digest is always exactly 64 bytes, which standard base64 always encodes as exactly 86 characters plus '==' padding — that length is arithmetic, not a guess, so it is enforced here and a truncated or hand-typo'd digest is rejected instead of silently accepted. This is NOT npm's `dist.integrity`: v0.1 and v0.2 defined this field that way, but packages/checks is `private: true` and has never been published, so that definition was unreachable by construction and no value produced under it is reproducible — see packages/checks/README.md for what those historical values do and do not identify.
+   * A Subresource-Integrity-formatted sha512 digest identifying the exact check-suite source tree that produced these assertions. The recipe, exactly: sha512 (SRI base64) over the raw bytes of `git ls-tree -r -z --full-tree <commit> -- packages/checks`, where <commit> is this payload's own suite_commit. That command's output is the only input — no packaging step, no npm, no build — so the value is recomputable by anyone who can read the repository at that commit, with no build tooling and nothing published anywhere. suite_commit is a commit of the public repository github.com/mcpcheckup/checks, so anyone can run that command. The probe's deploy step computes this value from the commit being deployed and injects it, and the probe's committed configuration carries a deliberately invalid placeholder in its place, so a deploy that skipped that step refuses to probe rather than signing a stale value. The `-z` flag is mandatory, not stylistic: without it git renders path names through core.quotePath, a per-user git config, so the moment any file under packages/checks has a non-ASCII name the same commit produces two different byte sequences — and therefore two different digests — depending only on whose config ran the command. With `-z` the paths are emitted raw and NUL-terminated and both configurations agree. Restricted to sha512 specifically: a SHA-512 digest is always exactly 64 bytes, which standard base64 always encodes as exactly 86 characters plus '==' padding — that length is arithmetic, not a guess, so it is enforced here and a truncated or hand-typo'd digest is rejected instead of silently accepted. This is NOT npm's `dist.integrity`: v0.1 and v0.2 defined this field that way, but packages/checks is `private: true` and has never been published, so that definition was unreachable by construction and no value produced under it is reproducible — see packages/checks/README.md for what those historical values do and do not identify.
    */
   suite_digest: string;
   /**
@@ -77,7 +77,7 @@ export type AttestationPayload = {
    */
   schema_fingerprint: null | string;
   /**
-   * How far the run got, and so what the assertions can speak to. 'full': the run reached the tool list, as the run behind every v0.3 payload did. 'auth_gated': the server answered the probe's credential-free request with HTTP 401 and a well-formed authentication challenge, and the probe went no further, since it never sends credentials. Only the checks observable from outside that wall were run; every other assertion is UNVERIFIED with its reason, toolset_fingerprint and schema_fingerprint are null, and auth_observation records what the challenge said.
+   * How far the run got, and so what the assertions can speak to. 'full': the run reached the tool list, as the run behind every v0.3 payload did. 'auth_gated': the server answered the probe's credential-free request with HTTP 401 and a well-formed authentication challenge, and the probe sent no credentials in any request, before or after the challenge. Only the checks observable from outside that wall were run; every other assertion is UNVERIFIED with its reason, toolset_fingerprint and schema_fingerprint are null, and auth_observation records what the challenge said.
    */
   coverage: "full" | "auth_gated";
   /**
@@ -113,7 +113,7 @@ export type ExecutionStatus = "COMPLETED" | "ERROR" | "SKIPPED" | "BLOCKED";
  */
 export type EvidenceProvenance = "INDEPENDENTLY_OBSERVED" | "SELF_ATTESTED" | "STATICALLY_ANALYZED";
 /**
- * A stable, language-neutral reference to reader-facing copy: a catalog key plus optional structured parameters. Rendered into prose by locale at read time (apps/web's reason-messages.ts, or checks.json for the no_baseline_reason special case) — never baked into the signed bytes as prose. v0.1 payloads used a bare string here; v0.2's payloadType version distinguishes the two shapes, so a consumer must branch on payloadType before parsing this field.
+ * A stable, language-neutral reference to reader-facing copy: a catalog key plus optional structured parameters. Rendered into prose by locale at read time (@mcpcheckup/checks' REASON_MESSAGES catalog, or checks.json for the no_baseline_reason special case) — never baked into the signed bytes as prose. v0.1 payloads used a bare string here; v0.2's payloadType version distinguishes the two shapes, so a consumer must branch on payloadType before parsing this field.
  */
 export type ReasonRef = null | {
   key: string;
@@ -177,7 +177,7 @@ export interface AssertionBase {
  */
 export interface AuthObservation {
   /**
-   * The challenge's auth-scheme, lowercased, e.g. 'bearer': one HTTP token (letters, digits and ! # $ % & ' * + - . ^ _ ` | ~), at most 64 characters.
+   * The challenge's auth-scheme, lowercased, e.g. 'bearer': one HTTP token (letters, digits and ! # $ % & ' * + - . ^ _ ` | ~), at most 64 characters. When the WWW-Authenticate value carries more than one challenge, scheme and param_names describe the first one in header order and no other.
    */
   scheme: string;
   /**
@@ -187,15 +187,19 @@ export interface AuthObservation {
    */
   param_names: string[];
   /**
-   * The resource_metadata URL the challenge named, recorded only when it is https, carries no userinfo, query or fragment, and is at most 512 characters long. null when the challenge named none, and also null when it named one that breaks any of those rules; resource_metadata_url_withheld tells the two apart.
+   * true when at least one of the challenge's auth-param names was left out of param_names: a name that, lowercased, is not 1 to 32 characters of a-z, 0-9, '_' and '-'; a name this package's credentialShapes() flags, as the challenge carries it or lowercased; or a name after the 16th in ascending code-point order. false when every name is listed. A name that appears more than once is listed once and does not count as left out.
+   */
+  param_names_truncated: boolean;
+  /**
+   * The resource_metadata URL the probe requested the RFC 9728 protected resource metadata document from: the value of the last quoted resource_metadata parameter in the WWW-Authenticate value, whichever challenge carries it, in the form WHATWG URL serialization gives it (new URL(value).href). Recorded only when that form is https, has a host of lowercase letters, digits, '.', '_' and '-' and at most a port after it, carries no userinfo, query or fragment, has a path of RFC 3986 path characters and well-formed percent-escapes only, is at most 512 characters long, and neither that form nor the value as the WWW-Authenticate value gives it has anything this package's credentialShapes() flags. null when the WWW-Authenticate value names none or an empty one, and also null when it names one that breaks any of those rules or is not a URL; resource_metadata_url_withheld tells the two apart.
    */
   resource_metadata_url: null | string;
   /**
-   * true when the challenge named a resource_metadata URL that was not recorded because it broke a rule stated under resource_metadata_url, which is then null. false otherwise.
+   * true when the WWW-Authenticate value named a resource_metadata URL that was not recorded because it is not a URL or broke a rule stated under resource_metadata_url, which is then null. false otherwise.
    */
   resource_metadata_url_withheld: boolean;
   /**
-   * sha256:<64 lowercase hex> over the exact bytes of the body of the HTTP 200 response to the request for the RFC 9728 protected resource metadata document, as the HTTP client delivered them: after any Content-Encoding is removed, before any character decoding or JSON parsing. The document itself is never recorded. null when no such response was received, which is always the case when the challenge named no resource_metadata URL.
+   * sha256:<64 lowercase hex> over the exact bytes of the body of the HTTP 200 response, after any redirects the probe followed, to its request for the RFC 9728 protected resource metadata document at the URL described under resource_metadata_url: the body as the probe's HTTP client returned it, which is after that client has removed any Content-Encoding it supports and before any character decoding or JSON parsing. Present whenever such a response was received, also when resource_metadata_url is withheld. The document itself is never recorded. null when no such response was received, which is always the case when no resource_metadata URL was named.
    */
   resource_metadata_body_digest: null | string;
 }

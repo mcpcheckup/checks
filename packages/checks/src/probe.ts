@@ -10,6 +10,7 @@ import type { ProbeContext } from './wire.ts'
 import { offeredRevision, performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'
 import type { CredentialChallenge } from './protocol.ts'
 import { judgeAuthMetadata, judgeAuthMetadataFromGate } from './auth.ts'
+import { authObservationOf, keepLastOkBody } from './auth-observation.ts'
 import { judgeErrorTaxonomy } from './error-taxonomy.ts'
 import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from './fingerprint.ts'
 import type { FingerprintVerdict } from './fingerprint.ts'
@@ -189,7 +190,10 @@ function judgeBaselineCheck(
  *  auth_metadata (the tools/call answer was not a 401: auth_no_challenge_observed,
  *  in auth.ts) and error_taxonomy (it was a 401/403: error_shape_not_observed,
  *  in error-taxonomy.ts). All three are SKIPPED/UNVERIFIED (see
- *  NOTHING_TO_OBSERVE_KEYS): there was nothing for the check to look at. */
+ *  NOTHING_TO_OBSERVE_KEYS): there was nothing for the check to look at.
+ *  Suite 0.14.0: a run stopped at a credential gate also returns
+ *  authObservation, the gate's challenge as an auth_gated attestation payload
+ *  records it (auth-observation.ts); no assertion changes. */
 export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   const { target, fetchImpl, budget, now, newId, approvedBaseline, provenance, registry } = input
 
@@ -212,6 +216,9 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   // whole signal ("this run stopped because the target asked us to come back
   // later"), so it must never be set speculatively anywhere else.
   let rateLimited: ProbeResult['rateLimited']
+  // Suite 0.14.0: set only on the credential-gated path, once auth_metadata has
+  // been judged from the gate's challenge.
+  let authObservation: ProbeResult['authObservation']
 
   const A: AssertionBuilder = (check_id, execution_status, assertion_status, reason = null) => {
     const assertion: Assertion = {
@@ -411,8 +418,13 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       if (gateChallenge) {
         // T86b: the gate's own 401 challenge is the input; only its reason
         // key/params reach the assertion, never the header itself.
-        const authVerdict = await judgeAuthMetadataFromGate({ fetchImpl, budget, ctx, challenge: gateChallenge })
+        // Suite 0.14.0: the same request on the same fetchImpl, which also keeps
+        // the metadata document's bytes, as sendRequest reads them, for
+        // auth_observation's digest.
+        const metadata = keepLastOkBody(fetchImpl)
+        const authVerdict = await judgeAuthMetadataFromGate({ fetchImpl: metadata.fetchImpl, budget, ctx, challenge: gateChallenge })
         A('auth_metadata', 'COMPLETED', authVerdict.status, authVerdict.status !== 'VERIFIED' ? authVerdict.reason : null)
+        authObservation = (await authObservationOf(gateChallenge, metadata.lastOkBody())) ?? undefined
       } else {
         A('auth_metadata', 'SKIPPED', 'UNVERIFIED', probeCallWithheld)
       }
@@ -563,6 +575,7 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       ...(toolSnapshot ? { toolSnapshot } : {}),
       ...(disqualifiedFromPublication ? { disqualifiedFromPublication } : {}),
       ...(rateLimited ? { rateLimited } : {}),
+      ...(authObservation ? { authObservation } : {}),
     }
   }
 }

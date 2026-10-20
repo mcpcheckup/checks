@@ -1,5 +1,5 @@
 import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
-import type { Assertion } from '@mcpcheckup/attestation-schema'
+import type { Assertion, AuthObservation } from '@mcpcheckup/attestation-schema'
 import type { ChecksRegistry } from './registry.ts'
 
 export type { ProbeBudget }
@@ -182,4 +182,13 @@ export interface ProbeResult {
    *  wire.ts's parseRetryAfterSeconds). Null means "come back later, unspecified
    *  when", never "come back immediately". */
   rateLimited?: { retryAfterSeconds: number | null }
+  /** Suite 0.14.0: present only when this run stopped at a credential gate (a
+   *  401 classifyCredentialChallenge accepted, on the handshake or on
+   *  tools/list) and auth_metadata was then judged from that gate's challenge:
+   *  the challenge as an 'auth_gated' attestation payload's auth_observation
+   *  records it (auth-observation.ts). Absent when the scheme is
+   *  credential-shaped, which nothing may record. Its presence says nothing
+   *  about whether the run may be signed; the payload builder decides that from
+   *  the assertions. */
+  authObservation?: AuthObservation
 }

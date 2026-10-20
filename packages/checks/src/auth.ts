@@ -161,8 +161,12 @@ const QUOTED_STRING_Y = /"(?:[\t \x21\x23-\x5B\x5D-\x7E\u0080-\uFFFF]|\\[\t \x21
  *  attestation field, classifyCredentialChallenge below rejects an
  *  over-length token outright (returns null, so the round falls through to
  *  its ordinary FAILED path) rather than truncating it and passing a
- *  mangled value through as if it were the real scheme. */
-const MAX_SCHEME_LEN = 64
+ *  mangled value through as if it were the real scheme.
+ *
+ *  Suite 0.14.0: exported because the attestation schema's
+ *  auth_observation.scheme states the same bound; auth-observation.test.ts
+ *  holds the two equal. */
+export const MAX_SCHEME_LEN = 64
 
 /** Advances past `OWS` / `BWS`. §5.6.3 spells both the same way and this is
  *  that clause's transcription (TCHAR_CLASS's map above points here):
@@ -445,6 +449,30 @@ export function classifyCredentialChallenge(status: number, headers: Headers): {
   const after = skipWs(value, end)
   if (after === value.length || value[after] === ',') return accepted
   return null
+}
+
+/** Suite 0.14.0: the auth-param names of the first challenge in a value
+ *  classifyCredentialChallenge accepted, in header order, delimited exactly as
+ *  that scanner delimits it: shape 3's comma-separated auth-params, up to the
+ *  first element that is not one (where a second challenge starts). Empty for
+ *  shapes 1 and 2, which have no auth-params. Names only, as written (not
+ *  lowercased); values are consumed and dropped. Zero IO, synchronous, so the
+ *  shared sticky regexes are safe here for the reason stated on TOKEN_Y. */
+export function firstChallengeParamNames(value: string): string[] {
+  const scheme = matchAt(TOKEN_Y, value, 0)
+  if (scheme === null || value[scheme.length] !== ' ') return []
+  const afterWs = skipWs(value, scheme.length)
+  if (afterWs === value.length || value[afterWs] === ',') return [] // shape 1 with list OWS
+  for (let k = scheme.length; k < afterWs; k++) if (value[k] !== ' ') return [] // not the 1*SP separator
+  const names: string[] = []
+  for (let i = afterWs; ;) {
+    const end = consumeAuthParam(value, i)
+    if (end < 0) return names // shape 2, or the start of a second challenge
+    names.push(matchAt(TOKEN_Y, value, i)!)
+    const k = skipWs(value, end)
+    if (k === value.length || value[k] !== ',') return names
+    i = skipWs(value, k + 1)
+  }
 }
 
 type Reason = { key: string; params?: Record<string, string | number> } | null

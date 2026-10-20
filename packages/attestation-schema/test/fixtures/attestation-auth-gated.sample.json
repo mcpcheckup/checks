@@ -58,6 +58,7 @@
   "auth_observation": {
     "scheme": "bearer",
     "param_names": ["realm", "resource_metadata"],
+    "param_names_truncated": false,
     "resource_metadata_url": "https://notes-mcp.example.com/.well-known/oauth-protected-resource",
     "resource_metadata_url_withheld": false,
     "resource_metadata_body_digest": "sha256:5636c76419a211c1efec547f90d889bf5ee7c42f3ad5b0defefd1703618833f2"

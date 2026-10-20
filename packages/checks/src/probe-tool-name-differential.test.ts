@@ -186,6 +186,12 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  frozen suites with each other; the 0.13.0 change itself is proved against frozen 0.12.0 by
  *  suite-0130-differential.test.ts.
  *
+ *  Suite 0.14.0 (auth-gated signing) re-pins the same two files to their 0.14.0 blob (git hash-object <path>):
+ *  checks.json (registry 0.13.0: registry_version, nothing else) and types.ts (ProbeResult gains the optional
+ *  authObservation, and its doc). Same type-only reach, so neither can alter what this differential computes.
+ *  This file compares frozen suites with each other; the 0.14.0 change is proved against frozen 0.13.0 by
+ *  suite-0140-differential.test.ts.
+ *
  *  Registry 0.10.0 re-pins checks.json alone (git hash-object at that change):
  *  redirect_policy's how_en/how_zh copy and its docs_version v0.2.0, nothing
  *  else; same type-only reach, so it cannot alter what this differential
@@ -199,26 +205,27 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  ProbeBudget type, and nothing they run calls guardedFetch, classifyIp or
  *  parseGuardedTarget. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
-  // Re-pinned for the attestation-schema v0.4 dispatch; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
+  // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
   'packages/attestation-schema/schema/attestation-payload-v0.3.json': 'e530a30f249389a72c1370c6d114bc0bd81ad66a',
-  'packages/attestation-schema/schema/attestation.schema.json': '3b0fa57284424bbf673675dfa75b425c7a2d6a9a',
-  'packages/attestation-schema/src/attestation.ts': '48e42071716e97f0eceab463935494a0c26d00da',
+  'packages/attestation-schema/schema/attestation.schema.json': 'c8a12527aad29cc7f26b68e8765bd4320cb18d3c',
+  'packages/attestation-schema/src/attestation.ts': '1dff1543b9d4890f17221ac5825dfe4fb9ea50b6',
+  'packages/attestation-schema/src/credential-shapes.ts': '4e1957c82d8797c7db68371a9770fac348a1fe8c',
   'packages/attestation-schema/src/dsse.ts': 'abc02f6c5e793b80c06bd825f2da79c72dfb3c08',
-  'packages/attestation-schema/src/generated-types.ts': '310edbdd089fb650fb08929be7e8f8aa33db6ade',
-  'packages/attestation-schema/src/index.ts': '0bcd8d1de2d8de7b2f4e41f2a26476497ae9793b',
+  'packages/attestation-schema/src/generated-types.ts': 'e255d176c73c5c30dd9ac07c0149f204be1b4df8',
+  'packages/attestation-schema/src/index.ts': 'dbe2f24752372c7b49b622474665080aba39754d',
   'packages/attestation-schema/src/invariants.ts': '78c4296f187921cf90b19686fe95fbfc61abba8e',
   'packages/canonicalizer/src/canonicalize.ts': '45e467e746de5fa2ba40cae72af915eafdceb27b',
   'packages/canonicalizer/src/digest.ts': '037a30ced41ba496f49b4b0643c181dd60c3bc68',
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '0af81aa42257da37e6f1ef5c108b415ab72e4f9e', // registry 0.12.0 (suite 0.13.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': '6702aefdc93b2f215537c3d5902a291b280c0c3f', // registry 0.13.0 (suite 0.14.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
   'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
-  'packages/checks/src/types.ts': 'c68dd7f4033b66dba1562be3014b5946fe65b948', // suite 0.13.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
+  'packages/checks/src/types.ts': '07c166df01ce8ac12aa29735c2867319a46e01cd', // suite 0.14.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
   'packages/checks/src/wire.ts': '73314f32dec3befcb82edfa8afa70e05223d16b6', // suite 0.11.0 re-pin (see above) — git hash-object packages/checks/src/wire.ts
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
