@@ -1122,23 +1122,26 @@ export const probeToolNameCollision: Fixture = {
   expectedAssertions: withOverrides(cleanBaselineAssertions(), probeCallWithheld('probe_tool_name_collision')),
 }
 
-export const probeToolNameUnverifiableNextCursor: Fixture = {
-  id: 'probe-tool-name-unverifiable-next-cursor',
+export const probeToolNameCollisionSecondPage: Fixture = {
+  id: 'probe-tool-name-collision-second-page',
   description:
-    '一个 modern 服务器：tools/list 的第一页只列出两个普通工具，并带 nextCursor；保留名的那个工具在后面的页里，调用它会真的执行。',
+    '一个 modern 服务器：tools/list 的第一页只列出两个普通工具，并带 nextCursor；第二页（cursor 为 page-2）列出保留名的那个工具，不再带 nextCursor。调用它会真的执行。',
   protocolRevision: '2026-07-28',
   kind: 'negative',
   guardsAgainst:
     PROBE_TOOL_NAME_GUARD_SHARED +
-    '本条钉住「清单不完整」一支（原因 probe_tool_name_unverifiable）：第一页没有同名不能证明整份清单没有，' +
-    '而我们不翻页（每轮请求数有公开上限）。第一页本身照常判定。',
-  tools: CLEAN_TOOLS,
+    '本条钉住「同名在后面的页里」一支：suite 0.15.0 起沿 nextCursor 读完全部页，第二页的同名照样判 probe_tool_name_collision，' +
+    '不发 tools/call；指纹与 hygiene 基于两页合起来的清单。（suite 0.14.0 及以前只读第一页，这里判 probe_tool_name_unverifiable。）',
+  tools: TOOLS_WITH_RESERVED_NAME,
   createHandler: () =>
     createModernHandler(TOOLS_WITH_RESERVED_NAME, {
-      toolsListResponse: (id) => jsonRpcResult(id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools: CLEAN_TOOLS, nextCursor: 'page-2' }),
+      toolsListResponse: (id, params) =>
+        (params as { cursor?: unknown } | undefined)?.cursor === 'page-2'
+          ? jsonRpcResult(id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools: TOOLS_WITH_RESERVED_NAME.slice(CLEAN_TOOLS.length) })
+          : jsonRpcResult(id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools: CLEAN_TOOLS, nextCursor: 'page-2' }),
     }),
   sampleRun: (handler) => modernSampleRun(handler),
-  expectedAssertions: withOverrides(cleanBaselineAssertions(), probeCallWithheld('probe_tool_name_unverifiable')),
+  expectedAssertions: withOverrides(cleanBaselineAssertions(), probeCallWithheld('probe_tool_name_collision')),
 }
 
 export const probeToolNameUnverifiableToolsListFailed: Fixture = {

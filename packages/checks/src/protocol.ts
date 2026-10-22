@@ -1,5 +1,6 @@
-import { sendRequest } from './wire.ts'
-import type { ProbeContext } from './wire.ts'
+import { BudgetExceeded } from '@mcpcheckup/ssrf-guard'
+import { ProbeAborted, sendRequest } from './wire.ts'
+import type { ProbeContext, WireResponse } from './wire.ts'
 import type { FetchLike, ProbeBudget } from './types.ts'
 import { classifyCredentialChallenge } from './auth.ts'
 
@@ -445,12 +446,23 @@ export interface ToolsListResult {
    *  UNVERIFIED — so on every cell it judges tools_list FAILED (and, unused,
    *  when the handshake itself was credential-gated). See toolsListFailure. */
   failure?: FailureReason<ToolsListFailureKey>
-  /** T86: present, as `true`, only on an `ok` list whose result carries a
-   *  `nextCursor` that is neither null nor undefined ("" and non-strings
-   *  count): `tools` may then be only the first page. We never fetch the
-   *  next one; probe.ts reads this to decide whether its reserved tool name
-   *  could be one of the server's tools. */
-  hasNextCursor?: true
+  /** Suite 0.15.0: present, as `true`, only on an `ok` list that was not read
+   *  to its end (see performToolsList). `tools` is then every tool on the
+   *  pages that were read. */
+  incomplete?: true
+}
+
+/** Suite 0.15.0: the most tools one run reads from tools/list. A list that is
+ *  longer, or that still has a further page once this many tools are in, is
+ *  incomplete (performToolsList). Since an incomplete list stores no tool
+ *  snapshot, it is also the most items a stored snapshot can hold. */
+export const MAX_TOOLS_LISTED = 5000
+
+/** The `nextCursor` of a tools/list result: undefined when there is no
+ *  further page (the key is absent, null or undefined). Any other value, ""
+ *  and non-strings included, says there is one, as T86 read it. */
+function nextCursorOf(result: Record<string, unknown>): unknown {
+  return Object.hasOwn(result, 'nextCursor') && result.nextCursor !== null ? result.nextCursor : undefined
 }
 
 /** Order: a challenge first — it vetoes `ok` whatever the body says (the body
@@ -476,14 +488,18 @@ export async function performToolsList(opts: {
   ctx: ProbeContext
   newId: () => string
   handshake: HandshakeResult
+  /** Suite 0.15.0: the most pages to read, the first included (the registry's
+   *  budget.max_tools_list_pages; probe.ts passes 1 where the list is not
+   *  used). */
+  maxPages: number
 }): Promise<ToolsListResult> {
-  const { fetchImpl, budget, ctx, newId, handshake } = opts
+  const { fetchImpl, budget, ctx, newId, handshake, maxPages } = opts
   const endpoint = handshake.currentEndpoint
 
-  const res =
+  const sendPage = (params: Record<string, unknown>, pageBudget: ProbeBudget) =>
     handshake.mode === 'modern'
-      ? await sendModern(fetchImpl, endpoint, budget, ctx, 'tools/list', newId(), {}, handshake.protocolVersionDeclared ?? MODERN_PROBE_VERSION)
-      : await sendRequest(
+      ? sendModern(fetchImpl, endpoint, pageBudget, ctx, 'tools/list', newId(), params, handshake.protocolVersionDeclared ?? MODERN_PROBE_VERSION)
+      : sendRequest(
           fetchImpl,
           endpoint,
           {
@@ -492,11 +508,13 @@ export async function performToolsList(opts: {
               'mcp-protocol-version': handshake.protocolVersionDeclared ?? LEGACY_PROBE_VERSION,
               ...(handshake.sessionId ? { 'mcp-session-id': handshake.sessionId } : {}),
             }),
-            body: JSON.stringify({ jsonrpc: '2.0', id: newId(), method: 'tools/list', params: {} }),
+            body: JSON.stringify({ jsonrpc: '2.0', id: newId(), method: 'tools/list', params }),
           },
-          budget,
+          pageBudget,
           ctx,
         )
+
+  const res = await sendPage({}, budget)
 
   // Codex PR#19 P2 (round 9): classify the credential
   // challenge from status + headers BEFORE the body is looked at, and let it
@@ -530,15 +548,86 @@ export async function performToolsList(opts: {
   const result = parsed.isJsonRpc ? (parsed.result as Record<string, unknown> | undefined) : undefined
   const tools = result?.tools
   const ok = Array.isArray(tools) && challenge === null
-  // T86: `ok` implies `result` is the object `tools` was read from.
-  const hasNextCursor = ok && Object.hasOwn(result!, 'nextCursor') && result!.nextCursor !== null && result!.nextCursor !== undefined
+  if (!ok) {
+    return {
+      ok,
+      tools: null,
+      currentEndpoint: res.finalUrl,
+      ...(challenge ? { credentialChallenge: challenge } : {}),
+      ...toolsListFailure(ok, challenge, handshake.handshakeOk, res.status, parsed),
+    }
+  }
+
+  // Suite 0.15.0: follow nextCursor. The first page above is judged and
+  // budgeted exactly as before; the pages after it only decide whether the
+  // list is complete. It is incomplete when a further page exists but is not
+  // read: maxPages pages are in, MAX_TOOLS_LISTED tools are in, the cursor is
+  // not a string, or the page cannot be read (it ran out of the run's time,
+  // its request or its response went over the body size, or it is not a
+  // readable tools result: a challenge, a non-JSON-RPC body, an error, no tools
+  // array). The time and body limits are enforced twice, by wire.ts
+  // (ProbeAborted) and, in production, first by @mcpcheckup/ssrf-guard
+  // (BudgetExceeded, by its code): both mean the same here. It is also incomplete when
+  // more than MAX_TOOLS_LISTED tools came in; only the first MAX_TOOLS_LISTED of
+  // them are kept (a page is cut at the allowance left). None of these ends
+  // the run.
+  // A further page goes to the same endpoint with the same headers and is not
+  // counted against budget.maxRequests: ctx.requestCount is put back after it
+  // (a POST is one request, never redirected). The run's time budget and the
+  // per-response body limit hold for every page. Anything else a page throws
+  // (the server asking us to back off, a guard refusal, a failed connection)
+  // ends the run, as it would on any other request.
+  // `ok` implies `result` is the object `tools` was read from.
+  const all: unknown[] = []
+  let incomplete = false
+  const keep = (pageTools: readonly unknown[]) => {
+    const room = MAX_TOOLS_LISTED - all.length
+    if (pageTools.length > room) incomplete = true
+    all.push(...pageTools.slice(0, room))
+  }
+  keep(tools as unknown[])
+  let cursor = nextCursorOf(result!)
+  let pages = 1
+  while (cursor !== undefined) {
+    if (pages >= maxPages || all.length >= MAX_TOOLS_LISTED || typeof cursor !== 'string') {
+      incomplete = true
+      break
+    }
+    const page = await readFurtherPage(cursor)
+    if (page === null) {
+      incomplete = true
+      break
+    }
+    pages++
+    keep(page.tools)
+    cursor = page.cursor
+  }
+
   return {
     ok,
-    tools: ok ? (tools as unknown[]) : null,
+    tools: all,
     currentEndpoint: res.finalUrl,
-    ...(challenge ? { credentialChallenge: challenge } : {}),
-    ...toolsListFailure(ok, challenge, handshake.handshakeOk, res.status, parsed),
-    ...(hasNextCursor ? { hasNextCursor: true as const } : {}),
+    ...(incomplete ? { incomplete: true as const } : {}),
+  }
+
+  /** One further page, or null when it cannot be read (see above). */
+  async function readFurtherPage(pageCursor: string): Promise<{ tools: unknown[]; cursor: unknown } | null> {
+    const counted = ctx.requestCount
+    let pageRes: WireResponse
+    try {
+      pageRes = await sendPage({ cursor: pageCursor }, { ...budget, maxRequests: Number.MAX_SAFE_INTEGER })
+    } catch (e) {
+      if ((e instanceof ProbeAborted || e instanceof BudgetExceeded) && (e.code === 'MAX_DURATION' || e.code === 'MAX_BODY_BYTES')) return null
+      throw e
+    } finally {
+      ctx.requestCount = counted
+    }
+    if (gateChallenge(pageRes.status, pageRes.headers) !== null) return null
+    const pageParsed = parseJsonRpcBody(pageRes.bodyText, pageRes.headers.get('content-type'))
+    const pageResult = pageParsed.isJsonRpc ? (pageParsed.result as Record<string, unknown> | undefined) : undefined
+    const pageTools = pageResult?.tools
+    if (!Array.isArray(pageTools)) return null
+    return { tools: pageTools, cursor: nextCursorOf(pageResult!) }
   }
 }
 

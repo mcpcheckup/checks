@@ -233,7 +233,7 @@ export function cleanBaselineWith401ToolsCall(): ExpectedAssertion[] {
 export interface ModernHandlerOptions {
   protocolVersion?: string
   discoverResponse?: (id: unknown) => Response
-  toolsListResponse?: (id: unknown) => Response
+  toolsListResponse?: (id: unknown, params: unknown) => Response
   toolsCallResponse?: (id: unknown, name: unknown) => Response
   onOtherPath?: (call: Awaited<ReturnType<typeof parseJsonRpcCall>>) => Response | undefined
 }
@@ -258,7 +258,7 @@ export function createModernHandler(tools: unknown[], opts: ModernHandlerOptions
           })
         )
       case 'tools/list':
-        return opts.toolsListResponse?.(call.id) ?? jsonRpcResult(call.id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools })
+        return opts.toolsListResponse?.(call.id, call.params) ?? jsonRpcResult(call.id, { resultType: 'complete', ttlMs: 60_000, cacheScope: 'public', tools })
       case 'tools/call': {
         const name = (call.params as { name?: unknown } | undefined)?.name
         if (opts.toolsCallResponse) return opts.toolsCallResponse(call.id, name)
@@ -317,7 +317,7 @@ export async function modernSampleRun(
 export interface LegacyHandlerOptions {
   protocolVersion?: string
   discoverProbeResponse?: (id: unknown) => Response
-  toolsListResponse?: (id: unknown) => Response
+  toolsListResponse?: (id: unknown, params: unknown) => Response
   /** Task Y: models a real, spec-compliant legacy server (observed at
    *  mcp.deepwiki.com/mcp) that enforces transports.md's Streamable HTTP §"Sending
    *  Messages to the Server" step 2 — "The client MUST include an Accept header,
@@ -422,7 +422,7 @@ export function createLegacyHandler(tools: unknown[], opts: LegacyHandlerOptions
         if (!opts.omitSessionId && (!sessionInitialized || call.headers.get('mcp-session-id') !== FIXED_SESSION_ID)) {
           return jsonRpcError(call.id, -32000, 'Session not initialized', { status: 400 })
         }
-        if (opts.toolsListResponse) return opts.toolsListResponse(call.id)
+        if (opts.toolsListResponse) return opts.toolsListResponse(call.id, call.params)
         return respondToRequest({ jsonrpc: '2.0', id: call.id, result: { tools } }, { sse: !!opts.sseFramedResponses })
       }
       case 'tools/call': {

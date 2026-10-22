@@ -48,6 +48,8 @@ import type { ProbeBudget } from '@mcpcheckup/ssrf-guard'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { withoutAuthObservation } from './suite-0140-remap.ts'
+import { pagedToolsList, recordSuite0150, suite0150Remap } from './suite-0150-remap.ts'
+import type { Suite0150Observed } from './suite-0150-remap.ts'
 import { runProbe as frozen0130RunProbe } from './frozen/suite-0.13.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.13.0/src/other-host-declined.ts'
@@ -251,6 +253,8 @@ interface Run {
   threw: boolean
   /** The last request's method, status and body bytes, as the target answered it (null if it threw). */
   last: { method: string; status: number; body: Uint8Array } | null
+  /** Suite 0.15.0: what suite0150Remap reads off this run's transport. */
+  observed: Suite0150Observed
 }
 
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant): Promise<Run> {
@@ -294,10 +298,11 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     }
     return keep(method, await handler(input, init))
   }
+  const recorder = recordSuite0150(fetchImpl)
   let seq = 0
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl,
+    fetchImpl: recorder.fetchImpl,
     budget: v.budget,
     now: () => '2026-10-20T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -306,7 +311,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
   await Promise.all(answered)
-  return { result, requests, threw, last }
+  return { result, requests, threw, last, observed: recorder.observed() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -371,13 +376,15 @@ const started = Date.now()
 const sha256Ref = (bytes: Uint8Array) => 'sha256:' + createHash('sha256').update(bytes).digest('hex')
 
 /** What the inputs reached, counted so the test below can say the input set is not vacuous. */
-const seen = { runs: 0, observed: 0, gatedNotObserved: 0, digest: 0, noDigest: 0, url: 0, withheld: 0, thrown: new Map<string, number>(), notReached: 0 }
+const seen = { paged: 0, runs: 0, observed: 0, gatedNotObserved: 0, digest: 0, noDigest: 0, url: 0, withheld: 0, thrown: new Map<string, number>(), notReached: 0 }
 
 /** Both runs of one input, compared. */
 function compare(id: string, now: Run, old: Run) {
+  // Suite 0.15.0: a run whose tools/list paged is set aside (counted below); suite-0150-differential.test.ts proves it.
+  if (pagedToolsList(now.requests)) { seen.paged++; return }
   seen.runs++
   if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
-  if (!identical(withoutAuthObservation(now.result), old.result)) {
+  if (!identical(withoutAuthObservation(now.result), suite0150Remap(old.result, old.observed))) {
     violation(id, `ProbeResult without authObservation is not 0.13.0's\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(old.result).slice(0, 400)}`)
   }
   const keys = Object.keys(now.result)
@@ -429,7 +436,7 @@ for (const fixture of FIXTURE_CORPUS) {
       try {
         const now = await runOnce(runProbe, fixture.createHandler, { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make } })
         const old = await runOnce(frozen0130RunProbe, fixture.createHandler, { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make: makeFrozen } })
-        if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
+        if (!pagedToolsList(now.requests) && now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
         if (!now.threw) seen.notReached++
         else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
         compare(id, now, old)
@@ -442,6 +449,7 @@ for (const fixture of FIXTURE_CORPUS) {
 
 console.log(`  A: ${FIXTURE_CORPUS.length} fixtures × ${[...variants()].length} variants = ${totalA}`)
 console.log(`  B: ${FIXTURE_CORPUS.length} fixtures × ${DEFAULT_PROBE_BUDGET.maxRequests} positions × ${ERRORS.length} errors = ${totalB} (request reached: ${totalB - seen.notReached}; not reached: ${seen.notReached})`)
+console.log(`  set aside, tools/list paged (suite 0.15.0): ${seen.paged}`)
 console.log(`  authObservation recorded: ${seen.observed} (body digest ${seen.digest}, none ${seen.noDigest}; url recorded ${seen.url}, withheld ${seen.withheld}); credential_required without it: ${seen.gatedNotObserved}`)
 console.log(`  ${((Date.now() - started) / 1000).toFixed(1)}s`)
 

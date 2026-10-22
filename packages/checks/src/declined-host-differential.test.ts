@@ -60,6 +60,8 @@ import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0
 // Suite 0.14.0: the live result's authObservation is set aside before every comparison with the frozen result
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
+import { pagedToolsList, recordSuite0150, suite0150Remap } from './suite-0150-remap.ts'
+import type { Suite0150Observed } from './suite-0150-remap.ts'
 import { runProbe as frozen0100RunProbe } from './frozen/suite-0.10.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
@@ -260,7 +262,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number } }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0150Observed }
 
 /** `live`: the implementation's request sequence for the same input, for 0.10.0's offerAsLive (suite 0.13.0); omitted on the implementation's own run. */
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
@@ -297,9 +299,11 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
   const offer = offerAsLive(recorded.fetchImpl, live)
+  // Suite 0.15.0: what suite0150Remap reads off this run's transport.
+  const suite0150 = recordSuite0150(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl: offer.fetchImpl,
+    fetchImpl: suite0150.fetchImpl,
     budget: v.budget,
     now: () => '2026-09-25T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -307,7 +311,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus(), substituted: offer.substituted() }
+  return { result, requests, threw, toolsCallStatus: recorded.toolsCallStatus(), substituted: offer.substituted(), observed: suite0150.observed() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -387,6 +391,7 @@ function violation(id: string, what: string) {
 const started = Date.now()
 
 let totalA = 0, totalB = 0
+let pagedSetAside = 0
 const seen = { crossHostGets: 0, thrown: new Map<string, number>(), notReached: 0, remappedRows: 0, declinedBeforeHandshake: 0, declinedAfterHandshake: 0 }
 
 for (const fixture of FIXTURE_CORPUS) {
@@ -396,7 +401,9 @@ for (const fixture of FIXTURE_CORPUS) {
     try {
       const now = await runOnce(runProbe, fixture.createHandler, v)
       const old = await runOnce(frozen0100RunProbe, fixture.createHandler, v, now.requests)
-      const want = suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests)
+      // Suite 0.15.0: a run whose tools/list paged is set aside (counted); suite-0150-differential.test.ts proves it.
+      if (pagedToolsList(now.requests)) { pagedSetAside++; continue }
+      const want = suite0150Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed)
       const offerProblem = offerSubstitutionProblem(old.result, old.substituted)
       if (offerProblem) violation(id, offerProblem)
       if (!identical(withoutAuthObservation(now.result), want)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
@@ -417,13 +424,15 @@ for (const fixture of FIXTURE_CORPUS) {
       try {
         const now = await runOnce(runProbe, fixture.createHandler, v)
         const old = await runOnce(frozen0100RunProbe, fixture.createHandler, v, now.requests)
+        // Suite 0.15.0: a run whose tools/list paged is set aside (counted); suite-0150-differential.test.ts proves it.
+        if (pagedToolsList(now.requests)) { pagedSetAside++; continue }
         if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
         const offerProblem = offerSubstitutionProblem(old.result, old.substituted)
         if (offerProblem) violation(id, offerProblem)
         if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
         if (!now.threw) { seen.notReached++ }
         else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
-        const expected = suite0130Remap(suite0120Remap(now.threw && remaps ? remapped(old.result) : old.result, old.toolsCallStatus), old.requests)
+        const expected = suite0150Remap(suite0130Remap(suite0120Remap(now.threw && remaps ? remapped(old.result) : old.result, old.toolsCallStatus), old.requests), old.observed)
         if (!identical(withoutAuthObservation(now.result), expected)) violation(id, `ProbeResult is not 0.10.0's ${remaps && now.threw ? 'with the one remap' : 'unchanged'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
         if (now.threw && remaps) {
           const rows = now.result.assertions.filter((a) => identical(a.reason, DECLINED))
@@ -442,7 +451,7 @@ for (const fixture of FIXTURE_CORPUS) {
   }
 }
 
-console.log(`  A: ${FIXTURE_CORPUS.length} fixtures × ${[...variants()].length} variants = ${totalA} (runs with a cross-host GET hop: ${seen.crossHostGets})`)
+console.log(`  A: ${FIXTURE_CORPUS.length} fixtures × ${[...variants()].length} variants = ${totalA} (runs with a cross-host GET hop: ${seen.crossHostGets}); set aside, tools/list paged (suite 0.15.0, A + B): ${pagedSetAside}`)
 console.log(`  B: ${FIXTURE_CORPUS.length} fixtures × ${DEFAULT_PROBE_BUDGET.maxRequests} positions × ${ERRORS.length} errors = ${totalB} (request reached: ${totalB - seen.notReached}; not reached: ${seen.notReached}); rows remapped: ${seen.remappedRows}; OtherHostDeclined before the handshake ${seen.declinedBeforeHandshake}, after it ${seen.declinedAfterHandshake}; ${((Date.now() - started) / 1000).toFixed(1)}s`)
 
 await t(`0.11.0 vs frozen 0.10.0: identical off the OtherHostDeclined path, and on it differs only by probe_declined_other_host: all ${totalA + totalB} inputs`, () => {

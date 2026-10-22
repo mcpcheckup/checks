@@ -59,6 +59,8 @@ import { LEGACY_OFFER_0130, LEGACY_OFFER_BEFORE_0130, MODERN_OFFER, offerAsLive,
 // Suite 0.14.0: the live result's authObservation is set aside before every comparison with the frozen result
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
+import { pagedToolsList, recordSuite0150, suite0150Remap } from './suite-0150-remap.ts'
+import type { Suite0150Observed } from './suite-0150-remap.ts'
 import { runProbe as frozen0120RunProbe } from './frozen/suite-0.12.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.12.0/src/other-host-declined.ts'
@@ -252,7 +254,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; substituted: { body: number; header: number } }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; substituted: { body: number; header: number }; observed: Suite0150Observed }
 
 /** `live`: the implementation's request sequence for the same input, for the frozen run's offerAsLive; omitted on the implementation's own run. */
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
@@ -288,9 +290,11 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   }
   let seq = 0
   const offer = offerAsLive(fetchImpl, live)
+  // Suite 0.15.0: what suite0150Remap reads off this run's transport.
+  const suite0150 = recordSuite0150(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
-    fetchImpl: offer.fetchImpl,
+    fetchImpl: suite0150.fetchImpl,
     budget: v.budget,
     now: () => '2026-10-14T00:00:00.000Z',
     newId: () => `probe-${++seq}`,
@@ -298,7 +302,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, threw, substituted: offer.substituted() }
+  return { result, requests, threw, substituted: offer.substituted(), observed: suite0150.observed() }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -403,7 +407,7 @@ function compare(id: string, now: Run, old: Run) {
   if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs (after the offer translation)')
   const problem = offerSubstitutionProblem(old.result, old.substituted)
   if (problem) violation(id, problem)
-  const want = suite0130Remap(old.result, old.requests)
+  const want = suite0150Remap(suite0130Remap(old.result, old.requests), old.observed)
   if (!identical(withoutAuthObservation(now.result), want)) {
     violation(id, `ProbeResult is not 0.12.0's with probeOfferedRevision and nothing else\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
   }
@@ -411,6 +415,7 @@ function compare(id: string, now: Run, old: Run) {
 }
 
 let totalA = 0, totalB = 0
+let pagedSetAside = 0
 
 for (const fixture of FIXTURE_CORPUS) {
   for (const [label, v] of variants()) {
@@ -419,6 +424,8 @@ for (const fixture of FIXTURE_CORPUS) {
     try {
       const now = await runOnce(runProbe, fixture.createHandler, v)
       const old = await runOnce(frozen0120RunProbe, fixture.createHandler, v, now.requests)
+      // Suite 0.15.0: a run whose tools/list paged is set aside (counted); suite-0150-differential.test.ts proves it.
+      if (pagedToolsList(now.requests)) { pagedSetAside++; continue }
       compare(id, now, old)
     } catch (e) {
       violation(id, `threw ${(e as Error).message}`)
@@ -436,6 +443,8 @@ for (const fixture of FIXTURE_CORPUS) {
       try {
         const now = await runOnce(runProbe, fixture.createHandler, v)
         const old = await runOnce(frozen0120RunProbe, fixture.createHandler, vFrozen, now.requests)
+        // Suite 0.15.0: a run whose tools/list paged is set aside (counted); suite-0150-differential.test.ts proves it.
+        if (pagedToolsList(now.requests)) { pagedSetAside++; continue }
         if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
         if (!now.threw) seen.notReached++
         else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
@@ -447,7 +456,7 @@ for (const fixture of FIXTURE_CORPUS) {
   }
 }
 
-console.log(`  A: ${FIXTURE_CORPUS.length} fixtures × ${[...variants()].length} variants = ${totalA}`)
+console.log(`  A: ${FIXTURE_CORPUS.length} fixtures × ${[...variants()].length} variants = ${totalA}; set aside, tools/list paged (suite 0.15.0, A + B): ${pagedSetAside}`)
 console.log(`  B: ${FIXTURE_CORPUS.length} fixtures × ${DEFAULT_PROBE_BUDGET.maxRequests} positions × ${ERRORS.length} errors = ${totalB} (request reached: ${totalB - seen.notReached}; not reached: ${seen.notReached})`)
 console.log(`  frozen requests handed over with the new offer: in the initialize body ${seen.bodySubstituted}, in the mcp-protocol-version header ${seen.headerSubstituted}`)
 console.log(`  probeOfferedRevision (value: runs): ${[...seen.offered].sort().map(([k, n]) => `${k}: ${n}`).join(', ')}`)

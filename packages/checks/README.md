@@ -58,6 +58,33 @@ handful of wire calls, and several checks read from the same call:
    is structurally illegal, all three of those — plus the two baseline-comparison
    checks below — become `SKIPPED`/`UNVERIFIED`, because there's no usable tool data
    to compute anything from.
+   Since suite 0.15.0 the list is read to its end: while a page carries a `nextCursor`,
+   the next page is requested with that cursor, up to `checks.json`'s
+   `budget.max_tools_list_pages` (10) pages or `MAX_TOOLS_LISTED` (5,000) tools in
+   all, whichever comes first. The first page is sent and judged exactly as before.
+   Pages 2 and later are not counted against `max_requests`; the run's time budget
+   and the body limit hold for each of them, on the request and on the response. The
+   list is *incomplete* when a further page exists but is not read (the page or tool
+   limit is reached, the cursor is not a string, or the page runs out of time, its
+   request or its response goes over the body limit, or it is not a readable tools
+   result) or when more than 5,000 tools came in (only the first 5,000 are kept: a
+   page is cut at the allowance left). None of these ends the run: the time and body
+   limits end only the paging, whichever layer enforces them (wire.ts's
+   `ProbeAborted`, or, first in production, `@mcpcheckup/ssrf-guard`'s
+   `BudgetExceeded`, matched by its code). On an incomplete list `tools_list` is still judged on the
+   first page; `toolset_fingerprint`, `schema_fingerprint` and both baseline checks
+   are `SKIPPED`/`UNVERIFIED` with `tools_list_incomplete`, and no `toolSnapshot` is
+   returned; `tool_description_hygiene` still judges the tools that came in, but a
+   clean result is `COMPLETED`/`UNVERIFIED` with `tools_list_incomplete` instead of
+   `VERIFIED`, because the tools not read were not looked at; and the `tools/call` of
+   step 5 is not sent, since the reserved name could be on a page we did not read
+   (`error_taxonomy` and `auth_metadata` are `SKIPPED`/`UNVERIFIED` with
+   `probe_tool_name_unverifiable`, or `probe_tool_name_collision` when a page we did
+   read names it). A response
+   on a later page that ends the run for any other reason (the server asking us to
+   back off, a guard refusal, a failed connection) ends it as on any other request.
+   Behind a handshake-layer credential gate the list is not used, so only its first
+   page is read.
 4. **`toolset_unchanged_vs_approved`** / **`schema_unchanged_vs_approved`** compare the
    fingerprints above against `input.approvedBaseline`. No baseline → both are always
    `SKIPPED`/`UNVERIFIED` with `checks.json`'s own `no_baseline_reason_zh` (read from
@@ -80,9 +107,11 @@ handful of wire calls, and several checks read from the same call:
    and its metadata checked out. Both are `SKIPPED`, not `COMPLETED`, like
    `latency_profile` and `tls_certificate`: there was nothing for the check to look at.
    The name is reserved for a tool that should not exist, but a
-   server can define it, so outside a credential gate the call is withheld when the
-   first `tools/list` page names it, when the list carries a `nextCursor`, or when
-   `tools/list` failed; both checks are then `SKIPPED`/`UNVERIFIED`. Under a credential
+   server can define it, so outside a credential gate the call is withheld when a
+   `tools/list` page we read names it, when the list was not read to its end (step 3),
+   or when `tools/list` failed; both checks are then `SKIPPED`/`UNVERIFIED`. (Up to
+   suite 0.14.0, which read only the first page, a `nextCursor` on it withheld the
+   call the same way.) Under a credential
    gate (a 401 challenge on the handshake or on `tools/list`, see "Why a
    credential-gated handshake or tools/list is UNVERIFIED" below) the call is not sent,
    whatever the list says: `error_taxonomy` is then `SKIPPED`/`UNVERIFIED` with
@@ -144,7 +173,9 @@ package (which enforces them again at the request-count/body-size/duration level
 since a plain injected `fetchImpl` returning a bare `Response` gives this package no
 other way to know a limit was hit). This package does not itself read `checks.json`'s
 `budget` field or cross-check it against `input.budget` — keeping the two numbers in
-sync is the caller's responsibility. Both currently use the same numbers by
+sync is the caller's responsibility. The one exception is
+`max_tools_list_pages` (suite 0.15.0), which `ProbeBudget` has no field for:
+`runProbe` reads it from `input.registry`. Both currently use the same numbers by
 construction (`checks.json`'s budget and `@mcpcheckup/ssrf-guard`'s
 `DEFAULT_PROBE_BUDGET` are identical), but nothing in this package enforces that they
 stay that way.
@@ -153,7 +184,10 @@ All budget accounting — request count, wall-clock duration, redirect hop count
 response body size — happens in exactly one place: `wire.ts`'s `sendRequest`, called by
 every wire operation in this package. No individual check re-implements any of it.
 This is what "the budget is global, not per-check" (8 requests total for the *whole
-run*, not 8 per check) actually means in the code, not just in the doc comment.
+run*, not 8 per check) actually means in the code, not just in the doc comment. Since
+suite 0.15.0 the further `tools/list` pages (at most 9) are sent on top of those 8:
+`performToolsList` puts the request count back after each of them, and sends each with
+the run's own deadline and body limit.
 
 Each request is given only the time left in the run's duration budget. If the probe's
 own deadline timer fires while a request, or the reading of its response, is still in
@@ -239,16 +273,29 @@ throws, before any request, when it declines to contact a host other than the
 endpoint's — a redirect hop or a `resource_metadata` URL on another host. It gives
 `probe_declined_other_host` (no params) to `reachability`, when not yet settled, and to
 every never-ran check, in both columns. The reason names neither the host nor why it
-was declined. Like any abort, it ends the run: `redirect_policy` is among the checks
-that never ran, even when the declined hop was a cross-host redirect.
+was declined. Like any abort, it ends the run.
+
+One check is not left to the cascade once its observation is in. Since suite 0.15.0,
+when a cross-host redirect was seen before the abort, `redirect_policy` is
+`COMPLETED`/`OBSERVED_RISK` with `redirect_cross_host_observed`, as on a run that
+finishes, whatever ended the run afterwards: another host declined
+(`OtherHostDeclined`), a guard refusal, the redirect, request or time budget, or the
+server asking us to back off (`429`, or `503` with `Retry-After`). The hop that goes
+over the redirect budget counts: `wire.ts` reads its `Location` and records a
+cross-host one before it stops. The other never-ran checks stay `SKIPPED`/`UNVERIFIED`
+with the abort's reason, never `FAILED`. Up to suite 0.14.0, `redirect_policy` took
+the abort's reason too, even after a cross-host hop.
 
 The params are only `kind`, `code` or a budget number: the error's message and cause
 reach no assertion, no stored row and no signed payload. Any other thrown error — for
 example one of the prober's own wrapper errors — keeps the generic
 `probe_cascade_incomplete` on the cascade, and only `reachability` carries
-`probe_aborted` with the error's message: that message is an unbounded string, and
-copying it onto all thirteen never-ran checks would inflate a canonicalized, signed
-payload without adding information.
+`probe_aborted`. Since suite 0.15.0 its params are `{ error_class }` only: the name of
+the thrown value's constructor (e.g. `TypeError`); `unknown` when that name cannot be
+read or is not a JavaScript identifier of at most 64 characters; `null` or `undefined`
+when that was thrown. The error's message is never read.
+Up to suite 0.14.0 they were `{ message }`, the error's message, which is unbounded
+text; `reason-messages.ts` still renders those rows as they were.
 
 The reasoning: "we verified the protocol handshake, then ran out of budget" is a
 coherent, honest statement — the four-state model exists specifically to let a report

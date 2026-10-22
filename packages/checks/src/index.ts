@@ -5,6 +5,7 @@ export { CHECKS_REGISTRY, getCheckIds, isKnownCheckId, getCheckDefinition } from
 export type { ChecksRegistry, CheckDefinition } from './registry.ts'
 
 export { runProbe } from './probe.ts'
+export { MAX_TOOLS_LISTED } from './protocol.ts'
 export { OtherHostDeclined } from './other-host-declined.ts'
 export type {
   ProbeInput,

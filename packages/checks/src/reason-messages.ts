@@ -70,9 +70,26 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     en: () => 'A cross-host redirect was observed during this probe.',
     zh: () => '探测过程中观察到跨主机重定向',
   },
+  // Two shapes. Suite 0.15.0 writes { error_class } (the thrown error's class,
+  // e.g. TypeError, never its message). Rows written up to suite 0.14.0 carry
+  // { message } and keep rendering exactly as they always did. Both params are
+  // read before either is used, so a consumer that derives the read set from
+  // these renderers sees both names.
   probe_aborted: {
-    en: (p) => `This run was aborted before completing (budget exceeded or an error occurred) — later checks did not run: ${requireParam(p, 'message')}`,
-    zh: (p) => `本次 run 因预算耗尽或探测中止而未能完整完成，后续检查未执行：${requireParam(p, 'message')}`,
+    en: (p) => {
+      const errorClass = optionalParam(p, 'error_class')
+      const message = optionalParam(p, 'message')
+      return errorClass !== undefined
+        ? `This run stopped on an error in our probe (${errorClass}) before it finished — later checks did not run.`
+        : `This run was aborted before completing (budget exceeded or an error occurred) — later checks did not run: ${message ?? requireParam(p, 'message')}`
+    },
+    zh: (p) => {
+      const errorClass = optionalParam(p, 'error_class')
+      const message = optionalParam(p, 'message')
+      return errorClass !== undefined
+        ? `本次 run 在完成前因我们探测器内部的错误（${errorClass}）而停止——后续检查未执行。`
+        : `本次 run 因预算耗尽或探测中止而未能完整完成，后续检查未执行：${message ?? requireParam(p, 'message')}`
+    },
   },
   probe_cascade_incomplete: {
     en: () => 'This run was aborted before completing (budget exceeded or an error occurred) — this check did not run.',
@@ -347,6 +364,15 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     en: () => 'Your server lists a tool with the exact name our probe reserves for a tool that should not exist, so we did not send that call, and nothing that depends on it was observed.',
     zh: () => '服务器的工具列表里有一个与我们探测用的「不应存在的工具」同名的工具，因此我们没有发送这次调用，依赖它的观测都没有进行。',
   },
+  // Suite 0.15.0: tools/list was not read to its end (more than 10 pages or
+  // 5,000 tools, or a later page that could not be read). No params.
+  tools_list_incomplete: {
+    en: () => "We could not read your server's whole tool list in this run (it was longer than 10 pages or 5,000 tools, or a later page could not be read), so nothing that depends on the whole list is recorded as verified.",
+    zh: () => '本次 run 没能读完该服务器的完整工具列表（超过 10 页或 5,000 个工具，或后面某一页读不出来），因此依赖完整列表的结论都不记为已验证。',
+  },
+  // T86: produced when tools/list failed, or when the list was not read to its
+  // end (suite 0.15.0: tools_list_incomplete; up to suite 0.14.0, which read
+  // the first page only, a nextCursor on it). No params.
   probe_tool_name_unverifiable: {
     en: () => "We could not see your server's full tool list, so we could not rule out that it has a tool with the name our probe reserves, and did not send that call; nothing that depends on it was observed.",
     zh: () => '我们没能看到完整的工具列表，无法排除其中有与探测保留名同名的工具，因此没有发送这次调用，依赖它的观测都没有进行。',

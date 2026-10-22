@@ -107,6 +107,24 @@ function guardErrorReason(e: unknown, budget: ProbeInput['budget'], reachability
   return undefined
 }
 
+/** Shape an error class name must have to enter params: a JavaScript
+ *  identifier, at most 64 characters. */
+const ERROR_CLASS_SHAPE = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
+
+/** Suite 0.15.0 (probe_aborted): the class of a thrown value, by its
+ *  constructor's name (e.g. TypeError), never by its message or its `name`
+ *  property. A name of another shape, or one that cannot be read, is
+ *  'unknown'; a thrown null or undefined is that word. */
+function errorClassOf(e: unknown): string {
+  if (e === null || e === undefined) return String(e)
+  try {
+    const name: unknown = (Object(e) as { constructor?: { name?: unknown } }).constructor?.name
+    return typeof name === 'string' && ERROR_CLASS_SHAPE.test(name) ? name : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
 function docsVersionFor(registry: ChecksRegistry, checkId: string): string {
   return registry.checks.find((c) => c.check_id === checkId)?.docs_version ?? 'unknown'
 }
@@ -193,7 +211,12 @@ function judgeBaselineCheck(
  *  NOTHING_TO_OBSERVE_KEYS): there was nothing for the check to look at.
  *  Suite 0.14.0: a run stopped at a credential gate also returns
  *  authObservation, the gate's challenge as an auth_gated attestation payload
- *  records it (auth-observation.ts); no assertion changes. */
+ *  records it (auth-observation.ts); no assertion changes.
+ *  Suite 0.15.0: tools/list follows nextCursor; a list not read to its end
+ *  records tools_list_incomplete instead of anything VERIFIED it could
+ *  change, and no toolSnapshot. A cross-host redirect seen before an abort
+ *  is still recorded by redirect_policy, and probe_aborted carries the
+ *  error's class, never its message. */
 export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   const { target, fetchImpl, budget, now, newId, approvedBaseline, provenance, registry } = input
 
@@ -332,21 +355,34 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     // the tools/call, performUnknownToolCall below needs
     // toolsList.currentEndpoint regardless of how the tools_list assertion
     // itself gets judged.
-    const toolsList = await performToolsList({ fetchImpl, budget, ctx, newId, handshake })
+    // Suite 0.15.0: tools/list follows nextCursor (performToolsList), up to the
+    // registry's budget.max_tools_list_pages. Behind a handshake-layer gate the
+    // list is never used (see below), so only its first page is read.
+    const toolsList = await performToolsList({ fetchImpl, budget, ctx, newId, handshake, maxPages: handshakeCredentialGated ? 1 : registry.budget.max_tools_list_pages })
+    // Suite 0.15.0: the list was not read to its end. Nothing the unread part
+    // could change is recorded as VERIFIED: no fingerprint (so no tool
+    // snapshot), no baseline comparison, and no clean result from a check
+    // that looked only at the tools that did come in. Nor is the reserved-name
+    // tools/call sent (probeCallWithheld below).
+    const listIncomplete: Reason = toolsList.ok && toolsList.incomplete ? { key: 'tools_list_incomplete' } : null
 
     // T86: set when the tools/call probe must not be sent, because the server
-    // may really define PROBE_TOOL_NAME. A readable list is judged first: its
-    // first page names that exact tool (collision; exact string equality, no
-    // case folding, trimming or prefix match), or it carries a nextCursor
-    // (unverifiable). The final else adds the failed tools/list. T86b: both
-    // credential-gated branches then replace it with their credential_required
-    // reason, whatever the list said (a gate wins over collision / nextCursor),
-    // so no gated run sends the call; auth_metadata reads the gate's own 401
-    // challenge (gateChallenge) instead of that call's response.
+    // may really define PROBE_TOOL_NAME. A readable list is judged first: a
+    // page we read names that exact tool (collision; exact string equality, no
+    // case folding, trimming or prefix match), or the list was not read to its
+    // end (unverifiable: the name could be on a page we did not read, so the
+    // call could reach a real tool). Suite 0.15.0: only a list read to its end
+    // lets the call go out; up to suite 0.14.0, which read the first page
+    // only, a nextCursor on it withheld the call the same way. The final else
+    // adds the failed tools/list. T86b: both credential-gated branches then replace it with
+    // their credential_required reason, whatever the list said (a gate wins
+    // over a collision), so no gated run sends the call; auth_metadata reads
+    // the gate's own 401 challenge (gateChallenge) instead of that call's
+    // response.
     let probeCallWithheld: Reason =
       !toolsList.ok ? null
       : toolsList.tools!.some((tool) => typeof tool === 'object' && tool !== null && (tool as { name?: unknown }).name === PROBE_TOOL_NAME) ? { key: 'probe_tool_name_collision' }
-      : toolsList.hasNextCursor ? { key: 'probe_tool_name_unverifiable' }
+      : listIncomplete ? { key: 'probe_tool_name_unverifiable' }
       : null
     let gateChallenge: CredentialChallenge | undefined
 
@@ -388,22 +424,37 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       A('tools_list', 'COMPLETED', 'VERIFIED')
 
       const tools = toolsList.tools!
-      toolSnapshot = await buildToolSnapshot(tools, now())
+      if (listIncomplete) {
+        // Suite 0.15.0: no fingerprint of part of a list, so no toolSnapshot
+        // either (the probe stores one only with a toolset_fingerprint), and
+        // nothing to compare with a baseline. Hygiene still reads every tool
+        // that came in: what it found there is real, but finding nothing is
+        // not a clean list.
+        A('toolset_fingerprint', 'SKIPPED', 'UNVERIFIED', listIncomplete)
+        A('schema_fingerprint', 'SKIPPED', 'UNVERIFIED', listIncomplete)
+        const hygiene = runHygieneCheck(tools as { name: string; description?: string }[])
+        if (hygiene.assertion_status === 'OBSERVED_RISK') A('tool_description_hygiene', 'COMPLETED', 'OBSERVED_RISK', hygiene.reason)
+        else A('tool_description_hygiene', 'COMPLETED', 'UNVERIFIED', listIncomplete)
+        A('toolset_unchanged_vs_approved', 'SKIPPED', 'UNVERIFIED', listIncomplete)
+        A('schema_unchanged_vs_approved', 'SKIPPED', 'UNVERIFIED', listIncomplete)
+      } else {
+        toolSnapshot = await buildToolSnapshot(tools, now())
 
-      const toolsetFp = await computeToolsetFingerprint(tools)
-      // T73b: a FAILED verdict carries fingerprint.ts's bounded catalog key
-      // (classified by error class; the raw canonicalizer message is never
-      // kept), forwarded as the probe-level reason.
-      A('toolset_fingerprint', 'COMPLETED', toolsetFp.status, toolsetFp.status === 'FAILED' ? toolsetFp.reason : null)
+        const toolsetFp = await computeToolsetFingerprint(tools)
+        // T73b: a FAILED verdict carries fingerprint.ts's bounded catalog key
+        // (classified by error class; the raw canonicalizer message is never
+        // kept), forwarded as the probe-level reason.
+        A('toolset_fingerprint', 'COMPLETED', toolsetFp.status, toolsetFp.status === 'FAILED' ? toolsetFp.reason : null)
 
-      const schemaFp = await computeSchemaFingerprint(tools)
-      A('schema_fingerprint', 'COMPLETED', schemaFp.status, schemaFp.status === 'FAILED' ? schemaFp.reason : null)
+        const schemaFp = await computeSchemaFingerprint(tools)
+        A('schema_fingerprint', 'COMPLETED', schemaFp.status, schemaFp.status === 'FAILED' ? schemaFp.reason : null)
 
-      const hygiene = runHygieneCheck(tools as { name: string; description?: string }[])
-      A('tool_description_hygiene', 'COMPLETED', hygiene.assertion_status, hygiene.assertion_status === 'OBSERVED_RISK' ? hygiene.reason : null)
+        const hygiene = runHygieneCheck(tools as { name: string; description?: string }[])
+        A('tool_description_hygiene', 'COMPLETED', hygiene.assertion_status, hygiene.assertion_status === 'OBSERVED_RISK' ? hygiene.reason : null)
 
-      judgeBaselineCheck('toolset_unchanged_vs_approved', toolsetFp, approvedBaseline?.toolset_fingerprint, now, registry, A, driftEvents)
-      judgeBaselineCheck('schema_unchanged_vs_approved', schemaFp, approvedBaseline?.schema_fingerprint, now, registry, A, driftEvents)
+        judgeBaselineCheck('toolset_unchanged_vs_approved', toolsetFp, approvedBaseline?.toolset_fingerprint, now, registry, A, driftEvents)
+        judgeBaselineCheck('schema_unchanged_vs_approved', schemaFp, approvedBaseline?.schema_fingerprint, now, registry, A, driftEvents)
+      }
     } else {
       A('tools_list', 'COMPLETED', 'FAILED', classified(toolsList.failure, 'tools_list'))
       skipToolsDerivedChecks({ key: 'tools_list_invalid_structure' })
@@ -522,19 +573,25 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
       cascadeReason = reachabilityReason
     } else {
       // Anything else — in production, one of our own wrapper errors (the
-      // adapter's argument checks). Its message is kept in params as a
-      // diagnostic, unlike ProbeAborted above.
+      // adapter's argument checks). Suite 0.15.0: only the error's class
+      // reaches params (errorClassOf), never its message. Up to suite 0.14.0
+      // the message was kept here, and a message is unbounded text that can
+      // carry whatever the failing code put in it.
       //
-      // Deliberately NOT promoted into cascadeReason, unlike the ProbeAborted
-      // branch: `message` is an unbounded third-party/system string, and the
-      // cascade writes its reason onto every check that never ran (up to 13 of
-      // them) in a payload that gets canonicalized and signed. One copy of an
-      // unbounded string is a diagnostic; thirteen is a size amplifier with no
-      // extra information in it. ProbeAborted's details are a small numeric
-      // record and carry no such risk, which is why that branch does promote.
-      const message = e instanceof Error ? e.message : String(e)
-      reachabilityReason = { key: 'probe_aborted', params: { message } }
+      // The cascade keeps the generic probe_cascade_incomplete: the class names
+      // what stopped the run, which is reachability's question, not why each
+      // later check did not run.
+      reachabilityReason = { key: 'probe_aborted', params: { error_class: errorClassOf(e) } }
       cascadeReason = { key: 'probe_cascade_incomplete' }
+    }
+    // Suite 0.15.0 (TODO 779 / 797): a cross-host redirect seen before the
+    // abort was observed, whatever ended the run afterwards (another host
+    // declined, a guard refusal, the redirect, request or time budget, the
+    // server asking us to back off). redirect_policy records it as it does on
+    // a run that finishes; only the checks that never ran take the abort's
+    // reason below.
+    if (ctx?.redirectCrossHostObserved && !assertionsByCheckId.has('redirect_policy')) {
+      A('redirect_policy', 'COMPLETED', 'OBSERVED_RISK', { key: 'redirect_cross_host_observed' })
     }
     // Only ever the first writer: reachability is still unset here exactly
     // when the abort happened at or before the handshake. When it is already

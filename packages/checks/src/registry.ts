@@ -40,6 +40,9 @@ export interface ChecksRegistry {
     max_duration_ms: number
     max_body_bytes: number
     max_redirects: number
+    /** Suite 0.15.0: how many tools/list pages one run reads, the first page
+     *  included. Pages 2 and later are not counted against max_requests. */
+    max_tools_list_pages: number
     unclaimed_max_requests: number
     on_exceeded: { execution_status: string; assertion_status: string }
   }

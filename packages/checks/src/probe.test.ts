@@ -179,13 +179,36 @@ for (const [code, details] of PROBE_ABORTED_CASES) {
   })
 }
 
-await t('既非 ProbeAborted、也非 ssrf-guard 错误类的普通 Error（T85 起：生产上只剩我们自己的包装错误）仍然走 probe_aborted + { message: e.message }，不能回归', async () => {
+await t('既非 ProbeAborted、也非 ssrf-guard 错误类的普通 Error（T85 起：生产上只剩我们自己的包装错误）走 probe_aborted；suite 0.15.0 起 params 只有 { error_class }，绝不带 e.message', async () => {
   const fetchImpl: ProbeInput['fetchImpl'] = async () => { throw new Error('network unreachable') }
   const result = await runProbe(makeInput(fetchImpl))
   const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
   assert.equal(reachability.execution_status, 'ERROR')
   assert.equal(reachability.assertion_status, 'UNVERIFIED')
-  assert.deepEqual(reachability.reason, { key: 'probe_aborted', params: { message: 'network unreachable' } })
+  assert.deepStrictEqual(reachability.reason, { key: 'probe_aborted', params: { error_class: 'Error' } })
+  assert.ok(!JSON.stringify(result).includes('network unreachable'), 'the message reaches no part of the result')
+})
+
+await t('S1b: error_class is the constructor name, bounded to an identifier of at most 64 characters, and never the message, the `name` property or a non-Error\'s text', async () => {
+  class SixtyFourCharsLongErrorClassNameThatStillFitsTheShapeExactlyXYZ extends Error {}
+  class SixtyFiveCharsLongErrorClassNameThatNoLongerFitsTheShapeAtAllXYZW extends Error {}
+  const named = Object.assign(new TypeError('MARKER-message'), { name: 'MARKER-name' })
+  const cases: [unknown, string][] = [
+    [new TypeError('MARKER-message'), 'TypeError'],
+    [named, 'TypeError'],
+    [new SixtyFourCharsLongErrorClassNameThatStillFitsTheShapeExactlyXYZ('MARKER-message'), 'SixtyFourCharsLongErrorClassNameThatStillFitsTheShapeExactlyXYZ'],
+    [new SixtyFiveCharsLongErrorClassNameThatNoLongerFitsTheShapeAtAllXYZW('MARKER-message'), 'unknown'],
+    ['MARKER-message', 'String'],
+    [Object.create(null), 'unknown'],
+    [null, 'null'],
+    [undefined, 'undefined'],
+  ]
+  for (const [thrown, want] of cases) {
+    const fetchImpl: ProbeInput['fetchImpl'] = async () => { throw thrown }
+    const result = await runProbe(makeInput(fetchImpl))
+    assert.deepStrictEqual(result.assertions.find((a) => a.check_id === 'reachability')!.reason, { key: 'probe_aborted', params: { error_class: want } }, String(want))
+    assert.ok(!JSON.stringify(result).includes('MARKER'), `${want}: the message and the name property reach no part of the result`)
+  }
 })
 
 // ---- T85 ----
@@ -277,7 +300,7 @@ for (const [label, make, reason, settledReason] of T85_CASES) {
   })
 }
 
-console.log('\nT85：我们自己的包装错误（不是 ssrf-guard 的错误类）仍然是 probe_aborted { message }')
+console.log('\nT85：我们自己的包装错误（不是 ssrf-guard 的错误类）仍然是 probe_aborted；suite 0.15.0 起 params 是 { error_class }，不是 { message }')
 
 const OWN_ERRORS: [string, () => unknown][] = [
   ['a plain Error (what the prober\'s trial-host restriction threw before suite 0.11.0; it now throws OtherHostDeclined, below)', () => new Error('trial probe declined to fetch "other.example.com": a trial run never leaves the host it was asked to check ("notes-mcp.example.com")')],
@@ -285,10 +308,13 @@ const OWN_ERRORS: [string, () => unknown][] = [
   ['adapter timeoutMs (guarded-fetch-adapter.ts)', () => new RangeError('guarded-fetch-adapter: timeoutMs must be a positive number of milliseconds, got 0')],
 ]
 for (const [label, make] of OWN_ERRORS) {
-  await t(`${label} → probe_aborted { message }; the cascade keeps probe_cascade_incomplete`, async () => {
+  await t(`${label} → probe_aborted { error_class }, never the message; the cascade keeps probe_cascade_incomplete`, async () => {
     const result = await runThrowingAt(1, make)
     const reachability = result.assertions.find((a) => a.check_id === 'reachability')!
-    assert.deepEqual(reachability.reason, { key: 'probe_aborted', params: { message: (make() as Error).message } })
+    const thrown = make() as Error
+    assert.deepStrictEqual(reachability.reason, { key: 'probe_aborted', params: { error_class: thrown.constructor.name } })
+    assert.deepStrictEqual(reachability.unverified_reason, reachability.reason)
+    assert.ok(!JSON.stringify(result).includes(thrown.message), 'the message reaches no part of the result')
     assert.deepEqual(result.assertions.find((a) => a.check_id === 'tools_list')!.reason, { key: 'probe_cascade_incomplete' })
   })
 }
@@ -1112,8 +1138,17 @@ await t('T86 红证 a（probe-tool-name-collision）：第一页有逐字同名�
   await assertWithheld('probe-tool-name-collision', 'probe_tool_name_collision')
 })
 
-await t('T86 红证 b（probe-tool-name-unverifiable-next-cursor）：第一页无同名但带 nextCursor ⇒ 不翻页、不发 tools/call，两行 probe_tool_name_unverifiable，无 params', async () => {
-  await assertWithheld('probe-tool-name-unverifiable-next-cursor', 'probe_tool_name_unverifiable')
+await t('T86 红证 b（probe-tool-name-collision-second-page，suite 0.15.0）：第一页无同名但带 nextCursor ⇒ 带 cursor 读第二页，第二页的同名 ⇒ 不发 tools/call；整份 ProbeResult 与「同一份清单放在一页里」的 probe-tool-name-collision 逐字段相同', async () => {
+  const paged = await runRecorded('probe-tool-name-collision-second-page', runProbe)
+  const onePage = await runRecorded('probe-tool-name-collision', runProbe)
+  assert.deepStrictEqual(paged.calls, ['server/discover', 'tools/list', 'tools/list'], '两次 tools/list，之后不发 tools/call')
+  const second = JSON.parse(JSON.parse(paged.requests[2]!)[3] as string) as { params: Record<string, unknown> }
+  assert.equal(second.params.cursor, 'page-2', '第二页带上第一页的 nextCursor')
+  assert.deepStrictEqual(onePage.calls, ['server/discover', 'tools/list'])
+  assert.deepStrictEqual(paged.result, onePage.result, '翻页读到的清单与一页列出的同一份清单判定完全相同')
+  for (const check_id of T86_ROWS) {
+    assert.deepStrictEqual(paged.result.assertions.find((x) => x.check_id === check_id)!.reason, { key: 'probe_tool_name_collision' })
+  }
 })
 
 await t('T86 红证 c2（probe-tool-name-unverifiable-tools-list-failed / tools-list-not-jsonrpc / tools-list-illegal-structure）：tools/list 失败 ⇒ 不发 tools/call，两行 probe_tool_name_unverifiable，无 params', async () => {

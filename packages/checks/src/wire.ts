@@ -312,11 +312,22 @@ export async function sendRequest(
       const location = response.headers.get('location')
       if (location && method === 'GET') {
         hop++
-        if (hop > budget.maxRedirects) {
-          throw new ProbeAborted('MAX_REDIRECTS', `重定向跳数超过 ${budget.maxRedirects} 的预算`, { maxRedirects: budget.maxRedirects })
+        const overBudget = (): ProbeAborted => new ProbeAborted('MAX_REDIRECTS', `重定向跳数超过 ${budget.maxRedirects} 的预算`, { maxRedirects: budget.maxRedirects })
+        // Suite 0.15.0 (TODO 797): the Location is read, and a cross-host one
+        // recorded, BEFORE the hop budget is checked. The server already
+        // pointed us at another host, whether or not we have a hop left to
+        // follow it (the same rule as a POST's redirect below, which is
+        // recorded and never followed). An unparsable Location over budget is
+        // still the budget abort, as before.
+        let nextUrl: URL
+        try {
+          nextUrl = new URL(location, currentUrl)
+        } catch (e) {
+          if (hop > budget.maxRedirects) throw overBudget()
+          throw e
         }
-        const nextUrl = new URL(location, currentUrl)
         if (nextUrl.hostname !== originalHostname) ctx.redirectCrossHostObserved = true
+        if (hop > budget.maxRedirects) throw overBudget()
         // A hop to another host never carries our credentials, and once dropped
         // they stay dropped for the rest of the chain (A -> B -> A included).
         if (nextUrl.hostname !== new URL(currentUrl).hostname) currentInit = withoutCredentialHeaders(currentInit)

@@ -203,7 +203,16 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  any lookup). Neither can alter what this differential computes: the files
  *  in this closure reach ssrf-guard only for its error classes and the
  *  ProbeBudget type, and nothing they run calls guardedFetch, classifyIp or
- *  parseGuardedTarget. */
+ *  parseGuardedTarget.
+ *
+ *  Suite 0.15.0 re-pins three files to their 0.15.0 blob (git hash-object <path>): checks.json (registry 0.14.0:
+ *  the new budget.max_tools_list_pages, copy and docs_version of ten checks), registry.ts (the type of that field)
+ *  and wire.ts (a GET hop's Location is read, and a cross-host one recorded, before the hop budget is checked).
+ *  checks.json and registry.ts are reached type-only and every run passes the registry in as input. The frozen
+ *  probe.ts reads redirectCrossHostObserved only on a run that finishes, and the hop over budget always ends
+ *  the run (ProbeAborted MAX_REDIRECTS, as before, also for a Location that does not parse), so the new order
+ *  cannot alter what the frozen files compute. The suite 0.15.0 changes themselves are carried by the remap
+ *  (suite-0150-remap.ts) and proved against frozen 0.14.0 by suite-0150-differential.test.ts. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
@@ -221,12 +230,12 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '6702aefdc93b2f215537c3d5902a291b280c0c3f', // registry 0.13.0 (suite 0.14.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': '484681d7a551d16b89d38691e21df7fc3c5b8616', // registry 0.14.0 (suite 0.15.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
-  'packages/checks/src/registry.ts': 'bcce9c9f3a032195548726da1c83985ae3e0b1f9',
+  'packages/checks/src/registry.ts': '6f610be98235985b0a27d4cfac5ba805b6a3f51b', // suite 0.15.0 (type-only; see above) — git hash-object packages/checks/src/registry.ts
   'packages/checks/src/types.ts': '07c166df01ce8ac12aa29735c2867319a46e01cd', // suite 0.14.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
-  'packages/checks/src/wire.ts': '73314f32dec3befcb82edfa8afa70e05223d16b6', // suite 0.11.0 re-pin (see above) — git hash-object packages/checks/src/wire.ts
+  'packages/checks/src/wire.ts': '7998024513b5a48ed887cef0a8df00f18b2e78ef', // suite 0.15.0 (see above) — git hash-object packages/checks/src/wire.ts
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
   'packages/ssrf-guard/src/dns-wire.ts': '04357f1c08ee2d649a382d2640580903323af222',

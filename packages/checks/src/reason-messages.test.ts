@@ -34,6 +34,7 @@ const EXPECTED_KEYS = [
   'reachability_unanswered', 'reachability_dns_failed', 'probe_blocked_by_policy', 'probe_resolver_unavailable',
   'probe_declined_other_host',
   'latency_not_recorded', 'auth_no_challenge_observed', 'error_shape_not_observed',
+  'tools_list_incomplete',
 ]
 
 async function main() {
@@ -442,6 +443,37 @@ async function main() {
       }
     }
     assert.deepEqual([...touched], [])
+  })
+
+  await t('suite 0.15.0: tools_list_incomplete renders exactly its en/zh sentence and reads no params', () => {
+    const touched = new Set<string>()
+    const spy = new Proxy({} as Record<string, string | number>, {
+      has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+      get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 'x' },
+    })
+    const entry = REASON_MESSAGES.tools_list_incomplete!
+    for (const params of [undefined, spy]) {
+      assert.equal(entry.en(params), "We could not read your server's whole tool list in this run (it was longer than 10 pages or 5,000 tools, or a later page could not be read), so nothing that depends on the whole list is recorded as verified.")
+      assert.equal(entry.zh(params), '本次 run 没能读完该服务器的完整工具列表（超过 10 页或 5,000 个工具，或后面某一页读不出来），因此依赖完整列表的结论都不记为已验证。')
+    }
+    assert.deepEqual([...touched], [])
+  })
+
+  await t('suite 0.15.0 (S1b): probe_aborted renders { error_class } with the new sentence, and a { message } row exactly as before; it reads both names, error_class first', () => {
+    assert.equal(REASON_MESSAGES.probe_aborted!.en({ error_class: 'TypeError' }), 'This run stopped on an error in our probe (TypeError) before it finished — later checks did not run.')
+    assert.equal(REASON_MESSAGES.probe_aborted!.zh({ error_class: 'TypeError' }), '本次 run 在完成前因我们探测器内部的错误（TypeError）而停止——后续检查未执行。')
+    assert.equal(REASON_MESSAGES.probe_aborted!.en({ message: 'network unreachable' }), 'This run was aborted before completing (budget exceeded or an error occurred) — later checks did not run: network unreachable')
+    assert.equal(REASON_MESSAGES.probe_aborted!.zh({ message: 'network unreachable' }), '本次 run 因预算耗尽或探测中止而未能完整完成，后续检查未执行：network unreachable')
+    for (const locale of ['en', 'zh'] as const) {
+      assert.throws(() => REASON_MESSAGES.probe_aborted![locale]({}), /missing required param "message"/, `${locale}: neither shape still throws, never a guessed sentence`)
+      assert.throws(() => REASON_MESSAGES.probe_aborted![locale](undefined), /missing required param "message"/)
+      const touched: string[] = []
+      REASON_MESSAGES.probe_aborted![locale](new Proxy({} as Record<string, string | number>, {
+        has: (_t, prop) => { if (typeof prop === 'string') touched.push(prop); return true },
+        get: (_t, prop) => { if (typeof prop === 'string') touched.push(prop); return 'x' },
+      }))
+      assert.deepEqual([...new Set(touched)].sort(), ['error_class', 'message'], `${locale}: reads both names`)
+    }
   })
 
   console.log(`\n${pass} passed, ${fail} failed`)
