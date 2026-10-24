@@ -2,6 +2,8 @@
 
 [![MCP Checkup](https://mcpcheckup.com/badge/mcpcheckup/mcp.svg)](https://mcpcheckup.com/check/mcpcheckup/mcp)
 
+[Available in the Claude Connectors Directory](https://claude.ai/directory/connectors/mcp-checkup)
+
 ## Use MCP Checkup from your agent
 
 MCP Checkup watches public MCP servers and publishes what it observed: reachability, protocol revision, tool and schema fingerprints, publicly observable auth metadata, and tool-description hygiene signals. Every check is reported as VERIFIED, FAILED, OBSERVED_RISK or UNVERIFIED; results are never combined into one number or a verdict.
@@ -11,6 +13,8 @@ The directory is at [mcpcheckup.com/servers](https://mcpcheckup.com/servers). Ag
 ```json
 { "mcpServers": { "mcpcheckup": { "type": "http", "url": "https://mcpcheckup.com/mcp" } } }
 ```
+
+Claude users can add MCP Checkup straight from the Claude Connectors Directory, where it is listed as a community connector: in Claude, open Customize → Connectors → Browse and search for MCP Checkup. No MCP Checkup account or API key is needed. Other clients use the endpoint above (Streamable HTTP, no authentication).
 
 Listed in the official MCP Registry as `com.mcpcheckup/mcp`.
 
