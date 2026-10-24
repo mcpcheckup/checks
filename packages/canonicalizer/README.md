@@ -227,6 +227,14 @@ exercise every rule end to end (one real `tools/list` response, three
 synthetic) live in `test/vectors/projection-v1/` and are checked by
 `src/projection-v1-vectors.test.ts`.
 
+`scripts/recompute-fingerprints.mjs` follows those rules in plain Node without
+importing anything from this package, and prints both fingerprints for a
+`tools/list` answer you fetched yourself (`node scripts/recompute-fingerprints.mjs
+page.json`). `src/recompute-script.test.ts` holds it to this package's output
+on the vectors and on random input, and shows that each of sixteen changes to a
+single step of the script makes the two stop matching. `PROJECTION-v1.md` says how to use it and which pages of
+`tools/list` the fingerprints cover.
+
 ## Testing
 
 - `src/*.test.ts` — hand-written positive and negative cases for every rule
@@ -240,6 +248,11 @@ synthetic) live in `test/vectors/projection-v1/` and are checked by
   inserted in a different order, must canonicalize to identical bytes.
 - `src/differential.test.ts` — differential testing against an independent
   reference implementation (below).
+- `src/recompute-script.test.ts` — `scripts/recompute-fingerprints.mjs` against
+  this package: the recorded vectors, the RFC 8785 inputs, 2,000 seeded random
+  values and 2,000 random tool lists, paged and event-stream input, the command
+  line, and 16 changes to the script's own source (one spec step each) that must
+  each break the match.
 - `src/property.test.ts` — property-based testing with
   [`fast-check`](https://github.com/dubzzz/fast-check) for the invariants
   listed below.

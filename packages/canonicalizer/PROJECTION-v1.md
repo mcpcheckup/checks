@@ -24,10 +24,60 @@ never by exclusion, so a new field never silently enters a fingerprint.
 ## Inputs
 
 Both projections take `tools: unknown[]` — the `tools` array from a
-`tools/list` JSON-RPC result, parsed from JSON, **before** any
-canonicalization. Each entry is expected to be an object with at least a
-string `name`; entries that aren't fail the whole call (see "Failure
-modes" below) — there is no silent skip.
+`tools/list` JSON-RPC result (all pages of it: see "Which pages are
+covered" below), parsed from JSON, **before** any canonicalization.
+"Parsed from JSON" means what `JSON.parse` does: numbers become IEEE 754
+doubles (so `1.0` and `1` are the same value, and an integer above 2^53 is
+rounded), and when one object repeats a key, the last occurrence wins. Each
+entry is expected to be an object with at least a string `name`; entries
+that aren't fail the whole call (see "Failure modes" below) — there is no
+silent skip.
+
+## Which pages are covered
+
+The projections receive one plain array and know nothing of pages; what that
+array holds is decided by the check suite that read the server. The
+attestation records which suite that was (`suite_version`).
+
+**Suite 0.15.0 and later: every page.** The probe sends `tools/list`; while
+the answer's `result` has a `nextCursor` that is present and not `null`, it
+sends `tools/list` again to the same endpoint with `params: {"cursor":
+<that nextCursor>}`. The `tools` arrays of all the pages are joined into one
+array, and that one array is what both projections receive. Nothing is
+removed from it: a tool that appears on two pages appears twice. Both
+projections sort, so the order the pages or the tools came in never reaches
+a fingerprint.
+
+The probe reads at most 10 pages and at most 5,000 tools. A list it could
+not read to its end is **incomplete**, and for an incomplete list **no
+fingerprint is computed**, for either projection. A list is incomplete when
+a further page exists but is not read, that is when
+
+- 10 pages are in, or 5,000 tools are in, and a `nextCursor` is still
+  present;
+- a `nextCursor` is present but is not a string;
+- a later page cannot be read: it runs out of the run's time, its request
+  or its response goes over the body-size limit, or it is not a readable
+  `tools/list` result (an authentication challenge, a body that is not
+  JSON-RPC, an error, no `tools` array);
+- more than 5,000 tools came in (the first 5,000 are kept, and the list is
+  marked incomplete).
+
+On an incomplete list `toolset_fingerprint` and `schema_fingerprint`, and
+the two checks that compare them with an approved baseline, are recorded as
+`SKIPPED` / `UNVERIFIED` with the reason key `tools_list_incomplete`, and no
+tool snapshot is stored. A later page that fails in any other way (the
+server asking the probe to back off, the probe's own request guard
+refusing, a failed connection) ends the run, which likewise yields no
+fingerprint. Behind a credential gate the list is not used at all, and no
+fingerprint is computed.
+
+**Suite 0.14.0 and earlier: the first page only.** Those suites sent one
+`tools/list` request and fingerprinted its answer, even when it carried a
+`nextCursor`. A fingerprint recorded by one of them covers that page alone;
+it is not a fingerprint of the server's whole list, and a server that has
+more than one page may give a different value when you recompute over all
+of its pages.
 
 ## `projectToolset(tools)` — feeds `toolset_fingerprint`
 
@@ -86,6 +136,80 @@ form (e.g. a precomposed vs. decomposed accent) fingerprint identically.
   unable to be computed for the whole `tools/list` result, not just for
   that one tool.
 
+## Recomputing a fingerprint yourself
+
+`scripts/recompute-fingerprints.mjs` does the two computations above in plain
+Node (standard library only; it imports nothing from this package). It reads
+one `tools/list` answer per file, in page order — or one answer on standard
+input — and prints
+
+```
+toolset_fingerprint sha256:…
+schema_fingerprint sha256:…
+```
+
+An answer can be the JSON-RPC response, its bare `result`, a bare `tools`
+array, or an event-stream body carrying the response. Exit status: 0 both
+fingerprints computed; 1 one or both `FAILED` because the projection or the
+canonicalization refused (a tool without a string `name`, a missing
+`inputSchema` for the schema fingerprint, two keys of one object that become
+the same after NFC, an unpaired surrogate, or a number that is not finite);
+2 input unreadable, or a page given after one with no `nextCursor` (the probe
+would not have asked for it); 3 the list is incomplete by the probe's rules
+above (more than 10 pages or 5,000 tools, a `nextCursor` still present after
+the 10th page or the 5,000th tool, a `nextCursor` that is not a string, or a
+last page that still has a `nextCursor`), so no fingerprint is printed, as the
+probe records none.
+
+This site's own endpoint answers `tools/list` without a session, so one
+`curl` is enough (POSIX shell syntax; the `accept` header must name both
+types):
+
+```
+curl -sS -X POST https://mcpcheckup.com/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | node packages/canonicalizer/scripts/recompute-fingerprints.mjs
+```
+
+A server that wants an `initialize` handshake and a session header first
+needs them before `tools/list`; the script only reads answers. When an
+answer has a `nextCursor`, request the next page with `"params":
+{"cursor":"<that value>"}`, keep each answer in its own file, and pass the
+files in order.
+
+Compare the result with `toolset_fingerprint` and `schema_fingerprint` in
+`get_mcp_report` for the same server. `toolset_fingerprint` there is the
+latest stored tool list's (`snapshot_run_id` and `snapshot_observed_at` say
+which run and when). `schema_fingerprint` is the one in the signed
+attestation of the latest settled run (`run_id`). It is `null` when that run
+has no signature this site can read (it was not signed or was disqualified,
+its signing key is not in the published key list, or its payload cannot be
+read) and when it was signed `auth_gated`, a signature that carries no
+fingerprints. A fingerprint changes only when a field its projection
+covers changes: for `toolset_fingerprint` the tool names (a tool added,
+removed or renamed), for `schema_fingerprint` a tool name or an
+`inputSchema`. A changed `description`, `annotations`, `_meta` or any other
+field changes neither. If your value differs from a fingerprint recorded
+while those fields were the same, check these first:
+
+- **Sort before you serialize.** Names are sorted as sent, by UTF-16 code
+  unit (not by locale, not after NFC); same-named tools by the canonical
+  text of their `inputSchema`.
+- **Every object's keys are sorted, the outer ones too.** Each entry of the
+  schema projection is `{"inputSchema":…,"name":…}`, `inputSchema` first.
+- **Compact text.** No space after `:` or `,`; arrays keep their order.
+- **Hash the UTF-8 bytes** of that text and write `sha256:` and 64 lowercase
+  hex characters.
+- **Read every page,** and use a list from the same time as the fingerprint
+  you compare with.
+
+`src/recompute-script.test.ts` holds the script to this package on the
+recorded vectors and on random input, and shows that each of sixteen changes
+to a single step of the script (no NFC, locale order, no tie-break, unsorted
+keys, only the first page, and so on) makes the fingerprints stop matching.
+
 ## What is deliberately NOT part of this projection
 
 - Tool `description`, `annotations`, `_meta`, and any other field: never
@@ -120,8 +244,22 @@ had shipped under it yet — that window is closed for any future change).
 | NFC normalization of every string/key | `normalizeAndCheckSurrogates` | `src/canonicalize.ts:96` |
 | `undefined` rejected by canonicalization (why `schema_fingerprint` throws when any `inputSchema` is missing) | `serialize`'s `case 'undefined'` | `src/canonicalize.ts:43-44` |
 | `sha256:<hex>` digest of the canonical bytes | `digest` | `src/digest.ts:8` |
+| The script that follows the rules above | `canonicalize`, `projectToolset`, `projectSchemas`, `collectTools` | `scripts/recompute-fingerprints.mjs` |
+
+The rules under "Which pages are covered" live in the check suite, not in
+this package. `packages/checks/src/probe.ts` and `protocol.ts` change more
+often than this package does, so the table names functions and files there,
+not lines:
+
+| Rule above | Function | File |
+|---|---|---|
+| Follow `nextCursor`, join the pages' `tools`, stop at 10 pages or 5,000 tools, mark the list incomplete | `performToolsList` (page limits: `MAX_TOOLS_LISTED`, and `budget.max_tools_list_pages` in `packages/checks/checks.json`) | `packages/checks/src/protocol.ts` |
+| A later page that cannot be read makes the list incomplete; any other failure ends the run | `readFurtherPage` inside `performToolsList` | `packages/checks/src/protocol.ts` |
+| Incomplete list: both fingerprints `SKIPPED` / `UNVERIFIED` with `tools_list_incomplete`, no tool snapshot | `runProbe`, the `listIncomplete` branch | `packages/checks/src/probe.ts` |
+| Complete list: both projections applied to the joined array | `computeToolsetFingerprint`, `computeSchemaFingerprint`, `buildToolSnapshot` | `packages/checks/src/fingerprint.ts` |
 
 Test vectors that exercise every rule above end to end — one real
 `tools/list` response and three synthetic ones — live in
 `test/vectors/projection-v1/` and are recomputed and checked by
-`src/projection-v1-vectors.test.ts`.
+`src/projection-v1-vectors.test.ts`. The paging rules are exercised by
+`packages/checks/src/probe-tools-list-paging.test.ts`.
