@@ -16,7 +16,7 @@ The directory is at [mcpcheckup.com/servers](https://mcpcheckup.com/servers). Ag
 
 Claude users can add MCP Checkup straight from the Claude Connectors Directory, where it is listed as a community connector: in Claude, open Customize → Connectors → Browse and search for MCP Checkup. No MCP Checkup account or API key is needed. Other clients use the endpoint above (Streamable HTTP, no authentication).
 
-Listed in the official MCP Registry as `com.mcpcheckup/mcp`.
+Listed in the official MCP Registry as `com.mcpcheckup/mcp`, and on [MCP Collection](https://mcpcollection.com/server/mcp-checkup).
 
 Tools: `check_mcps`, `get_mcp_report`, `get_mcp_history`, `get_attestation`, `search_mcps`, and `request_check` (the only one that contacts a third-party server). The endpoint is rate limited; a 429 response carries Retry-After.
 
