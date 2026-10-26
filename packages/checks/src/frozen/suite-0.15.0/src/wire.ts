@@ -1,0 +1,346 @@
+import type { FetchLike, GuardSignals, ProbeBudget } from './types.ts'
+
+export type ProbeAbortedCode = 'MAX_REQUESTS' | 'MAX_DURATION' | 'MAX_BODY_BYTES' | 'MAX_REDIRECTS' | 'RATE_LIMITED'
+
+/** Thrown by anything in this package that hits the run's global budget, or by
+ *  the rate-limit stop below. Caught exactly once, at the top of probe.ts's
+ *  orchestrator — see its module comment for what an abort does and does not
+ *  revise (in particular, since T6.9-F it cannot revise a `reachability` the
+ *  handshake had already settled).
+ *
+ *  ProbeAbortedCode is a closed union on purpose: probe.ts indexes an object
+ *  literal by `e.code` to pick the reason key, so adding a member here fails to
+ *  typecheck until that table is completed. Deny-by-default — never widen that
+ *  lookup with a `?? fallback`. */
+export class ProbeAborted extends Error {
+  code: ProbeAbortedCode
+  details: Record<string, number>
+  /** Only ever set for code === 'RATE_LIMITED', and only when the target sent a
+   *  parseable delay-seconds Retry-After. A typed field rather than a lookup in
+   *  `details`: the scheduler acts on this value (it defers next_run_at), and a
+   *  control signal must not be reachable only through the same stringly-keyed
+   *  bag that feeds reader copy — the same reasoning that keeps it out of an
+   *  assertion's reason.params (see probe.ts's params-channel comment). */
+  retryAfterSeconds?: number
+  constructor(code: ProbeAbortedCode, message: string, details: Record<string, number>, retryAfterSeconds?: number) {
+    super(message)
+    this.name = 'ProbeAborted'
+    this.code = code
+    this.details = details
+    // exactOptionalPropertyTypes: assign only when there is a real value, so
+    // the property is absent rather than present-with-undefined.
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
+export interface ProbeContext {
+  requestCount: number
+  startedAtMs: number
+  redirectCrossHostObserved: boolean
+  dnsAnswerChangedObserved: boolean
+}
+
+/** startedAtMs is passed in by the caller rather than read here via a bare
+ *  Date.now() — wire.ts stays a pure function of its inputs. Deliberately NOT
+ *  derived from ProbeInput.now(): that clock exists to make OUTPUT timestamps
+ *  reproducible (tests fix it to a constant string), while startedAtMs feeds
+ *  the *real* wall-clock deadline below (`ctx.startedAtMs + maxDurationMs`),
+ *  which must track actual elapsed time regardless of what now() returns —
+ *  conflating the two would make a fixed test clock either spuriously trip
+ *  MAX_DURATION (if it's stale relative to real time) or make the duration
+ *  budget silently unenforceable (if every check used the same frozen value).
+ *  startedAtMs itself never appears in any output, so this doesn't affect the
+ *  byte-determinism guarantee tied to now()/newId(). */
+export function createProbeContext(startedAtMs: number): ProbeContext {
+  return { requestCount: 0, startedAtMs, redirectCrossHostObserved: false, dnsAnswerChangedObserved: false }
+}
+
+export interface WireResponse {
+  status: number
+  headers: Headers
+  bodyText: string
+  finalUrl: string
+}
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+
+/** Retry-After is `delay-seconds` (a non-negative integer) OR an HTTP-date
+ *  (RFC 9110 §10.2.3 — the one place in this repo that clause number is
+ *  written out). Only the delay-seconds form is parsed, and only when it is a
+ *  non-negative safe integer: this value is entirely third-party-controlled and
+ *  it flows both into a signed reason.params and into the scheduler's
+ *  next_run_at arithmetic, so an unbounded, non-decimal or non-finite value is
+ *  refused outright rather than coerced into something that merely looks
+ *  parsed. `Number()` alone is not enough — it accepts '0x10', '1e3' and
+ *  ' 3600 ' — hence the explicit digits-only token test; a 310-digit run of
+ *  digits passes that test but becomes Infinity, which the safe-integer check
+ *  then rejects.
+ *
+ *  Returning undefined never weakens the decision to stop: presence of the
+ *  header (not its parseability) is what makes a 503 a rate-limit signal, and
+ *  429 stops unconditionally. An unparseable value costs the caller only the
+ *  "how long" hint, which the scheduler then treats as "no hint given". */
+export function parseRetryAfterSeconds(raw: string | null): number | undefined {
+  if (raw === null) return undefined
+  const token = raw.trim()
+  if (!/^[0-9]+$/.test(token)) return undefined
+  const seconds = Number(token)
+  return Number.isSafeInteger(seconds) ? seconds : undefined
+}
+
+/** The target has told us to come back later. 429 is unconditional — a server
+ *  that just said "you are asking too often" must not be asked again in the
+ *  same round, and in particular must never be followed by protocol.ts's legacy
+ *  `initialize` fallback. 503 is deliberately NOT unconditional: Service
+ *  Unavailable with no Retry-After is far more often a transient fault than an
+ *  expression of rate-limiting intent, so it keeps its existing path entirely
+ *  (normal judgment, normal interval, normal registration). A 503 that DOES
+ *  carry Retry-After has named a time to come back and is treated exactly like
+ *  429. Presence of the header is the 503 trigger, not whether we could parse
+ *  it — a server that says "come back later, at <unparseable>" has still said
+ *  "come back later".
+ *
+ *  Returns the abort instead of throwing it so the decision and the throw sit
+ *  in the caller's loop, next to the other budget checks. */
+function rateLimitAbort(response: Response): ProbeAborted | undefined {
+  const retryAfterRaw = response.headers.get('retry-after')
+  const isRateLimited = response.status === 429 || (response.status === 503 && retryAfterRaw !== null)
+  if (!isRateLimited) return undefined
+  const retryAfterSeconds = parseRetryAfterSeconds(retryAfterRaw)
+  return new ProbeAborted(
+    'RATE_LIMITED',
+    `目标返回 HTTP ${response.status}，要求我们稍后再来；本轮停止对该目标的一切后续请求`,
+    { status: response.status, ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}) },
+    retryAfterSeconds,
+  )
+}
+
+function durationAbort(budget: ProbeBudget): ProbeAborted {
+  return new ProbeAborted('MAX_DURATION', `探测已超过 ${budget.maxDurationMs}ms 的总预算`, { maxDurationMs: budget.maxDurationMs })
+}
+
+/* A step that has started is put down to the run's deadline by one thing
+ * only: the timer sendRequest set for that step fired. Never by the clock (no
+ * "a failure this close to the deadline must be the deadline") and never by
+ * the error's name. Anything else a started step throws — however close to
+ * the deadline — propagates unchanged, because a signed reason saying the
+ * time budget ran out must only ever be written when it did. Separately, a
+ * step is not started at all once no time is left (the request pre-check and
+ * withinDeadline's pre-step check read the clock, but no step has run there,
+ * so no error is rewritten). A step that settles in the moment between the
+ * deadline and its timer's callback is not abandoned: its status and signals
+ * are still acted on; what is refused is any step started after it — a
+ * following redirect hop or a body read not yet begun. A body read that itself
+ * settles in that moment is used (TODO 539).
+ *
+ * That leaves one race to rule out: a fetchImpl with its OWN timer for the
+ * same deadline failing a moment before ours fires. It is removed
+ * structurally, not with a clock window. guardedFetch takes its deadline from
+ * its own later Date.now() (guarded-fetch.ts), so it is never earlier than
+ * ours, and the FetchLike contract (FetchCallOptions in types.ts) asks an
+ * implementation to give up no earlier than timeoutMs: the production
+ * FetchLike built on guardedFetch adds a fixed grace on top of timeoutMs for
+ * guardedFetch's internal backstop. Our timer is therefore always first to
+ * fire and ends the step; guardedFetch's own timeout only ever fires after
+ * the step was abandoned, when nothing reads its result. */
+
+async function readBodyWithBudget(response: Response, maxBodyBytes: number): Promise<string> {
+  const declared = response.headers.get('content-length')
+  if (declared !== null) {
+    const declaredBytes = Number(declared)
+    if (declaredBytes > maxBodyBytes) {
+      // declaredBytes is parsed from a third-party-controlled header — an
+      // extreme digit string (e.g. 310 nines, or "1e400") parses to Infinity,
+      // which packages/canonicalizer rejects (NON_FINITE_NUMBER) once this
+      // reaches an assertion's reason.params and gets canonicalized for
+      // signing. Only include it when finite — maxBodyBytes alone is always
+      // sufficient for reason-messages.ts's renderer, so omitting a
+      // non-finite declaredBytes costs the reader no information, only an
+      // occasionally-untrustworthy diagnostic extra.
+      throw new ProbeAborted(
+        'MAX_BODY_BYTES',
+        `响应体 Content-Length (${declared}) 超过 ${maxBodyBytes} 字节的预算`,
+        { ...(Number.isFinite(declaredBytes) ? { declaredBytes } : {}), maxBodyBytes },
+      )
+    }
+  }
+  const text = await response.text()
+  const actualBytes = new TextEncoder().encode(text).length
+  if (actualBytes > maxBodyBytes) {
+    throw new ProbeAborted('MAX_BODY_BYTES', `响应体实际大小 (${actualBytes} 字节) 超过 ${maxBodyBytes} 字节的预算`, { actualBytes, maxBodyBytes })
+  }
+  return text
+}
+
+/** Request headers that carry a credential. None of them may travel with a
+ *  redirect hop to a different host (see sendRequest). `authorization` is the one
+ *  guardedFetch itself strips on a cross-host hop of a chain it follows; the
+ *  other two are never sent by this package and never pass guardedFetch's
+ *  header allowlist, and are listed so that this rule does not depend on it. */
+const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie'] as const
+
+/** `init` without any CREDENTIAL_HEADERS. Returns `init` itself, untouched, when
+ *  it carries none — so a request without credentials is sent on exactly as
+ *  before. */
+function withoutCredentialHeaders(init: RequestInit): RequestInit {
+  if (init.headers === undefined) return init
+  const headers = new Headers(init.headers)
+  if (!CREDENTIAL_HEADERS.some((name) => headers.has(name))) return init
+  for (const name of CREDENTIAL_HEADERS) headers.delete(name)
+  return { ...init, headers }
+}
+
+/** Sends one logical request, following same- or cross-host redirects (recording
+ *  cross-host ones) up to budget.maxRedirects, enforcing the run's request-count /
+ *  wall-clock / body-size budget at every hop, and collecting GuardSignals fetchImpl
+ *  reports out-of-band on every call along the way. Every dimension of the global
+ *  probe budget (packages/checks/checks.json's `budget`) is enforced here, in one
+ *  place, so no individual check has to reimplement budget accounting.
+ *
+ *  Redirect-following only ever applies to GET. The protocol calls (protocol.ts)
+ *  are POST; the one GET this package sends is auth.ts's fetch of the target's
+ *  `resource_metadata` URL. Its hops are followed HERE, one fetchImpl call per
+ *  hop: the production FetchLike asks guardedFetch not to follow redirects
+ *  itself (followRedirects: false), so every hop is counted against the run's
+ *  request budget, passes through the caller's FetchLike wrappers (which hosts
+ *  the run may contact at all) and is seen by redirectCrossHostObserved below.
+ *  A hop that changes host drops the credential headers (CREDENTIAL_HEADERS)
+ *  from every later hop, as guardedFetch does with `authorization` when it
+ *  follows a chain itself. A POST that gets 3xx'd is never re-issued
+ *  against the Location target; that response becomes this call's terminal result
+ *  instead (same as any non-redirect status), with redirectCrossHostObserved still
+ *  set when the Location crosses hosts, so the observation isn't silently lost. This
+ *  is the same rule @mcpcheckup/ssrf-guard's guardedFetch enforces independently one
+ *  layer below (see that package's README, "Non-GET does not follow redirects") —
+ *  re-derived here rather than centralized into one shared signal between the two
+ *  packages, on purpose: two layers each independently refusing to replay a POST's
+ *  method/headers/body (including `authorization`) cross-host is depth-of-defense;
+ *  a single shared decision point just moves the "what if this layer forgets" risk
+ *  to one place instead of removing it. This duplication was prompted by an
+ *  internally-tracked credential-replay finding; the reasoning for not
+ *  centralizing it is stated above.
+ *
+ *  The duration budget is one deadline for the whole run, ctx.startedAtMs +
+ *  budget.maxDurationMs (TODO 458). Each call to fetchImpl is told only the
+ *  time left before it (FetchCallOptions.timeoutMs), and each hop's call and
+ *  body read are raced against this function's own timer set to that
+ *  deadline. When the timer wins, the run stops with ProbeAborted
+ *  ('MAX_DURATION') and nothing the abandoned call produces afterwards — its
+ *  Response, its body, a GuardSignals report — is read or recorded. No step
+ *  is started once no time is left; a call that settles between the deadline
+ *  and the timer's callback is not abandoned (see the note above
+ *  readBodyWithBudget). Before
+ *  TODO 458 the deadline was checked only before each request, and a request
+ *  started just inside it could run for a further full maxDurationMs in
+ *  guardedFetch, so a run could take about twice its budget. */
+export async function sendRequest(
+  fetchImpl: FetchLike,
+  url: string,
+  init: RequestInit,
+  budget: ProbeBudget,
+  ctx: ProbeContext,
+): Promise<WireResponse> {
+  const originalHostname = new URL(url).hostname
+  const method = (init.method ?? 'GET').toUpperCase()
+  let currentUrl = url
+  let currentInit = init
+  let hop = 0
+
+  const deadlineAtMs = ctx.startedAtMs + budget.maxDurationMs
+  // Never more than one full budget, even if the clock has stepped backwards.
+  const leftMs = () => Math.min(budget.maxDurationMs, deadlineAtMs - Date.now())
+  // Set once this call has been abandoned at the deadline. From then on its
+  // output is ignored, including a late GuardSignals report: a DNS change
+  // reported by a request we walked away from must not disqualify the run
+  // (TODO 458 R1 ⑤).
+  let abandoned = false
+
+  const onGuardSignal = (signals: GuardSignals) => {
+    if (abandoned) return
+    if (signals.dnsAnswerChanged) ctx.dnsAnswerChangedObserved = true
+  }
+
+  // Races one step against our own timer, cleared on every path. The step is
+  // put down to the deadline only when that timer fired (see the note above
+  // readBodyWithBudget); any failure of the step itself propagates unwrapped.
+  // A step is never started once the deadline has passed: an already-settled
+  // step (a resolved fetchImpl, a buffered body) would otherwise win the race
+  // against a zero-delay timer and be used after the deadline. The time left
+  // is computed once and is both the timer's delay and what the step is told.
+  const withinDeadline = async <T>(step: (leftMs: number) => Promise<T>, left: number = leftMs()): Promise<T> => {
+    if (left <= 0) {
+      abandoned = true
+      throw durationAbort(budget)
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const expiry = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        abandoned = true
+        reject(durationAbort(budget))
+      }, left)
+    })
+    try {
+      return await Promise.race([step(left), expiry])
+    } catch (e) {
+      if (abandoned) throw durationAbort(budget)
+      throw e
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  for (;;) {
+    const remainingMs = leftMs()
+    if (remainingMs <= 0) throw durationAbort(budget)
+    if (ctx.requestCount >= budget.maxRequests) {
+      throw new ProbeAborted('MAX_REQUESTS', `探测已达到 ${budget.maxRequests} 次请求的总预算`, { maxRequests: budget.maxRequests })
+    }
+    ctx.requestCount++
+    const response = await withinDeadline((timeoutMs) => fetchImpl(currentUrl, currentInit, onGuardSignal, { timeoutMs }), remainingMs)
+
+    // Checked before anything else this response could lead to — before the
+    // redirect hop, before the body is even read. Throwing here is what makes
+    // "zero further requests to this target this round" structural rather than
+    // a promise each caller has to keep: fetchImpl is the package's only
+    // outbound seam (enforced by no-direct-fetch.test.ts) and sendRequest is
+    // the only place it is called, so an abort raised here propagates past
+    // every remaining wire call to probe.ts's single catch.
+    const rateLimited = rateLimitAbort(response)
+    if (rateLimited) throw rateLimited
+
+    if (REDIRECT_STATUSES.has(response.status)) {
+      const location = response.headers.get('location')
+      if (location && method === 'GET') {
+        hop++
+        const overBudget = (): ProbeAborted => new ProbeAborted('MAX_REDIRECTS', `重定向跳数超过 ${budget.maxRedirects} 的预算`, { maxRedirects: budget.maxRedirects })
+        // Suite 0.15.0 (TODO 797): the Location is read, and a cross-host one
+        // recorded, BEFORE the hop budget is checked. The server already
+        // pointed us at another host, whether or not we have a hop left to
+        // follow it (the same rule as a POST's redirect below, which is
+        // recorded and never followed). An unparsable Location over budget is
+        // still the budget abort, as before.
+        let nextUrl: URL
+        try {
+          nextUrl = new URL(location, currentUrl)
+        } catch (e) {
+          if (hop > budget.maxRedirects) throw overBudget()
+          throw e
+        }
+        if (nextUrl.hostname !== originalHostname) ctx.redirectCrossHostObserved = true
+        if (hop > budget.maxRedirects) throw overBudget()
+        // A hop to another host never carries our credentials, and once dropped
+        // they stay dropped for the rest of the chain (A -> B -> A included).
+        if (nextUrl.hostname !== new URL(currentUrl).hostname) currentInit = withoutCredentialHeaders(currentInit)
+        currentUrl = nextUrl.href
+        continue
+      }
+      if (location && method !== 'GET') {
+        const nextUrl = new URL(location, currentUrl)
+        if (nextUrl.hostname !== originalHostname) ctx.redirectCrossHostObserved = true
+      }
+    }
+
+    const bodyText = await withinDeadline(() => readBodyWithBudget(response, budget.maxBodyBytes))
+    return { status: response.status, headers: response.headers, bodyText, finalUrl: currentUrl }
+  }
+}

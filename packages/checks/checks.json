@@ -1,6 +1,6 @@
 {
   "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
-  "registry_version": "0.14.0",
+  "registry_version": "0.15.0",
   "suite_id": "remote-baseline-v0.1",
   "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
   "groups": [
@@ -54,19 +54,19 @@
       }
     },
     {
-      "n": 9, "check_id": "latency_profile", "group": "reach", "docs_version": "v0.2.0",
-      "predicate_zh": "p50 / p95 请求延迟（尚未测量）",
-      "predicate_en": "p50 / p95 request latency (not measured yet)",
+      "n": 9, "check_id": "latency_profile", "group": "reach", "docs_version": "v0.3.0",
+      "predicate_zh": "从我们探测节点测得的请求响应时间 p50 / p95",
+      "predicate_en": "p50 / p95 response time of our requests, measured from our probe node",
       "failure_status": null,
       "observation_only": true,
       "requires_baseline": false,
       "explain": {
-        "what_zh": "单次 run 内的 p50 / p95 请求延迟。尚未运行：探测器目前还不测量请求延迟。",
-        "what_en": "The p50 / p95 request latency within a single run. Not run yet: this probe does not measure request latency.",
-        "how_zh": "**不做判定。** 我们不设「多少毫秒算慢」的阈值。",
-        "how_en": "**No verdict is made.** We don't set a threshold for how many milliseconds counts as slow.",
-        "cannot_zh": "开始测量后，这将是从我们探测节点看到的值，不代表你用户看到的值。",
-        "cannot_en": "Once measured, this will be what our probe node observed — not what your users see."
+        "what_zh": "单次 run 内，我们发往该 endpoint 的请求从发出到收到响应头的耗时：中位数（p50）、第 95 百分位（p95），以及计时的请求数 n。",
+        "what_en": "Within one run: the median (p50) and 95th-percentile (p95) time from sending a request to this endpoint to receiving its response headers, and how many requests were timed (n).",
+        "how_zh": "**不做判定。** VERIFIED 只表示测到了，不表示快：我们不设阈值，也不按速度给 server 排名。本轮中发往该 endpoint、收到 HTTP 回应的每个请求都计时，不论状态码；没收到回应的不计。计时从请求发出前开始，到收到响应头为止，不含我们自己的 DNS 校验，也不含响应体的下载。p50、p95 按最近秩取自 n 个计时请求；少于 20 个请求时，p95 就是其中最慢的一个。握手阶段就停在认证质询的运行不记录时间。一个计时请求都没有时，本项记 UNVERIFIED。",
+        "how_en": "**No verdict is made.** VERIFIED means the time was measured, not that it was fast: we set no threshold and do not rank servers by speed. Every request to the endpoint in the run that got an HTTP response is timed, whatever its status; a request that got none is not. The timer runs from just before the request is sent until the response headers arrive, so our own DNS checks and the download of the body are not included. p50 and p95 are nearest-rank values over the n timed requests; with fewer than 20 requests, p95 is the slowest of them. A run that stops at an authentication challenge during the handshake records no time. With no timed request, this check is UNVERIFIED.",
+        "cannot_zh": "这是我们探测节点看到的值，不代表你的用户看到的值。其中包含我们节点到你 endpoint 之间的网络、建立连接的时间，以及在我们自己 Worker 里的等待。",
+        "cannot_en": "This is what our probe node observed, not what your users see. It includes the network between our node and your endpoint, setting up the connection, and any wait inside our own Worker."
       }
     },
     {

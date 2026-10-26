@@ -2,9 +2,12 @@ import assert from 'node:assert'
 import { CHECKS_REGISTRY, isKnownCheckId, getCheckIds } from './registry.ts'
 import type { ChecksRegistry } from './registry.ts'
 import frozen0140Checks from './frozen/suite-0.14.0/checks.json' with { type: 'json' }
+import frozen0150Checks from './frozen/suite-0.15.0/checks.json' with { type: 'json' }
 
 /** Registry 0.13.0, the one suite 0.14.0 shipped with. */
 const FROZEN_0130_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0140Checks
+/** Registry 0.14.0, the one suite 0.15.0 shipped with. */
+const FROZEN_0140_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0150Checks
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -203,14 +206,26 @@ t('redirect_policy.how 不再写「所有请求都跟随」的旧说法，写的
 // error_taxonomy (an incomplete tool list), redirect_policy (recorded before an abort), and
 // auth_metadata (the reserved-name call now goes out on a complete list of several pages,
 // where suite 0.14.0 withheld it on a first-page nextCursor).
-// Every other value is registry 0.13.0's (frozen/suite-0.14.0/checks.json). A later bump of
-// any check updates this table in the same change, deliberately.
+// Every other value is registry 0.13.0's (frozen/suite-0.14.0/checks.json).
+// Registry 0.15.0 (suite 0.16.0) moves latency_profile alone (v0.3.0: it is measured);
+// every other value is registry 0.14.0's (frozen/suite-0.15.0/checks.json). A later bump of
+// any check updates these tables in the same change, deliberately.
+t('docs_version：registry 0.15.0 只动 latency_profile（v0.3.0），其余 14 项与 registry 0.14.0 的 checks.json 逐条相同', () => {
+  const previousRegistry = Object.fromEntries(FROZEN_0140_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(FROZEN_0140_REGISTRY.registry_version, '0.14.0')
+  assert.equal(CHECKS_REGISTRY.registry_version, '0.15.0')
+  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.deepStrictEqual(now, { ...previousRegistry, latency_profile: 'v0.3.0' })
+  assert.equal(previousRegistry.latency_profile, 'v0.2.0')
+})
+
 t('docs_version：registry 0.14.0 动了十项检查（各升一个次版本），其余 5 项与 registry 0.13.0 的 checks.json 逐条相同', () => {
   const previousRegistry = Object.fromEntries(FROZEN_0130_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
   assert.equal(FROZEN_0130_REGISTRY.registry_version, '0.13.0')
-  assert.equal(CHECKS_REGISTRY.registry_version, '0.14.0')
-  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
-  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.equal(FROZEN_0140_REGISTRY.registry_version, '0.14.0')
+  const now = Object.fromEntries(FROZEN_0140_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(FROZEN_0140_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
   assert.deepStrictEqual(now, {
     ...previousRegistry,
     reachability: 'v0.5.0',
@@ -231,19 +246,27 @@ t('docs_version：registry 0.14.0 动了十项检查（各升一个次版本）�
   })
 })
 
-// latency_profile (registry 0.11.0, suite 0.12.0): the probe times nothing and records the check
-// SKIPPED/UNVERIFIED latency_not_recorded on every branch, so no text may say a latency is
-// observable or observed. Pinned verbatim, so a copy swap is one exact-once replacement.
-t('latency_profile：predicate / what / cannot 不再说延迟「可观测」或「是我们观察到的」，逐字固定', () => {
+// latency_profile (registry 0.15.0, suite 0.16.0, docs v0.3.0): measured, time to response
+// headers, no verdict. Pinned verbatim, so a copy swap is one exact-once replacement. Registry
+// 0.11.0's "not measured yet" text is frozen/suite-0.15.0/checks.json's.
+t('latency_profile（v0.3.0）：predicate / what / how / cannot 逐字固定；不设阈值、不排名、无禁用词', () => {
   const def = CHECKS_REGISTRY.checks.find((c) => c.check_id === 'latency_profile')!
-  assert.equal(def.predicate_en, 'p50 / p95 request latency (not measured yet)')
-  assert.equal(def.predicate_zh, 'p50 / p95 请求延迟（尚未测量）')
-  assert.equal(def.explain.what_en, 'The p50 / p95 request latency within a single run. Not run yet: this probe does not measure request latency.')
-  assert.equal(def.explain.what_zh, '单次 run 内的 p50 / p95 请求延迟。尚未运行：探测器目前还不测量请求延迟。')
-  assert.equal(def.explain.cannot_en, 'Once measured, this will be what our probe node observed — not what your users see.')
-  assert.equal(def.explain.cannot_zh, '开始测量后，这将是从我们探测节点看到的值，不代表你用户看到的值。')
-  for (const text of [def.predicate_en, def.predicate_zh, def.explain.what_en, def.explain.what_zh]) {
-    assert.doesNotMatch(text, /observable within budget|在预算内可观测/, text)
+  assert.equal(def.docs_version, 'v0.3.0')
+  assert.equal(def.observation_only, true)
+  assert.equal(def.failure_status, null)
+  assert.equal(def.predicate_en, 'p50 / p95 response time of our requests, measured from our probe node')
+  assert.equal(def.predicate_zh, '从我们探测节点测得的请求响应时间 p50 / p95')
+  assert.equal(def.explain.what_en, 'Within one run: the median (p50) and 95th-percentile (p95) time from sending a request to this endpoint to receiving its response headers, and how many requests were timed (n).')
+  assert.equal(def.explain.what_zh, '单次 run 内，我们发往该 endpoint 的请求从发出到收到响应头的耗时：中位数（p50）、第 95 百分位（p95），以及计时的请求数 n。')
+  assert.equal(def.explain.how_en, '**No verdict is made.** VERIFIED means the time was measured, not that it was fast: we set no threshold and do not rank servers by speed. Every request to the endpoint in the run that got an HTTP response is timed, whatever its status; a request that got none is not. The timer runs from just before the request is sent until the response headers arrive, so our own DNS checks and the download of the body are not included. p50 and p95 are nearest-rank values over the n timed requests; with fewer than 20 requests, p95 is the slowest of them. A run that stops at an authentication challenge during the handshake records no time. With no timed request, this check is UNVERIFIED.')
+  assert.equal(def.explain.how_zh, '**不做判定。** VERIFIED 只表示测到了，不表示快：我们不设阈值，也不按速度给 server 排名。本轮中发往该 endpoint、收到 HTTP 回应的每个请求都计时，不论状态码；没收到回应的不计。计时从请求发出前开始，到收到响应头为止，不含我们自己的 DNS 校验，也不含响应体的下载。p50、p95 按最近秩取自 n 个计时请求；少于 20 个请求时，p95 就是其中最慢的一个。握手阶段就停在认证质询的运行不记录时间。一个计时请求都没有时，本项记 UNVERIFIED。')
+  assert.equal(def.explain.cannot_en, 'This is what our probe node observed, not what your users see. It includes the network between our node and your endpoint, setting up the connection, and any wait inside our own Worker.')
+  assert.equal(def.explain.cannot_zh, '这是我们探测节点看到的值，不代表你的用户看到的值。其中包含我们节点到你 endpoint 之间的网络、建立连接的时间，以及在我们自己 Worker 里的等待。')
+  const prev = FROZEN_0140_REGISTRY.checks.find((c) => c.check_id === 'latency_profile')!
+  assert.equal(prev.predicate_en, 'p50 / p95 request latency (not measured yet)')
+  for (const text of [def.predicate_en, def.predicate_zh, ...Object.values(def.explain)]) {
+    assert.doesNotMatch(text, /certified|secure|safe|trusted|评分|健康度|通过率/i, text)
+    assert.doesNotMatch(text, /not measured yet|尚未测量|observable within budget|在预算内可观测/, text)
   }
 })
 

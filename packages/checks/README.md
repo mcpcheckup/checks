@@ -42,11 +42,12 @@ handful of wire calls, and several checks read from the same call:
    VERIFIED — see `stale-protocol-version` in the fixture corpus.
 2. Once the handshake requests have returned a complete HTTP response: `transport_type`
    is recorded (trivially VERIFIED at this point in the current remote-only
-   implementation — see "What's out of scope" below). `latency_profile` is not run:
-   nothing here times a request, so it is `SKIPPED`/`UNVERIFIED` with
-   `latency_not_recorded` on every branch (it is set beside `tls_certificate`, before
-   any request is sent), never `VERIFIED`. Suites up to 0.11.0 recorded it `VERIFIED`
-   at this point without measuring anything.
+   implementation — see "What's out of scope" below). `latency_profile` is written
+   once, when the run ends, from the requests it already sent (suite 0.16.0, see
+   "`FetchLike`, `GuardSignals`…" below); it sends no request of its own. Suites up
+   to 0.11.0 recorded it `VERIFIED` at this point without measuring anything, and
+   suites 0.12.0 to 0.15.0 recorded it `SKIPPED`/`UNVERIFIED` with
+   `latency_not_recorded` on every branch.
 3. **`tools/list`** → `tools_list` (a determinate structural fact: is `result.tools` an
    array). If it is, the raw tool list feeds three more checks in parallel:
    `toolset_fingerprint` / `schema_fingerprint` (via `@mcpcheckup/canonicalizer`'s
@@ -213,8 +214,8 @@ includes `reachability` itself. `response-exceeds-budget` in the fixture corpus 
 explicit about this: the handshake in that fixture succeeds fine and only the
 subsequent `tools/list` call blows the body-size budget, so `reachability`,
 `discovery_handshake`, `protocol_revision`, and `transport_type` stay `VERIFIED` in
-the result (`latency_profile` is `SKIPPED`/`UNVERIFIED` with `latency_not_recorded` on
-every run, aborted or not) — `tools_list` itself (which never finished) and
+the result (`latency_profile` never takes the abort's reason: it is judged from the
+requests that were answered before the abort) — `tools_list` itself (which never finished) and
 everything that depends on its data cascade to `SKIPPED`/`UNVERIFIED` as before.
 
 **T6.9-F, why `reachability` moved.** It used to be the last statement of the `try`
@@ -539,6 +540,39 @@ presence.
 Per `ssrf-guard`'s own design, none of this ever blocks the connection that was already
 made — the guard can only observe the DNS mismatch after the fact, not prevent it.
 
+### Response time (`latency_profile`, suite 0.16.0)
+
+The same out-of-band channel carries the one other transport fact the probe records:
+`GuardSignals.responseHeadersMs`, how long a call took from just before its request was
+sent until its response headers arrived, by the FetchLike's own clock. It is never read
+off the `Response`. The production adapter (the probe Worker's) measures it by handing
+`guardedFetch` a `fetchImpl` that wraps the platform `fetch` with a clock: `guardedFetch`
+calls that `fetchImpl` only for the request to the target, after its address checks, so
+its DoH lookups (before and after the request) and the body read are not in the time.
+No request is added, and `ssrf-guard` itself is unchanged.
+
+`sendRequest` keeps a time only for a POST (every protocol request is a POST to the
+endpoint; the one GET, auth metadata, is another resource), at most once per call, only
+while the call has not been abandoned at the run's deadline, and only when it is a whole
+non-negative number of ms (`isLatencySampleMs` in `latency.ts`). Any HTTP status counts.
+At the end of the run `probe.ts` writes the one `latency_profile` row (`judgeLatency`):
+
+- at least one time, the handshake not credential-gated: `COMPLETED`/`VERIFIED` `latency_measured`
+  with `{ p50_ms, p95_ms, n, timed_to: 'response_headers' }`, nearest rank over the n
+  times (with n ≤ 19, p95 is the slowest). `VERIFIED` means measured, never fast: the
+  check is `observation_only`, with no threshold;
+- at least one time on a run whose handshake stopped at a credential gate:
+  `SKIPPED`/`UNVERIFIED` `latency_not_signed_auth_gated` (an `auth_gated` payload covers
+  only four checks and requires every other row to be `UNVERIFIED`). A gate on
+  `tools/list` alone is measured like any other run: its handshake keeps its real
+  verdicts, so no `auth_gated` payload covers it;
+- answers but no time (a FetchLike that does not time, such as the fixtures' handlers):
+  `SKIPPED`/`UNVERIFIED` `latency_not_recorded`, the row suites 0.12.0 to 0.15.0 wrote;
+- no answer at all: `SKIPPED`/`UNVERIFIED` `latency_no_samples`.
+
+The numbers travel in the signed `reason.params` of attestation payload v0.4; the
+schema, signer and verifier are unchanged.
+
 ## What's out of scope in this implementation
 
 - **`tls_certificate`** (`checks.json`'s one check with `executor: "container"`) is
@@ -557,8 +591,8 @@ made — the guard can only observe the DNS mismatch after the fact, not prevent
   has no `OBSERVED_RISK` path: nothing in this package reads a transport the server
   declares (`checks.json` declares its `failure_status` as `null`, and its `explain` text
   says so). `probe.ts` records it `VERIFIED` at the point where
-  `latency_profile` was recorded `VERIFIED` by suites up to 0.11.0 (it is now
-  `SKIPPED`/`UNVERIFIED` with `latency_not_recorded`, set beside `tls_certificate`):
+  `latency_profile` was recorded `VERIFIED` by suites up to 0.11.0 (since suite 0.16.0
+  it is judged at the end of the run from the times of the requests sent):
   once `performHandshake` has returned, i.e. once the handshake
   exchange over the transport the probe used has finished with an HTTP response from the
   endpoint. The predicate is exactly that ("the endpoint answered our handshake request

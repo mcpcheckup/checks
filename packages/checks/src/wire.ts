@@ -1,4 +1,6 @@
 import type { FetchLike, GuardSignals, ProbeBudget } from './types.ts'
+import { isLatencySampleMs } from './latency.ts'
+import type { LatencyObservations } from './latency.ts'
 
 export type ProbeAbortedCode = 'MAX_REQUESTS' | 'MAX_DURATION' | 'MAX_BODY_BYTES' | 'MAX_REDIRECTS' | 'RATE_LIMITED'
 
@@ -38,6 +40,9 @@ export interface ProbeContext {
   startedAtMs: number
   redirectCrossHostObserved: boolean
   dnsAnswerChangedObserved: boolean
+  /** Suite 0.16.0: the times to response headers of this run's POSTs (see
+   *  latency.ts). Filled in by sendRequest only. */
+  latency: LatencyObservations
 }
 
 /** startedAtMs is passed in by the caller rather than read here via a bare
@@ -52,7 +57,7 @@ export interface ProbeContext {
  *  startedAtMs itself never appears in any output, so this doesn't affect the
  *  byte-determinism guarantee tied to now()/newId(). */
 export function createProbeContext(startedAtMs: number): ProbeContext {
-  return { requestCount: 0, startedAtMs, redirectCrossHostObserved: false, dnsAnswerChangedObserved: false }
+  return { requestCount: 0, startedAtMs, redirectCrossHostObserved: false, dnsAnswerChangedObserved: false, latency: { samplesMs: [], untimedResponses: 0 } }
 }
 
 export interface WireResponse {
@@ -254,10 +259,20 @@ export async function sendRequest(
   // reported by a request we walked away from must not disqualify the run
   // (TODO 458 R1 ⑤).
   let abandoned = false
+  // Suite 0.16.0: only a POST is a request to the endpoint (latency.ts), and
+  // a POST is never re-issued at a Location, so it has exactly one call. Set
+  // once that call's time has been kept, so a second report is not a second
+  // sample.
+  const timesThisCall = method === 'POST'
+  let callTimed = false
 
   const onGuardSignal = (signals: GuardSignals) => {
     if (abandoned) return
     if (signals.dnsAnswerChanged) ctx.dnsAnswerChangedObserved = true
+    if (timesThisCall && !callTimed && isLatencySampleMs(signals.responseHeadersMs)) {
+      callTimed = true
+      ctx.latency.samplesMs.push(signals.responseHeadersMs)
+    }
   }
 
   // Races one step against our own timer, cleared on every path. The step is
@@ -297,6 +312,7 @@ export async function sendRequest(
     }
     ctx.requestCount++
     const response = await withinDeadline((timeoutMs) => fetchImpl(currentUrl, currentInit, onGuardSignal, { timeoutMs }), remainingMs)
+    if (timesThisCall && !callTimed) ctx.latency.untimedResponses++
 
     // Checked before anything else this response could lead to — before the
     // redirect hop, before the body is even read. Throwing here is what makes

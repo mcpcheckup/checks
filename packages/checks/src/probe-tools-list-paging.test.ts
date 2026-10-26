@@ -58,7 +58,14 @@ const rpc = (id: unknown, body: Record<string, unknown>, status = 200) =>
 async function run(server: Server, opts: { budget?: ProbeBudget; approvedBaseline?: ApprovedBaseline; registry?: ChecksRegistry } = {}): Promise<Run> {
   const methods: string[] = []
   const cursors: unknown[] = []
-  const fetchImpl: ProbeInput['fetchImpl'] = async (_input, init) => {
+  // Suite 0.16.0: the transport reports a time for every answer, as the production
+  // adapter does, so every request counted here went through the latency path.
+  const fetchImpl: ProbeInput['fetchImpl'] = async (input, init, onGuardSignal, options) => {
+    const response = await answer(input, init, onGuardSignal, options)
+    onGuardSignal({ responseHeadersMs: 10 })
+    return response
+  }
+  const answer: ProbeInput['fetchImpl'] = async (_input, init) => {
     if (typeof init?.body !== 'string') { methods.push('GET'); return new Response('', { status: 404 }) }
     const call = JSON.parse(init.body) as { id: unknown; method: string; params: Record<string, unknown> }
     methods.push(call.method)
@@ -127,8 +134,14 @@ await t('a complete list over three pages is judged exactly like the same list o
   const paged = await run(server)
   const single = await run(onePage(server))
   assert.deepStrictEqual(paged.methods, ['server/discover', 'tools/list', 'tools/list', 'tools/list', 'tools/call'])
+  assert.deepStrictEqual(single.methods, ['server/discover', 'tools/list', 'tools/call'])
   assert.deepStrictEqual(paged.cursors, [undefined, 'c1', 'c2'])
-  assert.deepStrictEqual(paged.result, single.result)
+  // Suite 0.16.0: every request above was timed, and timing added none. latency_profile
+  // counts the requests each run made; every other row is the same.
+  const latencyN = (r: ProbeResult) => row(r, 'latency_profile').reason?.params?.n
+  assert.deepStrictEqual([latencyN(paged.result), latencyN(single.result)], [5, 3])
+  const withoutLatency = (r: ProbeResult) => ({ ...r, assertions: r.assertions.filter((a) => a.check_id !== 'latency_profile') })
+  assert.deepStrictEqual(withoutLatency(paged.result), withoutLatency(single.result))
   assert.equal(paged.result.toolSnapshot!.tools.length, 5)
   assert.deepStrictEqual(state(row(paged.result, 'error_taxonomy')), ['COMPLETED', 'VERIFIED', null], 'not withheld because a cursor existed')
 })
@@ -138,7 +151,7 @@ await t('incomplete at the page limit, nothing found: hygiene COMPLETED/UNVERIFI
   assert.equal(cursors.length, 10, 'exactly ten pages are read')
   assertIncompleteShape(result, 'page limit', methods)
   assert.deepStrictEqual(state(row(result, 'tool_description_hygiene')), ['COMPLETED', 'UNVERIFIED', INCOMPLETE])
-  assert.ok(result.assertions.every((a) => a.check_id === 'tools_list' || a.check_id === 'reachability' || a.check_id === 'transport_type' || a.check_id === 'discovery_handshake' || a.check_id === 'protocol_revision' || a.check_id === 'redirect_policy' || a.assertion_status !== 'VERIFIED'), 'nothing derived from the list is VERIFIED')
+  assert.ok(result.assertions.every((a) => a.check_id === 'tools_list' || a.check_id === 'reachability' || a.check_id === 'transport_type' || a.check_id === 'discovery_handshake' || a.check_id === 'protocol_revision' || a.check_id === 'redirect_policy' || a.check_id === 'latency_profile' || a.assertion_status !== 'VERIFIED'), 'nothing derived from the list is VERIFIED (latency_profile times the requests and reads no list)')
 })
 
 await t('incomplete at 5,000 tools (two pages of 2,500 and a further one), nothing found: the same shape', async () => {

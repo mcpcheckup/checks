@@ -48,6 +48,7 @@ import { FIXTURE_CORPUS, modernBaselineClean } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { runProbe as frozen060RunProbe } from './frozen/suite-0.6.0/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
+import { latency0160Remap } from './suite-0160-remap.ts'
 import type { ApprovedBaseline, FetchLike, GuardSignals, ProbeResult } from './types.ts'
 
 let pass = 0, fail = 0
@@ -127,7 +128,8 @@ interface Variant {
   getRedirects?: { hops: number; crossHost: boolean }
 }
 
-interface Run { result: ProbeResult; requests: string[]; fourthArgs: unknown[] }
+/** postAnswered: a POST whose call resolved with a Response (suite 0.16.0, suite-0160-remap.ts). */
+interface Run { result: ProbeResult; requests: string[]; fourthArgs: unknown[]; postAnswered: boolean }
 
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant): Promise<Run> {
   const handler = createHandler()
@@ -135,7 +137,8 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   const fourthArgs: unknown[] = []
   let position = 0
   let redirectsServed = 0
-  const fetchImpl: FetchLike = async (input, init, onGuardSignal, ...rest) => {
+  let postAnswered = false
+  const transport: FetchLike = async (input, init, onGuardSignal, ...rest) => {
     position++
     fourthArgs.push(rest.length === 0 ? 'absent' : rest[0])
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
@@ -160,6 +163,11 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     }
     return handler(input, init)
   }
+  const fetchImpl: FetchLike = async (input, init, onGuardSignal, ...rest) => {
+    const response = await transport(input, init, onGuardSignal, ...rest)
+    if ((init?.method ?? 'GET').toUpperCase() === 'POST') postAnswered = true
+    return response
+  }
   let seq = 0
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
@@ -171,7 +179,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     registry: CHECKS_REGISTRY,
     ...(v.approvedBaseline ? { approvedBaseline: v.approvedBaseline } : {}),
   })
-  return { result, requests, fourthArgs }
+  return { result, requests, fourthArgs, postAnswered }
 }
 
 /** Identical own keys in identical order at every level, Object.is on every
@@ -265,7 +273,8 @@ await t(`slow target, two ${REQUEST_MS} ms requests fit the old pre-request chec
     assert.equal(n[id], 'COMPLETED/VERIFIED', id)
     assert.equal(o[id], 'COMPLETED/VERIFIED', id)
   }
-  // Both graphs run the live orchestrator, which since suite 0.12.0 records latency_profile as not run on every branch.
+  // Both graphs run the live orchestrator. This transport reports no time and the first request was answered,
+  // so latency_profile is latency_not_recorded on both sides (suite 0.16.0, latency.ts).
   for (const side of [n, o]) assert.equal(side['latency_profile'], 'SKIPPED/UNVERIFIED latency_not_recorded', 'latency_profile')
   // 0.7.0: tools/list finished at ≈ 2 × REQUEST_MS and was judged; the pre-request
   // check then stopped tools/call.
@@ -293,7 +302,8 @@ await t('slow target, the FIRST request outlives the whole budget: the new wire.
   for (const [id, s] of Object.entries(n)) {
     if (id === 'reachability') continue
     if (id === 'tls_certificate') assert.equal(s, 'SKIPPED/UNVERIFIED tls_certificate_out_of_scope')
-    else if (id === 'latency_profile') assert.equal(s, 'SKIPPED/UNVERIFIED latency_not_recorded')
+    // Suite 0.16.0: the one request was abandoned unanswered, so there is no time to report.
+    else if (id === 'latency_profile') assert.equal(s, 'SKIPPED/UNVERIFIED latency_no_samples')
     else assert.equal(s, `SKIPPED/UNVERIFIED ${DURATION}`, id)
   }
 })
@@ -342,7 +352,11 @@ for (const fixture of FIXTURE_CORPUS) {
         if (failures.length < 200) failures.push(`${id}: threw ${(e as Error).message}`)
         continue
       }
-      if (!identical(now.result, old.result)) {
+      // Suite 0.16.0: the live wire.ts keeps the run's times, the frozen 0.7.0 one
+      // does not, so under the live orchestrator a run in which no POST was
+      // answered says latency_no_samples on the new side only (latency0160Remap).
+      const want = side === 'current' ? latency0160Remap(old.result, old.postAnswered) : old.result
+      if (!identical(now.result, want)) {
         violations++
         if (failures.length < 200) failures.push(`${id}: ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(old.result).slice(0, 400)}`)
       }

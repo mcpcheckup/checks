@@ -21,6 +21,7 @@ const EXPECTED_KEYS = [
   'auth_metadata_invalid_json', 'auth_metadata_not_json_object', 'auth_scope_contradiction',
   'credential_required',
   'disqualified_no_protocol_revision', 'disqualified_no_fingerprint', 'disqualified_signer_call_failed',
+  'disqualified_protocol_revision_not_a_date',
   'error_taxonomy_result_is_error', 'error_taxonomy_result_ok', 'error_taxonomy_jsonrpc_malformed',
   'error_taxonomy_not_jsonrpc', 'error_taxonomy_not_json', 'error_taxonomy_empty_body',
   'error_taxonomy_event_stream_no_data',
@@ -35,6 +36,7 @@ const EXPECTED_KEYS = [
   'probe_declined_other_host',
   'latency_not_recorded', 'auth_no_challenge_observed', 'error_shape_not_observed',
   'tools_list_incomplete',
+  'latency_measured', 'latency_no_samples', 'latency_not_signed_auth_gated',
 ]
 
 async function main() {
@@ -52,11 +54,11 @@ async function main() {
     }
   })
 
-  // Twenty-five keys require params (requireParam throws if omitted — that's the
+  // Twenty-six keys require params (requireParam throws if omitted — that's the
   // load-bearing safety net catching a future emitter bug that forgets to
   // pass one; see reason-messages.ts). This test isn't the place to exercise
   // that throw — it's a smoke test that every entry renders non-empty text —
-  // so it feeds each of those twenty-five a minimal representative params object and
+  // so it feeds each of those twenty-six a minimal representative params object and
   // leaves every param-free key on a genuine zero-arg call.
   const MINIMAL_PARAMS: Partial<Record<string, Record<string, string | number>>> = {
     probe_aborted: { message: 'x' },
@@ -84,6 +86,7 @@ async function main() {
     tools_list_not_array: { status: 200 },
     reachability_unanswered: { kind: 'timeout' },
     probe_blocked_by_policy: { code: 'PRIVATE_USE' },
+    latency_measured: { n: 3, p50_ms: 20, p95_ms: 30, timed_to: 'response_headers' },
   }
 
   await t('MINIMAL_PARAMS lists exactly the keys whose renderer throws with no params (derived from the table, not hand-kept)', () => {
@@ -91,10 +94,10 @@ async function main() {
       try { REASON_MESSAGES[key]!.en(); return false } catch { return true }
     })
     assert.deepEqual(needsParams.sort(), Object.keys(MINIMAL_PARAMS).sort())
-    assert.equal(needsParams.length, 25)
+    assert.equal(needsParams.length, 26)
   })
 
-  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the twenty-five that require them)', () => {
+  await t('every entry renders non-empty text (zero-arg for param-free keys, minimal params for the twenty-six that require them)', () => {
     for (const key of Object.keys(REASON_MESSAGES)) {
       const params = MINIMAL_PARAMS[key]
       assert.ok(REASON_MESSAGES[key]!.en(params).length > 0, `${key}: en() is empty`)
@@ -102,7 +105,7 @@ async function main() {
     }
   })
 
-  await t('SECURITY: the twenty-five param-taking keys throw (not silently render blank) when required params are omitted', () => {
+  await t('SECURITY: the twenty-six param-taking keys throw (not silently render blank) when required params are omitted', () => {
     for (const key of Object.keys(MINIMAL_PARAMS)) {
       assert.throws(() => REASON_MESSAGES[key]!.en(), /missing required param/, `${key}: en() should throw with no params`)
       assert.throws(() => REASON_MESSAGES[key]!.zh(), /missing required param/, `${key}: zh() should throw with no params`)
@@ -131,6 +134,11 @@ async function main() {
       assert.throws(() => REASON_MESSAGES[key]!.en(), /missing required param/, `${key}: en() should throw with no params`)
       assert.throws(() => REASON_MESSAGES[key]!.zh(), /missing required param/, `${key}: zh() should throw with no params`)
     }
+  })
+
+  await t('T1178 R2: disqualified_no_protocol_revision renders exactly the approved en/zh sentences', () => {
+    assert.equal(REASON_MESSAGES.disqualified_no_protocol_revision!.en(), 'No usable protocol_revision was observed, so a schema-valid attestation payload could not be assembled.')
+    assert.equal(REASON_MESSAGES.disqualified_no_protocol_revision!.zh(), '未观察到可用的 protocol_revision，无法组装符合 schema 的 attestation payload')
   })
 
   await t('hygiene_risk_detected renders without a totalCount param (legacy-row backfill case): omits the "of M" clause instead of throwing', () => {
@@ -431,7 +439,7 @@ async function main() {
       get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 'x' },
     })
     const expected: Record<string, [string, string]> = {
-      latency_not_recorded: ['Not run: this probe does not measure request latency yet.', '未运行：探测器目前还不测量请求延迟。'],
+      latency_not_recorded: ['Not measured: this run recorded no request latency.', '未测量：本轮没有记录请求延迟。'],
       auth_no_challenge_observed: ['Not observed: the endpoint did not ask for credentials, so there was no auth challenge or metadata to check.', '未观察到：该端点没有要求凭据，因此没有可检查的认证质询或元数据。'],
       error_shape_not_observed: ['Not observed: the request was rejected at the HTTP layer (401/403) before any protocol error was returned.', '未观察到：请求在 HTTP 层就被拒绝（401/403），没有返回任何协议层错误。'],
     }
@@ -443,6 +451,45 @@ async function main() {
       }
     }
     assert.deepEqual([...touched], [])
+  })
+
+  await t('suite 0.16.0: latency_measured renders n with p50 and p95 and reads exactly those three params (not timed_to); latency_no_samples / latency_not_signed_auth_gated render their sentences and read none; no banned word', () => {
+    const params = { n: 3, p50_ms: 20, p95_ms: 30, timed_to: 'response_headers' }
+    assert.equal(REASON_MESSAGES.latency_measured!.en(params), 'Measured from our probe node: p50 20 ms, p95 30 ms (n = 3).')
+    assert.equal(REASON_MESSAGES.latency_measured!.zh(params), '从我们探测节点测得：p50 20 ms，p95 30 ms（n = 3）。')
+    const read = new Set<string>()
+    const spy = new Proxy({} as Record<string, string | number>, {
+      has: (_t, prop) => { if (typeof prop === 'string') read.add(prop); return true },
+      get: (_t, prop) => { if (typeof prop === 'string') read.add(prop); return 1 },
+    })
+    REASON_MESSAGES.latency_measured!.en(spy)
+    REASON_MESSAGES.latency_measured!.zh(spy)
+    assert.deepEqual([...read].sort(), ['n', 'p50_ms', 'p95_ms'])
+    for (const missing of ['n', 'p50_ms', 'p95_ms']) {
+      const partial = { ...params } as Record<string, string | number>
+      delete partial[missing]
+      assert.throws(() => REASON_MESSAGES.latency_measured!.en(partial), /missing required param/, missing)
+      assert.throws(() => REASON_MESSAGES.latency_measured!.zh(partial), /missing required param/, missing)
+    }
+    const expected: Record<string, [string, string]> = {
+      latency_no_samples: ['Not measured: no request in this run got an HTTP response.', '未测量：本轮没有任何请求收到 HTTP 回应。'],
+      latency_not_signed_auth_gated: ['Not recorded: this run stopped at an authentication challenge during the handshake, and the signature of such a run does not cover response time.', '未记录：本轮在握手阶段停在认证质询处，这类运行的签名不涵盖响应时间。'],
+    }
+    const touched = new Set<string>()
+    const spy2 = new Proxy({} as Record<string, string | number>, {
+      has: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return true },
+      get: (_t, prop) => { if (typeof prop === 'string') touched.add(prop); return 'x' },
+    })
+    for (const [key, [en, zh]] of Object.entries(expected)) {
+      for (const p of [undefined, spy2]) {
+        assert.equal(REASON_MESSAGES[key]!.en(p), en, key)
+        assert.equal(REASON_MESSAGES[key]!.zh(p), zh, key)
+      }
+    }
+    assert.deepEqual([...touched], [])
+    for (const key of ['latency_measured', 'latency_no_samples', 'latency_not_signed_auth_gated']) {
+      for (const text of [REASON_MESSAGES[key]!.en(params), REASON_MESSAGES[key]!.zh(params)]) assert.doesNotMatch(text, /certified|secure|safe|trusted|评分|健康度|通过率/i, text)
+    }
   })
 
   await t('suite 0.15.0: tools_list_incomplete renders exactly its en/zh sentence and reads no params', () => {

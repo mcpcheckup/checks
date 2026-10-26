@@ -12,6 +12,7 @@ import type { CredentialChallenge } from './protocol.ts'
 import { judgeAuthMetadata, judgeAuthMetadataFromGate } from './auth.ts'
 import { authObservationOf, keepLastOkBody } from './auth-observation.ts'
 import { judgeErrorTaxonomy } from './error-taxonomy.ts'
+import { judgeLatency } from './latency.ts'
 import { computeToolsetFingerprint, computeSchemaFingerprint, buildToolSnapshot } from './fingerprint.ts'
 import type { FingerprintVerdict } from './fingerprint.ts'
 import type { CheckDefinition, ChecksRegistry } from './registry.ts'
@@ -189,8 +190,9 @@ function judgeBaselineCheck(
  *  itself, produces: reachability = ERROR/UNVERIFIED **only if it was not
  *  already settled** (i.e. the abort happened at or before the handshake), and
  *  every check that never got to run (except the always-out-of-scope
- *  tls_certificate and the never-run latency_profile) = SKIPPED/UNVERIFIED
- *  carrying the abort's own reason.
+ *  tls_certificate and latency_profile, which finalize() judges from the
+ *  requests that were answered) = SKIPPED/UNVERIFIED carrying the abort's own
+ *  reason.
  *  Checks that already COMPLETED before the abort keep whatever result they
  *  earned — "we verified the protocol handshake, then ran out of budget" is a
  *  coherent, honest statement; discarding an already-verified observation would
@@ -216,7 +218,13 @@ function judgeBaselineCheck(
  *  records tools_list_incomplete instead of anything VERIFIED it could
  *  change, and no toolSnapshot. A cross-host redirect seen before an abort
  *  is still recorded by redirect_policy, and probe_aborted carries the
- *  error's class, never its message. */
+ *  error's class, never its message.
+ *  Suite 0.16.0: latency_profile is measured from the requests the run already
+ *  sends (latency.ts): COMPLETED/VERIFIED latency_measured with p50, p95 and n
+ *  when the FetchLike timed at least one POST, except on a run whose
+ *  handshake is credential-gated (latency_not_signed_auth_gated); otherwise SKIPPED/UNVERIFIED
+ *  latency_not_recorded (answered, not timed) or latency_no_samples (nothing
+ *  answered). It sends no request of its own and changes no other row. */
 export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   const { target, fetchImpl, budget, now, newId, approvedBaseline, provenance, registry } = input
 
@@ -242,6 +250,13 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   // Suite 0.14.0: set only on the credential-gated path, once auth_metadata has
   // been judged from the gate's challenge.
   let authObservation: ProbeResult['authObservation']
+  // Suite 0.16.0: set when the handshake itself is credential-gated, the one
+  // gate an auth_gated payload can sign; latency_profile is then not recorded
+  // (that payload requires every row outside its four checks to be UNVERIFIED).
+  // A gate on tools/list alone leaves the handshake's real verdicts in place, so
+  // no auth_gated payload covers it and its times are measured as on any run.
+  // Hoisted so finalize() reads it on every exit path.
+  let handshakeGated = false
 
   const A: AssertionBuilder = (check_id, execution_status, assertion_status, reason = null) => {
     const assertion: Assertion = {
@@ -260,6 +275,8 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   const cascadeRemaining = (execution_status: ExecutionStatus, reason: Reason) => {
     for (const def of registry.checks) {
       if (assertionsByCheckId.has(def.check_id)) continue
+      // Suite 0.16.0: written by finalize() on every path, never by a cascade.
+      if (def.check_id === 'latency_profile') continue
       A(def.check_id, execution_status, 'UNVERIFIED', reason)
     }
   }
@@ -267,12 +284,9 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   // tls_certificate is out of this executor's scope unconditionally — set first
   // so every other branch below can rely on it already being present.
   A('tls_certificate', 'SKIPPED', 'UNVERIFIED', { key: 'tls_certificate_out_of_scope' })
-  // Suite 0.12.0: latency_profile is not run on any branch — nothing in this
-  // executor times a request, so it is never VERIFIED (suites up to 0.11.0
-  // wrote it VERIFIED unconditionally). Set here, beside tls_certificate, so
-  // the stdio branch, the cascade and the credential gates each end with this
-  // one row and no branch below writes it a second time.
-  A('latency_profile', 'SKIPPED', 'UNVERIFIED', { key: 'latency_not_recorded' })
+  // Suite 0.16.0: latency_profile is judged once, in finalize(), from the
+  // times wire.ts kept (judgeLatency); no branch below and no cascade writes
+  // it. Suites 0.12.0 to 0.15.0 set it here: latency_not_recorded everywhere.
 
   if (target.transport === 'stdio') {
     cascadeRemaining('SKIPPED', { key: 'stdio_out_of_scope' })
@@ -316,6 +330,7 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
     // same claim as "this is broken." This is the ONE place in probe.ts that
     // decides the cascade; nothing downstream re-derives it.
     const handshakeCredentialGated = !handshake.handshakeOk && handshake.credentialChallenge !== undefined
+    handshakeGated = handshakeCredentialGated
 
     if (handshakeCredentialGated) {
       const reason: Reason = { key: 'credential_required', params: { scheme: handshake.credentialChallenge!.scheme } }
@@ -606,6 +621,8 @@ export async function runProbe(input: ProbeInput): Promise<ProbeResult> {
   return finalize()
 
   function finalize(): ProbeResult {
+    const latency = judgeLatency(ctx?.latency, handshakeGated)
+    A('latency_profile', latency.execution_status, latency.assertion_status, latency.reason)
     // Closed-count guarantee: any registry check_id this implementation somehow
     // forgot to compute becomes an explicit ERROR, never a silent omission.
     for (const def of registry.checks) {

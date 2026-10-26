@@ -15,6 +15,15 @@ export interface GuardSignals {
    *  validated before the request (its dnsAnswerChangedDuringProbe). Computed
    *  entirely from the adapter's own resolver calls. */
   dnsAnswerChanged?: boolean
+  /** Suite 0.16.0 (latency_profile): how long this call took from just before
+   *  the request was sent until its response headers arrived, in whole ms, by
+   *  the FetchLike's own clock — never read off the response. Reported at most
+   *  once per call, as soon as the headers are in. wire.ts keeps it only for a
+   *  POST (a request to the endpoint), only once per call, only while the call
+   *  has not been abandoned, and only when it is a whole non-negative number
+   *  (latency.ts's isLatencySampleMs). A FetchLike that does not time requests
+   *  simply never sets it. */
+  responseHeadersMs?: number
 }
 
 /** What sendRequest (wire.ts) tells every call it makes (TODO 458). */

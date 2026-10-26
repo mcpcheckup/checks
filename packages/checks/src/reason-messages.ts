@@ -153,8 +153,23 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
   // Suite 0.12.0: three checks that used to be VERIFIED without observing what
   // their predicate names. Each renders no params.
   latency_not_recorded: {
-    en: () => 'Not run: this probe does not measure request latency yet.',
-    zh: () => '未运行：探测器目前还不测量请求延迟。',
+    en: () => 'Not measured: this run recorded no request latency.',
+    zh: () => '未测量：本轮没有记录请求延迟。',
+  },
+  // Suite 0.16.0 (latency.ts). latency_measured is the one VERIFIED row whose
+  // reason renders numbers: n always with p50 and p95. Its params also carry
+  // timed_to ('response_headers'), signed evidence that no sentence reads.
+  latency_measured: {
+    en: (p) => `Measured from our probe node: p50 ${requireParam(p, 'p50_ms')} ms, p95 ${requireParam(p, 'p95_ms')} ms (n = ${requireParam(p, 'n')}).`,
+    zh: (p) => `从我们探测节点测得：p50 ${requireParam(p, 'p50_ms')} ms，p95 ${requireParam(p, 'p95_ms')} ms（n = ${requireParam(p, 'n')}）。`,
+  },
+  latency_no_samples: {
+    en: () => 'Not measured: no request in this run got an HTTP response.',
+    zh: () => '未测量：本轮没有任何请求收到 HTTP 回应。',
+  },
+  latency_not_signed_auth_gated: {
+    en: () => 'Not recorded: this run stopped at an authentication challenge during the handshake, and the signature of such a run does not cover response time.',
+    zh: () => '未记录：本轮在握手阶段停在认证质询处，这类运行的签名不涵盖响应时间。',
   },
   auth_no_challenge_observed: {
     en: () => 'Not observed: the endpoint did not ask for credentials, so there was no auth challenge or metadata to check.',
@@ -378,12 +393,16 @@ export const REASON_MESSAGES: Record<string, { en: ReasonRenderer; zh: ReasonRen
     zh: () => '我们没能看到完整的工具列表，无法排除其中有与探测保留名同名的工具，因此没有发送这次调用，依赖它的观测都没有进行。',
   },
   disqualified_no_protocol_revision: {
-    en: () => 'No protocol_revision was ever observed, so a schema-valid attestation payload could not be assembled.',
-    zh: () => '未观察到 protocol_revision，无法组装符合 schema 的 attestation payload',
+    en: () => 'No usable protocol_revision was observed, so a schema-valid attestation payload could not be assembled.',
+    zh: () => '未观察到可用的 protocol_revision，无法组装符合 schema 的 attestation payload',
   },
   disqualified_no_fingerprint: {
     en: () => 'toolset_fingerprint/schema_fingerprint could not be computed — an attestation payload could not be assembled.',
     zh: () => 'toolset_fingerprint/schema_fingerprint 未能计算，无法组装 attestation payload',
+  },
+  disqualified_protocol_revision_not_a_date: {
+    en: () => 'The server declared a protocol version that is not a calendar date, so a schema-valid attestation payload could not be assembled.',
+    zh: () => '服务器声明的协议版本不是日历日期，无法组装符合 schema 的 attestation payload',
   },
   disqualified_signer_call_failed: {
     en: (p) => `The signer call failed — this result could not be signed: ${requireParam(p, 'message')}`,

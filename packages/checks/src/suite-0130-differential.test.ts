@@ -59,8 +59,9 @@ import { LEGACY_OFFER_0130, LEGACY_OFFER_BEFORE_0130, MODERN_OFFER, offerAsLive,
 // Suite 0.14.0: the live result's authObservation is set aside before every comparison with the frozen result
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
-import { pagedToolsList, recordSuite0150, suite0150Remap } from './suite-0150-remap.ts'
-import type { Suite0150Observed } from './suite-0150-remap.ts'
+import { pagedToolsList } from './suite-0150-remap.ts'
+import { recordSuite0160, suite0160Remap } from './suite-0160-remap.ts'
+import type { Suite0160Observed } from './suite-0160-remap.ts'
 import { runProbe as frozen0120RunProbe } from './frozen/suite-0.12.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.12.0/src/other-host-declined.ts'
@@ -254,7 +255,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; substituted: { body: number; header: number }; observed: Suite0150Observed }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; substituted: { body: number; header: number }; observed: Suite0160Observed }
 
 /** `live`: the implementation's request sequence for the same input, for the frozen run's offerAsLive; omitted on the implementation's own run. */
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
@@ -290,8 +291,8 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   }
   let seq = 0
   const offer = offerAsLive(fetchImpl, live)
-  // Suite 0.15.0: what suite0150Remap reads off this run's transport.
-  const suite0150 = recordSuite0150(offer.fetchImpl)
+  // Suites 0.15.0 and 0.16.0: what suite0160Remap reads off this run's transport.
+  const suite0150 = recordSuite0160(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
     fetchImpl: suite0150.fetchImpl,
@@ -407,7 +408,7 @@ function compare(id: string, now: Run, old: Run) {
   if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs (after the offer translation)')
   const problem = offerSubstitutionProblem(old.result, old.substituted)
   if (problem) violation(id, problem)
-  const want = suite0150Remap(suite0130Remap(old.result, old.requests), old.observed)
+  const want = suite0160Remap(suite0130Remap(old.result, old.requests), old.observed)
   if (!identical(withoutAuthObservation(now.result), want)) {
     violation(id, `ProbeResult is not 0.12.0's with probeOfferedRevision and nothing else\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
   }

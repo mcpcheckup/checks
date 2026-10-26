@@ -1411,7 +1411,7 @@ await t('T86b × 预算（后半）：握手层门控 + maxRequests=3 —— 门
   assert.deepStrictEqual([auth.execution_status, auth.assertion_status, auth.reason, auth.unverified_reason], ['SKIPPED', 'UNVERIFIED', want, want])
 })
 
-console.log('\nsuite 0.12.0：latency_profile 从不运行 —— 每条分支都是 SKIPPED/UNVERIFIED latency_not_recorded，恰好一行，绝不 VERIFIED')
+console.log('\nsuite 0.12.0 → 0.16.0：这些 fixture 不报计时，latency_profile 恰好一行、绝不 VERIFIED（0.16.0 的计时见 probe-latency.test.ts）')
 
 const LATENCY_NOT_RECORDED = { key: 'latency_not_recorded' }
 function assertLatencyNotRecorded(result: ProbeResult, label: string) {
@@ -1433,10 +1433,15 @@ await t('credential-gated runs (handshake gate, tools/list gate, tools/call gate
   }
 })
 
-await t('cascade runs (abort before the handshake settles, after it, and a body-budget abort): latency_profile keeps latency_not_recorded and is not overwritten by the cascade reason', async () => {
+await t('cascade runs (abort before the handshake settles, after it, and a body-budget abort): latency_profile is never overwritten by the cascade reason — latency_no_samples when nothing was answered (suite 0.16.0), latency_not_recorded otherwise (these fixtures report no time)', async () => {
   for (const position of [1, 2, 3]) {
     const result = await runThrowingAt(position, () => atHop(0, new UpstreamFetchFailed(new TypeError('x'))))
-    assertLatencyNotRecorded(result, `abort at request ${position}`)
+    if (position === 1) {
+      const a = row(result, 'latency_profile')
+      assert.deepStrictEqual([a.execution_status, a.assertion_status, a.reason, a.unverified_reason], ['SKIPPED', 'UNVERIFIED', { key: 'latency_no_samples' }, { key: 'latency_no_samples' }], 'abort at request 1')
+    } else {
+      assertLatencyNotRecorded(result, `abort at request ${position}`)
+    }
     assert.notEqual(row(result, 'tools_list').reason?.key, 'latency_not_recorded', 'the cascade reason is still the cascade reason')
   }
   assertLatencyNotRecorded(await runProbe(makeInput(FIXTURE_CORPUS.find((f) => f.id === 'response-exceeds-budget')!.createHandler())), 'response-exceeds-budget')

@@ -78,8 +78,9 @@ import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0
 // Suite 0.14.0: the live result's authObservation is set aside before every comparison with the frozen result
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
-import { pagedToolsList, recordSuite0150, suite0150Remap } from './suite-0150-remap.ts'
-import type { Suite0150Observed } from './suite-0150-remap.ts'
+import { pagedToolsList } from './suite-0150-remap.ts'
+import { recordSuite0160, suite0160Remap } from './suite-0160-remap.ts'
+import type { Suite0160Observed } from './suite-0160-remap.ts'
 import { runProbe as frozen0110RunProbe } from './frozen/suite-0.11.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.11.0/src/other-host-declined.ts'
@@ -279,7 +280,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0150Observed }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0160Observed }
 
 /** `live`: the implementation's request sequence for the same input, for the frozen run's offerAsLive (suite 0.13.0); omitted on the implementation's own run. */
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
@@ -316,8 +317,8 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
   const offer = offerAsLive(recorded.fetchImpl, live)
-  // Suite 0.15.0: what suite0150Remap reads off this run's transport.
-  const suite0150 = recordSuite0150(offer.fetchImpl)
+  // Suites 0.15.0 and 0.16.0: what suite0160Remap reads off this run's transport.
+  const suite0150 = recordSuite0160(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
     fetchImpl: suite0150.fetchImpl,
@@ -417,8 +418,10 @@ const seen = {
 function honest(id: string, r: Run) {
   const status = r.toolsCallStatus
   const latency = rowOf(r.result, 'latency_profile')
-  if (!(latency.execution_status === 'SKIPPED' && latency.assertion_status === 'UNVERIFIED' && latency.reason?.key === 'latency_not_recorded')) {
-    violation(id, `latency_profile is not SKIPPED/UNVERIFIED latency_not_recorded: ${JSON.stringify([latency.execution_status, latency.assertion_status, latency.reason])}`)
+  // Suite 0.16.0: this transport reports no time, so latency_profile is still never VERIFIED here;
+  // a run in which no POST was answered says so (latency_no_samples, suite-0160-remap.ts).
+  if (!(latency.execution_status === 'SKIPPED' && latency.assertion_status === 'UNVERIFIED' && (latency.reason?.key === 'latency_not_recorded' || latency.reason?.key === 'latency_no_samples'))) {
+    violation(id, `latency_profile is not SKIPPED/UNVERIFIED latency_not_recorded or latency_no_samples: ${JSON.stringify([latency.execution_status, latency.assertion_status, latency.reason])}`)
   }
   const auth = rowOf(r.result, 'auth_metadata')
   // status null: no tools/call was sent — the credential-gate path judges the 401 the handshake or tools/list itself got.
@@ -472,7 +475,7 @@ for (const fixture of FIXTURE_CORPUS) {
       const old = await runOnce(frozen0110RunProbe, fixture.createHandler, v, now.requests)
       // Suite 0.15.0: a run whose tools/list paged is set aside (counted); suite-0150-differential.test.ts proves it.
       if (pagedToolsList(now.requests)) { pagedSetAside++; continue }
-      compare(id, now, old, suite0150Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed))
+      compare(id, now, old, suite0160Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed))
     } catch (e) {
       violation(id, `threw ${(e as Error).message}`)
     }
@@ -493,7 +496,7 @@ for (const fixture of FIXTURE_CORPUS) {
         if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
         if (!now.threw) seen.notReached++
         else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
-        compare(id, now, old, suite0150Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed))
+        compare(id, now, old, suite0160Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed))
       } catch (e) {
         violation(id, `threw ${(e as Error).message}`)
       }
