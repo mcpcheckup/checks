@@ -3,11 +3,14 @@ import { CHECKS_REGISTRY, isKnownCheckId, getCheckIds } from './registry.ts'
 import type { ChecksRegistry } from './registry.ts'
 import frozen0140Checks from './frozen/suite-0.14.0/checks.json' with { type: 'json' }
 import frozen0150Checks from './frozen/suite-0.15.0/checks.json' with { type: 'json' }
+import frozen0160Checks from './frozen/suite-0.16.0/checks.json' with { type: 'json' }
 
 /** Registry 0.13.0, the one suite 0.14.0 shipped with. */
 const FROZEN_0130_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0140Checks
 /** Registry 0.14.0, the one suite 0.15.0 shipped with. */
 const FROZEN_0140_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0150Checks
+/** Registry 0.15.0, the one suite 0.16.0 shipped with. */
+const FROZEN_0150_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0160Checks
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -160,13 +163,38 @@ const HOW_APPENDED_0140: Record<string, { en: string; zh: string }> = {
 t('suite 0.15.0：七项检查的 how_en / how_zh = registry 0.13.0 的原文 + 恰好一句（逐字固定），其余 explain / predicate 文字一字不动', () => {
   for (const [id, added] of Object.entries(HOW_APPENDED_0140)) {
     const before = FROZEN_0130_REGISTRY.checks.find((c) => c.check_id === id)!
-    const now = CHECKS_REGISTRY.checks.find((c) => c.check_id === id)!
+    // Registry 0.15.0 still carries this text for all seven; registry 0.16.0 rewords
+    // tool_description_hygiene.how (pinned below).
+    const now = FROZEN_0150_REGISTRY.checks.find((c) => c.check_id === id)!
     assert.equal(now.explain.how_en, before.explain.how_en + added.en, `${id}.how_en`)
     assert.equal(now.explain.how_zh, before.explain.how_zh + added.zh, `${id}.how_zh`)
     for (const field of ['what_en', 'what_zh', 'cannot_en', 'cannot_zh'] as const) assert.equal(now.explain[field], before.explain[field], `${id}.${field}`)
     assert.equal(now.predicate_en, before.predicate_en, `${id}.predicate_en`)
     assert.equal(now.predicate_zh, before.predicate_zh, `${id}.predicate_zh`)
   }
+})
+
+// Registry 0.16.0 (suite 0.17.0): tool_description_hygiene.how gains the zero-width and the
+// injection sentences, inserted after the first sentence; nothing else in checks.json moves
+// but that check's docs_version (pinned below). The anomalous-length wording is unchanged.
+const HYGIENE_INSERTED_0160 = {
+  en: ' A ZWNJ or ZWJ between two characters of one script that uses it in ordinary spelling (Arabic, Devanagari and the other scripts we list), combining marks skipped, is not a hit; nor is a ZWJ directly between two pictographic (emoji) characters, though a ZWJ after a skin-tone modifier still is. "Do not tell the user" (or inform, mention, reveal, show) counts only when followed by "about", "that you", "what you", "how you", "anything", "any of", one of . , ; : ! ) or the end of the text; "system prompt" or "developer prompt" counts only after "your" or after one of reveal, print, output, repeat, disclose, leak, ignore, override, disregard or forget (optionally followed by the, any or all).',
+  zh: '夹在同一种文字的两个字符之间（跳过组合附加符号）、属于正常拼写的 ZWNJ / ZWJ（适用于阿拉伯文、天城文等我们列出的文字）不算命中；直接夹在两个图形符号（emoji）字符之间的 ZWJ 也不算，但跟在肤色修饰符后面的 ZWJ 仍算。「do not tell the user」（以及 inform、mention、reveal、show）只在后面紧跟 about、that you、what you、how you、anything、any of、. , ; : ! ) 之一或文本结尾时才算；「system prompt」「developer prompt」只在前面是 your，或是 reveal、print、output、repeat、disclose、leak、ignore、override、disregard、forget 之一（中间可隔 the、any 或 all）时才算。',
+}
+
+t('suite 0.17.0：tool_description_hygiene.how_en / how_zh = registry 0.15.0 的原文在第一句后插入两句（逐字固定）；其余检查与其余字段一字不动', () => {
+  const before = FROZEN_0150_REGISTRY.checks.find((c) => c.check_id === 'tool_description_hygiene')!
+  const now = CHECKS_REGISTRY.checks.find((c) => c.check_id === 'tool_description_hygiene')!
+  const enCut = before.explain.how_en.indexOf(' We read every page')
+  const zhCut = before.explain.how_zh.indexOf('我们读取工具列表的全部页')
+  assert.ok(enCut > 0 && zhCut > 0)
+  assert.equal(now.explain.how_en, before.explain.how_en.slice(0, enCut) + HYGIENE_INSERTED_0160.en + before.explain.how_en.slice(enCut))
+  assert.equal(now.explain.how_zh, before.explain.how_zh.slice(0, zhCut) + HYGIENE_INSERTED_0160.zh + before.explain.how_zh.slice(zhCut))
+  assert.ok(now.explain.how_en.includes('anomalous length') && now.explain.how_zh.includes('异常长度'), 'the length wording stays (deferred to 0.18.0)')
+  assert.deepStrictEqual({ ...now, docs_version: before.docs_version, explain: { ...now.explain, how_en: before.explain.how_en, how_zh: before.explain.how_zh } }, before)
+  const others = (r: Pick<ChecksRegistry, 'checks'>) => r.checks.filter((c) => c.check_id !== 'tool_description_hygiene')
+  assert.deepStrictEqual(others(CHECKS_REGISTRY), others(FROZEN_0150_REGISTRY))
+  for (const text of Object.values(HYGIENE_INSERTED_0160)) assert.doesNotMatch(text, /certified|secure|safe|trusted|评分|健康度|通过率/i)
 })
 
 t('no_baseline_reason：两项基线检查的「没有基线」原因逐字固定，且不把「未认领」当作原因（已认领但未确认基线的 target 也走这条）', () => {
@@ -208,14 +236,27 @@ t('redirect_policy.how 不再写「所有请求都跟随」的旧说法，写的
 // where suite 0.14.0 withheld it on a first-page nextCursor).
 // Every other value is registry 0.13.0's (frozen/suite-0.14.0/checks.json).
 // Registry 0.15.0 (suite 0.16.0) moves latency_profile alone (v0.3.0: it is measured);
-// every other value is registry 0.14.0's (frozen/suite-0.15.0/checks.json). A later bump of
-// any check updates these tables in the same change, deliberately.
+// every other value is registry 0.14.0's (frozen/suite-0.15.0/checks.json).
+// Registry 0.16.0 (suite 0.17.0) moves tool_description_hygiene alone (v0.3.0: the zero-width
+// and injection rules narrow); every other value is registry 0.15.0's
+// (frozen/suite-0.16.0/checks.json). A later bump of any check updates these tables in the
+// same change, deliberately.
+t('docs_version：registry 0.16.0 只动 tool_description_hygiene（v0.3.0），其余 14 项与 registry 0.15.0 的 checks.json 逐条相同', () => {
+  const previousRegistry = Object.fromEntries(FROZEN_0150_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(FROZEN_0150_REGISTRY.registry_version, '0.15.0')
+  assert.equal(CHECKS_REGISTRY.registry_version, '0.16.0')
+  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.deepStrictEqual(now, { ...previousRegistry, tool_description_hygiene: 'v0.3.0' })
+  assert.equal(previousRegistry.tool_description_hygiene, 'v0.2.0')
+})
+
 t('docs_version：registry 0.15.0 只动 latency_profile（v0.3.0），其余 14 项与 registry 0.14.0 的 checks.json 逐条相同', () => {
   const previousRegistry = Object.fromEntries(FROZEN_0140_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
   assert.equal(FROZEN_0140_REGISTRY.registry_version, '0.14.0')
-  assert.equal(CHECKS_REGISTRY.registry_version, '0.15.0')
-  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
-  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.equal(FROZEN_0150_REGISTRY.registry_version, '0.15.0')
+  const now = Object.fromEntries(FROZEN_0150_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(FROZEN_0150_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
   assert.deepStrictEqual(now, { ...previousRegistry, latency_profile: 'v0.3.0' })
   assert.equal(previousRegistry.latency_profile, 'v0.2.0')
 })

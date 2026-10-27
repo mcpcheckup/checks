@@ -45,6 +45,7 @@ import type { Assertion } from '@mcpcheckup/attestation-schema'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { latency0160Remap } from './suite-0160-remap.ts'
+import { hygiene0170Remap } from './suite-0170-remap.ts'
 import { recordRequest } from './suite-0130-remap.ts'
 import { runProbe as frozen0150RunProbe } from './frozen/suite-0.15.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
@@ -401,7 +402,7 @@ function compare(id: string, now: Run, old: Run, timed: boolean) {
   if (now.threw !== old.threw) { violation(id, 'one side reached the throwing request and the other did not'); return }
   let want: ProbeResult
   try {
-    want = timed ? withLatency(old.result, LATENCY_ORACLE(old.result, old.postTimes, old.postAnswered)) : latency0160Remap(old.result, old.postAnswered)
+    want = hygiene0170Remap(timed ? withLatency(old.result, LATENCY_ORACLE(old.result, old.postTimes, old.postAnswered)) : latency0160Remap(old.result, old.postAnswered))
   } catch (e) { violation(id, `remap refused: ${(e as Error).message}`); return }
   if (!identical(now.result, want)) {
     violation(id, `ProbeResult is not 0.15.0's with the latency row\n           new ${JSON.stringify(now.result.assertions.find((a) => a.check_id === 'latency_profile'))}\n           want ${JSON.stringify(want.assertions.find((a) => a.check_id === 'latency_profile'))}`)

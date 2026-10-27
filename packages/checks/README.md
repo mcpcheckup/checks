@@ -573,6 +573,53 @@ At the end of the run `probe.ts` writes the one `latency_profile` row (`judgeLat
 The numbers travel in the signed `reason.params` of attestation payload v0.4; the
 schema, signer and verifier are unchanged.
 
+## Tool description hygiene: what suite 0.17.0 no longer counts
+
+`tool_description_hygiene` (`hygiene.ts`) reports signals and never infers intent. Suite
+0.17.0 narrows two of its rules. Both can only remove a flag, never add one, and the
+signed result keeps its shape: the same reason keys (`hygiene_risk_detected` with
+`{ hitCount, totalCount }`, or `hygiene_no_risk`), with fewer tools counted.
+
+**`zero_width_chars`.** Every zero-width character in the text is examined, not only the
+first. A ZWNJ (U+200C) or ZWJ (U+200D) is not a hit when both neighbours, with combining
+marks (`\p{M}`) skipped, share one `Script_Extensions` value from this list: Arabic,
+Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam,
+Sinhala, Syriac, Thaana. These are scripts whose ordinary spelling uses the two
+characters (cursive joining, conjuncts and half forms). A ZWJ directly between two
+`\p{Extended_Pictographic}` characters (combining marks such as U+FE0F skipped) is not a
+hit either.
+Everything else still is: every other zero-width character (U+200B, U+200E, U+200F,
+U+2060–U+2064, U+FEFF, U+180E), and a ZWNJ or ZWJ at either end of the text, next to
+another zero-width character, between ASCII letters, between two different scripts, or
+next to an unassigned (`\p{Cn}`) code point. The last rule means an engine with older
+Unicode data treats a character it does not know as a hit, not as compliant. U+FE0E and
+U+FE0F were never scanned and still are not. A ZWJ after a skin-tone modifier is a hit:
+the modifier is neither `\p{M}` nor `\p{Extended_Pictographic}`.
+
+**`injection_imperative`, two of its seven patterns.**
+
+- "do not tell / inform / mention / reveal / show the user (or human)" is a hit only when
+  followed by `about`, `that you`, `what you`, `how you`, `anything`, `any of`, one
+  of `.` `,` `;` `:` `!` `)` (optionally after whitespace) or the end of the text. "Do not tell the user X until Y" is an
+  ordinary instruction about what not to claim and is no longer a hit.
+- "system prompt" / "developer prompt" is a hit only after `your`, or after reveal,
+  print, output, repeat, disclose, leak, ignore, override, disregard or forget
+  (optionally with `the`, `any` or `all` between). A `system prompt` field or parameter,
+  an agent's configured prompt, and "never treat it as a system prompt" are no longer
+  hits.
+
+The other five `injection_imperative` patterns are unchanged, and so are
+`pseudo_system_delimiter`, `embedded_markup` and `excessive_length`.
+
+`hygiene-0170-fixtures.ts` holds the evidence: minimal reconstructions (not copies of any
+real server's text) of the five injections the rules must keep catching, the false
+positives they drop (each tagged with its class), and inputs that must keep their flags.
+`suite-0170-differential.test.ts` holds the live suite against frozen suite 0.16.0: on
+every tool description the differentials serve and every fixture, the 0.17.0 flags are a
+subset of the 0.16.0 ones, a tool loses a flag only if the fixtures list it, and the
+five must-hit inputs keep exactly their flags. `hygiene-0170.test.ts` pins the
+zero-width rule code point by code point.
+
 ## What's out of scope in this implementation
 
 - **`tls_certificate`** (`checks.json`'s one check with `executor: "container"`) is

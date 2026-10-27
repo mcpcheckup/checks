@@ -72,8 +72,8 @@ import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
 import { pagedToolsList } from './suite-0150-remap.ts'
-import { recordSuite0160, suite0160Remap } from './suite-0160-remap.ts'
-import type { Suite0160Observed } from './suite-0160-remap.ts'
+import { recordSuite0170, suite0170Remap } from './suite-0170-remap.ts'
+import type { Suite0170Observed } from './suite-0170-remap.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, FetchLike, GuardSignals, ProbeResult } from './types.ts'
 import { RUNS_ONCE_ONLY, HAS_FULL_SET, IS_MERGE, keepThisShard, writeShardOut, readShardIns, mergeCountMaps, SHARD_COUNT, SHARD_INDEX } from './differential-shard.ts'
@@ -196,7 +196,15 @@ const FROZEN_080_BLOBS: Record<string, string> = {
  *  field they read (requestCount, redirectCrossHostObserved, dnsAnswerChangedObserved), and checks.json is
  *  reached type-only with the registry passed in as input. So none of the four can alter what the frozen files
  *  compute. The suite 0.16.0 change itself is carried by the remap (suite-0160-remap.ts) and proved against
- *  frozen 0.15.0 by suite-0160-differential.test.ts. */
+ *  frozen 0.15.0 by suite-0160-differential.test.ts.
+ *
+ *  Suite 0.17.0 (tool_description_hygiene narrowed) re-pins two files: checks.json (registry 0.16.0: copy and
+ *  docs_version v0.3.0 of tool_description_hygiene), still reached type-only with the registry passed in as
+ *  input, and hygiene.ts (the narrowed zero_width_chars and injection_imperative rules). The frozen probe calls
+ *  the live runHygieneCheck, so both sides here compute the suite 0.17.0 hygiene row from the same tools and the
+ *  comparison this file makes is unchanged; the frozen side no longer reproduces its own suite's hygiene row,
+ *  which this file never tested. The suite 0.17.0 change itself is carried by the remap (suite-0170-remap.ts) and proved against frozen 0.16.0 by
+ *  suite-0170-differential.test.ts. */
 const CLOSURE_080_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
@@ -214,9 +222,9 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': 'a7d40b5bf344ca1cf7610519b392bff484583aa7', // registry 0.15.0 (suite 0.16.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': '4c8562be8700fd9549372f5b0cb11d5092ebbe4d', // registry 0.16.0 (suite 0.17.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
-  'packages/checks/src/hygiene.ts': '1120712366d47ee75588280a9967ea758f5a943d',
+  'packages/checks/src/hygiene.ts': '4c46c26bccb264cf285320f1294f88bc1077fd33', // suite 0.17.0 (see above) — git hash-object packages/checks/src/hygiene.ts
   'packages/checks/src/latency.ts': '64947a43c414ded3590e599a7f08569391da6bef', // suite 0.16.0, reached from wire.ts (see above) — git hash-object packages/checks/src/latency.ts
   'packages/checks/src/registry.ts': '6f610be98235985b0a27d4cfac5ba805b6a3f51b', // suite 0.15.0 (type-only; see above) — git hash-object packages/checks/src/registry.ts
   'packages/checks/src/types.ts': 'e5cb68a8775242ea17d8c1520076f54beaf2a393', // suite 0.16.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
@@ -339,7 +347,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0160Observed }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0170Observed }
 
 /** `live`: the implementation's request sequence for the same input, for 0.8.0's offerAsLive (suite 0.13.0); omitted on the implementation's own run. */
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
@@ -376,8 +384,8 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
   const offer = offerAsLive(recorded.fetchImpl, live)
-  // Suites 0.15.0 and 0.16.0: what suite0160Remap reads off this run's transport.
-  const suite0150 = recordSuite0160(offer.fetchImpl)
+  // Suites 0.15.0 to 0.17.0: what suite0170Remap reads off this run's transport.
+  const suite0150 = recordSuite0170(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
     fetchImpl: suite0150.fetchImpl,
@@ -511,7 +519,7 @@ if (!IS_MERGE) {
         const old = await runOnce(frozen080RunProbe, fixture.createHandler, v, now.requests)
         // Suite 0.15.0: a run whose tools/list paged is set aside (counted per shard); suite-0150-differential.test.ts proves it.
         if (pagedToolsList(now.requests)) { pagedSetAside++; continue }
-        const want = suite0160Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed)
+        const want = suite0170Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed)
         const offerProblem = offerSubstitutionProblem(old.result, old.substituted)
         if (offerProblem) violation(id, offerProblem)
         if (!identical(withoutAuthObservation(now.result), want)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
@@ -544,7 +552,7 @@ if (!IS_MERGE) {
           // Settled when the error landed = 0.8.0 did not write reachability from its catch.
           const settled = old.result.assertions.find((a) => a.check_id === 'reachability')!.execution_status !== 'ERROR'
           const reason = settled ? settledReason : unsettledReason
-          const expected = suite0160Remap(suite0130Remap(suite0120Remap(now.threw && reason !== null ? remapped(old.result, reason) : old.result, old.toolsCallStatus), old.requests), old.observed)
+          const expected = suite0170Remap(suite0130Remap(suite0120Remap(now.threw && reason !== null ? remapped(old.result, reason) : old.result, old.toolsCallStatus), old.requests), old.observed)
           if (!identical(withoutAuthObservation(now.result), expected)) violation(id, `ProbeResult is not 0.8.0's ${reason === null || !now.threw ? 'unchanged' : 'with the one remap'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
           if (now.threw && reason !== null) {
             seen.remappedRows += now.result.assertions.filter((a) => identical(a.reason, reason)).length

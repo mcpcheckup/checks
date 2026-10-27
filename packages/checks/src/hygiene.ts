@@ -36,12 +36,95 @@ const TAG_CHARS = /[\u{E0000}-\u{E007F}]/u
 const BIDI = /[‪-‮⁦-⁩]/u
 const PUA = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u
 
+/*
+ * Suite 0.17.0: a ZWNJ (U+200C) or ZWJ (U+200D) is not a signal where ordinary
+ * orthography puts it. In these scripts the Unicode Standard uses the two
+ * characters for spelling, not for hiding text: cursive joining control in
+ * Arabic and Syriac, and Indic conjunct and half-form control in the Brahmic
+ * scripts listed (Sinhala included). Thaana is listed because it is written
+ * with Arabic-script punctuation and ZWNJ appears inside it in the same way.
+ * Both neighbours (combining marks skipped) must share one of these scripts.
+ * A ZWJ between two Extended_Pictographic characters is an emoji ZWJ sequence.
+ * Everything else still counts: every other zero-width character, a ZWNJ/ZWJ at
+ * either end, next to another zero-width character, between ASCII, between two
+ * different scripts, or next to an unassigned (Cn) code point. The Cn rule
+ * keeps an engine whose Unicode data is older from treating a character it
+ * does not know as compliant.
+ */
+const ORTHOGRAPHIC_SCRIPTS: RegExp[] = [
+  /\p{Script_Extensions=Arabic}/u, /\p{Script_Extensions=Devanagari}/u, /\p{Script_Extensions=Bengali}/u,
+  /\p{Script_Extensions=Gurmukhi}/u, /\p{Script_Extensions=Gujarati}/u, /\p{Script_Extensions=Oriya}/u,
+  /\p{Script_Extensions=Tamil}/u, /\p{Script_Extensions=Telugu}/u, /\p{Script_Extensions=Kannada}/u,
+  /\p{Script_Extensions=Malayalam}/u, /\p{Script_Extensions=Sinhala}/u, /\p{Script_Extensions=Syriac}/u,
+  /\p{Script_Extensions=Thaana}/u,
+]
+const MARK = /\p{M}/u
+const UNASSIGNED = /\p{Cn}/u
+const PICTOGRAPHIC = /\p{Extended_Pictographic}/u
+const ZWNJ = 0x200c
+const ZWJ = 0x200d
+
+/** The code point ending just before UTF-16 index `end`, combining marks skipped. */
+function letterBefore(text: string, end: number): string | undefined {
+  let i = end
+  while (i > 0) {
+    const lowAt = i - 1
+    const start = lowAt > 0 && /[\uDC00-\uDFFF]/.test(text[lowAt]!) && /[\uD800-\uDBFF]/.test(text[lowAt - 1]!) ? lowAt - 1 : lowAt
+    const ch = String.fromCodePoint(text.codePointAt(start)!)
+    if (!MARK.test(ch)) return ch
+    i = start
+  }
+  return undefined
+}
+
+/** The code point starting at UTF-16 index `start` or later, combining marks skipped. */
+function letterAfter(text: string, start: number): string | undefined {
+  let i = start
+  while (i < text.length) {
+    const ch = String.fromCodePoint(text.codePointAt(i)!)
+    if (!MARK.test(ch)) return ch
+    i += ch.length
+  }
+  return undefined
+}
+
+/** Whether the zero-width character at `at` sits where ordinary orthography puts it. */
+function orthographicJoiner(text: string, at: number): boolean {
+  const cp = text.charCodeAt(at)
+  if (cp !== ZWNJ && cp !== ZWJ) return false
+  // A run of two or more always counts: neither raw neighbour may be zero-width.
+  if ((at > 0 && ZERO_WIDTH.test(text[at - 1]!)) || (at + 1 < text.length && ZERO_WIDTH.test(text[at + 1]!))) return false
+  const before = letterBefore(text, at)
+  const after = letterAfter(text, at + 1)
+  if (before === undefined || after === undefined || UNASSIGNED.test(before) || UNASSIGNED.test(after)) return false
+  if (cp === ZWJ && PICTOGRAPHIC.test(before) && PICTOGRAPHIC.test(after)) return true
+  return ORTHOGRAPHIC_SCRIPTS.some((script) => script.test(before) && script.test(after))
+}
+
+/** The first zero-width character that is a signal, or null. */
+function zeroWidthSignal(text: string): { index: number; char: string } | null {
+  const all = new RegExp(ZERO_WIDTH.source, 'gu')
+  for (let m = all.exec(text); m !== null; m = all.exec(text)) {
+    if (!orthographicJoiner(text, m.index)) return { index: m.index, char: m[0] }
+  }
+  return null
+}
+
 /** 指向助手而非描述工具本身的祈使句式 */
 const IMPERATIVES: [RegExp, string][] = [
   [/\bignore\s+(all\s+|any\s+)?(previous|prior|above|earlier)\b/i, '包含「ignore previous」类指令'],
   [/\bdisregard\s+(all\s+|any\s+)?(previous|prior|above|the)\b/i, '包含「disregard previous」类指令'],
-  [/\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b/i, '要求对用户隐瞒信息'],
-  [/\b(system|developer)\s+prompt\b/i, '提及 system / developer prompt'],
+  // Suite 0.17.0: only when what follows "the user" makes it concealment from the
+  // user (about…, that you…, what you…, anything, or the clause ends there).
+  // "Do not tell the user X until Y" is an ordinary flow instruction and no
+  // longer counts.
+  [/\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b(?=\s*([.,;:!)]|$|(about|that\s+you|what\s+you|how\s+you|anything|any\s+of)\b))/i,
+   '要求对用户隐瞒信息'],
+  // Suite 0.17.0: only the prompt of the assistant reading this ("your system
+  // prompt"), or one being extracted or overridden. A system_prompt parameter, an
+  // agent's configured prompt, or "never treat it as a system prompt" no longer counts.
+  [/\byour\s+(system|developer)\s+prompt\b|\b(reveal|print|output|repeat|disclose|leak|ignore|override|disregard|forget)\s+(the\s+|any\s+|all\s+)?(system|developer)\s+prompt\b/i,
+   '提及 system / developer prompt'],
   [/\byou\s+(must|should|shall)\s+(always|never)\b/i, '对助手下达绝对指令'],
   [/\bbefore\s+(using|calling)\s+any\s+other\s+tool\b/i, '试图抢占其他工具的调用顺序'],
   // 只匹配「动词 + 具体的敏感文件路径」。刻意不匹配 secret / api key 等普通词——
@@ -60,8 +143,10 @@ function snippet(s: string, at: number): string {
 }
 
 function scanText(text: string, where: string, out: HygieneHit[]): void {
+  const z = zeroWidthSignal(text)
+  if (z) out.push({ flag: 'zero_width_chars', note: `${where} 含零宽 / 不可见字符`, at: z.index,
+                    sample: JSON.stringify(z.char) })
   const checks: [RegExp, HygieneFlag, string][] = [
-    [ZERO_WIDTH, 'zero_width_chars', '含零宽 / 不可见字符'],
     [TAG_CHARS, 'unicode_tag_chars', '含 Unicode Tag 区字符（可编码隐藏文本）'],
     [BIDI, 'bidi_override', '含双向覆盖控制符（显示顺序可与实际内容不一致）'],
     [PUA, 'private_use_area', '含私用区字符'],

@@ -64,14 +64,31 @@ function seededShuffle<T>(items: T[], seed: number): T[] {
   return out
 }
 
-const jsonValueArb = fc.jsonValue({ stringUnit: 'grapheme', maxDepth: 3 })
+// 同一对象里两个不同的原始键 NFC 后相同，nfc-jcs/v1 按设计拒收
+// （DUPLICATE_KEY_AFTER_NFC，canonicalize.ts）。这里的性质讲的是可规范化输入，
+// 所以生成阶段把这类样本筛掉；拒收本身由文件末尾的显式测试锁住。
+// 与 differential.test.ts 的 hasNfcKeyCollision 同一实现（TODO 1269）。
+function hasNfcKeyCollision(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(hasNfcKeyCollision)
+  const obj = value as Record<string, unknown>
+  const seen = new Set<string>()
+  for (const k of Object.keys(obj)) {
+    const n = k.normalize('NFC')
+    if (seen.has(n)) return true
+    seen.add(n)
+  }
+  return Object.values(obj).some(hasNfcKeyCollision)
+}
+
+const jsonValueArb = fc.jsonValue({ stringUnit: 'grapheme', maxDepth: 3 }).filter((v) => !hasNfcKeyCollision(v))
 
 console.log('property: canonicalize / digest 的通用性质（fast-check）')
 
 await t('对象键顺序打乱 → canonicalize 输出完全相同（属性测试，随机内容与随机排列）', () => {
   fc.assert(
     fc.property(
-      fc.dictionary(fc.string({ unit: 'grapheme-composite', minLength: 1, maxLength: 10 }), jsonValueArb, { maxKeys: 8 }),
+      fc.dictionary(fc.string({ unit: 'grapheme-composite', minLength: 1, maxLength: 10 }), jsonValueArb, { maxKeys: 8 }).filter((obj) => !hasNfcKeyCollision(obj)),
       fc.integer(),
       (obj, seed) => {
         const shuffled = Object.fromEntries(seededShuffle(Object.entries(obj), seed))
@@ -244,6 +261,22 @@ await t('projectToolset：重名工具集，wire 顺序打乱后输出不变（�
     }),
     { numRuns: 500 },
   )
+})
+
+console.log('\nproperty: 生成器筛掉的 NFC 撞键，在这里显式锁住拒收（TODO 1269）')
+
+await t('inputSchema 里 U+2190 U+0338 与 U+219A 两个键 → canonicalize / projectSchemas 抛 DUPLICATE_KEY_AFTER_NFC；projectToolset 只取 name，不抛', () => {
+  const decomposed = '↚'
+  const precomposed = '↚'
+  assert.notEqual(decomposed, precomposed, '前提：归一化前是两个不同的 JS 字符串')
+  assert.equal(decomposed.normalize('NFC'), precomposed.normalize('NFC'), '前提：NFC 后相同')
+  const inputSchema: Record<string, unknown> = {}
+  inputSchema[decomposed] = ''
+  inputSchema[precomposed] = false
+  const tools = [{ name: 'arrow', inputSchema }]
+  throwsCode(() => canonicalize(inputSchema), 'DUPLICATE_KEY_AFTER_NFC')
+  throwsCode(() => projectSchemas(tools), 'DUPLICATE_KEY_AFTER_NFC')
+  assert.deepEqual(projectToolset(tools), ['arrow'])
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

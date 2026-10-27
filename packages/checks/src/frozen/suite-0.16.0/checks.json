@@ -1,0 +1,295 @@
+{
+  "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
+  "registry_version": "0.15.0",
+  "suite_id": "remote-baseline-v0.1",
+  "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
+  "groups": [
+    {
+      "key": "reach",
+      "name_zh": "可达性与性能",
+      "name_en": "Reachability & Performance",
+      "order": 1,
+      "description_zh": "这个 endpoint 现在还活着吗、响应多快。**只观测，不判定**——我们不定义多少毫秒算慢，那取决于你的用户。",
+      "description_en": "Is this endpoint alive right now, and how fast does it respond. **Observation only, no verdict** — we don't define how many milliseconds counts as slow; that depends on your users."
+    },
+    {
+      "key": "proto",
+      "name_zh": "协议契约正确性",
+      "name_en": "Protocol Contract",
+      "order": 2,
+      "description_zh": "你的 server 是否真的按它声称的那版 MCP 协议说话。这是本产品的主体：绝大多数「agent 突然用不了」的故障出在这一层，而不是安全层。",
+      "description_en": "Whether your server actually speaks the MCP protocol revision it claims to. This is the core of the product: most \"the agent suddenly stopped working\" failures live at this layer, not the security layer."
+    },
+    {
+      "key": "sec",
+      "name_zh": "安全卫生",
+      "name_en": "Security Hygiene",
+      "order": 3,
+      "description_zh": "公开可观察的基础安全属性。**这不是安全扫描**——我们不测 prompt injection、数据外泄、权限滥用，因为那需要执行业务工具，而我们默认禁止这么做。",
+      "description_en": "Publicly observable baseline security properties. **This is not a security scan** — we don't test for prompt injection, data exfiltration, or privilege abuse, because those require calling business tools, which we refuse to do by default."
+    },
+    {
+      "key": "drift",
+      "name_zh": "契约变更与供应链",
+      "name_en": "Contract Drift & Supply Chain",
+      "order": 4,
+      "description_zh": "工具集与 Schema 有没有在你不知情的情况下变过。**只有在你批准过一个基线之后**，变化才会被判为「未通过」；否则它只是一条已记录的变化事实。",
+      "description_en": "Whether the toolset or schema changed without your knowledge. A change is only judged \"failed\" **after you've approved a baseline**; before that, it's just a recorded fact."
+    }
+  ],
+  "checks": [
+    {
+      "n": 1, "check_id": "reachability", "group": "reach", "docs_version": "v0.5.0",
+      "predicate_zh": "endpoint 在预算内响应",
+      "predicate_en": "endpoint responds within budget",
+      "failure_status": null,
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "endpoint 在给定预算内是否返回响应，并记录延迟分布。",
+        "what_en": "Whether the endpoint returns a response within the given budget, and the latency distribution.",
+        "how_zh": "我们的握手交换以 endpoint 的 HTTP 回应结束时（任何状态码都算），记 VERIFIED。如果探测在交换结束前停下——例如 endpoint 要求我们稍后再来（429，或带 Retry-After 的 503）、某个回应超出大小上限、连接出错、或探测的某项预算用尽——本项记 UNVERIFIED 并附上原因，即使 endpoint 已经答复过之前的请求。整次探测（含握手）都在硬上限内进行：总共 8 个请求、10 s，每个回应 2 MB。读取较长工具列表的后续页，最多在 8 个请求之外再加 9 个，同样受 10 s 和每个回应 2 MB 的限制。",
+        "how_en": "Recorded as VERIFIED when our handshake exchange finishes with an HTTP response from the endpoint, whatever its status. If the probe stops before the exchange finishes — for example because the endpoint asks us to back off (429, or 503 with Retry-After), a response is over the size limit, the connection fails, or one of the probe's budgets runs out — this check is UNVERIFIED, with that reason, even if the endpoint had already answered an earlier request. The whole probe, handshake included, runs under hard caps: 8 requests and 10s in total, and 2MB per response. Reading the further pages of a long tool list adds at most 9 requests to the 8; they share the same 10s and the 2MB limit per response.",
+        "cannot_zh": "超时不等于你挂了——也可能是我们这边的网络。所以超预算记 UNVERIFIED 而不是 FAILED。目录里的在线率口径更严：当天任何一次探测在预算内没有收到完整应答，这一天算未应答。",
+        "cannot_en": "A timeout doesn't mean you're down — it could be our network. That's why exceeding budget is UNVERIFIED, not FAILED. The directory's online rate is stricter: a day on which any probe got no complete answer within its budget counts as unanswered."
+      }
+    },
+    {
+      "n": 9, "check_id": "latency_profile", "group": "reach", "docs_version": "v0.3.0",
+      "predicate_zh": "从我们探测节点测得的请求响应时间 p50 / p95",
+      "predicate_en": "p50 / p95 response time of our requests, measured from our probe node",
+      "failure_status": null,
+      "observation_only": true,
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "单次 run 内，我们发往该 endpoint 的请求从发出到收到响应头的耗时：中位数（p50）、第 95 百分位（p95），以及计时的请求数 n。",
+        "what_en": "Within one run: the median (p50) and 95th-percentile (p95) time from sending a request to this endpoint to receiving its response headers, and how many requests were timed (n).",
+        "how_zh": "**不做判定。** VERIFIED 只表示测到了，不表示快：我们不设阈值，也不按速度给 server 排名。本轮中发往该 endpoint、收到 HTTP 回应的每个请求都计时，不论状态码；没收到回应的不计。计时从请求发出前开始，到收到响应头为止，不含我们自己的 DNS 校验，也不含响应体的下载。p50、p95 按最近秩取自 n 个计时请求；少于 20 个请求时，p95 就是其中最慢的一个。握手阶段就停在认证质询的运行不记录时间。一个计时请求都没有时，本项记 UNVERIFIED。",
+        "how_en": "**No verdict is made.** VERIFIED means the time was measured, not that it was fast: we set no threshold and do not rank servers by speed. Every request to the endpoint in the run that got an HTTP response is timed, whatever its status; a request that got none is not. The timer runs from just before the request is sent until the response headers arrive, so our own DNS checks and the download of the body are not included. p50 and p95 are nearest-rank values over the n timed requests; with fewer than 20 requests, p95 is the slowest of them. A run that stops at an authentication challenge during the handshake records no time. With no timed request, this check is UNVERIFIED.",
+        "cannot_zh": "这是我们探测节点看到的值，不代表你的用户看到的值。其中包含我们节点到你 endpoint 之间的网络、建立连接的时间，以及在我们自己 Worker 里的等待。",
+        "cannot_en": "This is what our probe node observed, not what your users see. It includes the network between our node and your endpoint, setting up the connection, and any wait inside our own Worker."
+      }
+    },
+    {
+      "n": 2, "check_id": "transport_type", "group": "proto", "docs_version": "v0.2.0",
+      "predicate_zh": "端点经所用传输回应了握手请求",
+      "predicate_en": "the endpoint answered our handshake request over the transport used",
+      "failure_status": null,
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "本次探测所用的传输类型，以及端点是否经该传输作出回应。",
+        "what_en": "The transport this probe used to reach the server, and whether the endpoint answered over it.",
+        "how_zh": "我们经该传输的握手交换以端点的 HTTP 回应结束时，记 VERIFIED，无论握手本身是否成功（那由 discovery_handshake 判定）。如果探测在交换结束前停下——例如端点要求我们稍后再来、某个回应超出探测的大小上限、或探测的某项预算用尽——本项不记 VERIFIED，并同时记下原因。不会与 server 声明的传输做比对。",
+        "how_en": "Recorded as VERIFIED when our handshake exchange over that transport finishes with an HTTP response from the endpoint, whether or not the handshake itself succeeds — that is discovery_handshake's verdict. If the probe stops before the exchange finishes — for example because the endpoint asks us to back off, a response is over the probe's size limit, or one of the probe's budgets runs out — this check is not recorded as VERIFIED, and the reason is recorded with it. It is not compared against any transport the server declares.",
+        "cannot_zh": "不能说明传输实现有没有 bug。",
+        "cannot_en": "This cannot tell you whether the transport implementation has bugs."
+      }
+    },
+    {
+      "n": 3, "check_id": "protocol_revision", "group": "proto", "docs_version": "v0.2.0",
+      "predicate_zh": "协议 revision 可识别",
+      "predicate_en": "protocol revision is identifiable",
+      "failure_status": "FAILED",
+      "no_credential_status": "UNVERIFIED",
+      "requires_baseline": false,
+      "revision_matrix": ["2024-11-05","2025-03-26","2025-06-18","2025-11-25","2026-07-28"],
+      "explain": {
+        "what_zh": "server 实际遵循的 MCP 协议 revision。",
+        "what_en": "The MCP protocol revision the server actually follows.",
+        "how_zh": "能识别到矩阵内任一版本即通过。",
+        "how_en": "Passes if any version within the recognized matrix is identified.",
+        "cannot_zh": "不能说明该版本实现得完整。当握手被凭据门控（见 discovery_handshake），本检查级联记 UNVERIFIED（原因 credential_required）：握手没有完成，不会拿任何声明的版本号去比对支持矩阵。",
+        "cannot_en": "This cannot tell you whether that version is fully implemented. When the handshake is credential-gated (see discovery_handshake), this check cascades to UNVERIFIED with reason credential_required: the handshake never completed, so no declared version is compared against the support matrix."
+      }
+    },
+    {
+      "n": 4, "check_id": "discovery_handshake", "group": "proto", "docs_version": "v0.3.0",
+      "predicate_zh": "现代 server/discover 或 legacy initialize 行为符合该 revision 规范",
+      "predicate_en": "modern server/discover or legacy initialize behavior matches the revision's spec",
+      "failure_status": "FAILED",
+      "no_credential_status": "UNVERIFIED",
+      "requires_baseline": false,
+      "p0_note_zh": "2026-07-28 已移除旧 initialize / notifications/initialized / Mcp-Session-Id 流程。不得仅按旧握手判定，否则会把最新实现误报为 FAILED。必须有 negative-control fixture。",
+      "p0_note_en": "The 2026-07-28 revision removed the old initialize / notifications/initialized / Mcp-Session-Id flow. Judging solely by the legacy handshake would misreport the newest implementations as FAILED. A negative-control fixture is required.",
+      "explain": {
+        "what_zh": "现代 `server/discover` 或 legacy initialize 的行为是否符合该 revision。",
+        "what_en": "Whether the modern server/discover or legacy initialize handshake behaves according to the identified revision.",
+        "how_zh": "按识别到的 revision 选择对应规范比对。",
+        "how_en": "Compared against the matching spec for whichever revision was identified.",
+        "cannot_zh": "不能说明 discovery 返回的内容是准确的。若决定握手结果的那次响应是 401 且带有格式合法的 WWW-Authenticate 质询，本检查记 UNVERIFIED（原因 credential_required）而非 FAILED——我们从不发送凭据，无法看到有意设置的访问控制门之后的情况。无合法质询的 401、403、或首个请求上已识别的 MCP 协议错误码，都不视为凭据门控。",
+        "cannot_en": "This cannot tell you whether the content returned by discovery is accurate. If the response that settles the handshake is a 401 carrying a structurally valid WWW-Authenticate challenge, this check records UNVERIFIED with reason credential_required rather than FAILED — we never send credentials, so we cannot see past a deliberate access-control gate. A 401 without a valid challenge, a 403, or a recognized MCP protocol error code on the first request is not treated as a credential gate."
+      }
+    },
+    {
+      "n": 5, "check_id": "tools_list", "group": "proto", "docs_version": "v0.3.0",
+      "predicate_zh": "tools/list 可用并返回合法结构",
+      "predicate_en": "tools/list is available and returns a legal structure",
+      "failure_status": "FAILED",
+      "no_credential_status": "UNVERIFIED",
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "`tools/list` 是否可用并返回结构合法的工具列表。",
+        "what_en": "Whether tools/list is available and returns a structurally valid tool list.",
+        "how_zh": "结构不合法即 FAILED，因为下游 agent 会直接解析失败。服务器把列表分页时，我们沿 nextCursor 读取每一页，一次 run 最多读 10 页或 5,000 个工具。第一页之后的页不计入 8 个请求的上限；10 s 的时间上限和每个回应 2 MB 的上限照样适用。列表超出这个范围，或后面某一页超时、请求或回应超过 2 MB、或读不出工具列表时，我们就停在那里不再翻页：本项仍按第一页判定，依赖完整列表的结论都不记为 VERIFIED（见各项检查）。后面某一页遇到其他失败（例如服务器要求我们稍后再来，或连接失败）时，和其他请求一样，本次 run 就此结束。",
+        "how_en": "An invalid structure is FAILED, since a downstream agent would fail to parse it directly. When the server splits its list into pages, we follow nextCursor and read every page, up to 10 pages or 5,000 tools in one run. Pages after the first do not count toward the 8-request limit; the 10s time limit and the 2MB limit per response still apply. If the list is longer than that, or a later page runs out of the time limit, goes over the 2MB limit (in its request or its response) or is not a readable tool list, we stop reading pages there: this check is still judged on the first page, and nothing that depends on the whole list is recorded as VERIFIED (see each check). Any other failure on a later page (for example the server asking us to back off, or a failed connection) ends the run, as it would on any other request.",
+        "cannot_zh": "不能说明这些工具真的能用——我们不调用业务工具。若握手已完成但 tools/list 返回 401 且带有格式合法的 WWW-Authenticate 质询，本检查记 UNVERIFIED（原因 credential_required）而非 FAILED；若握手本身被凭据门控，本检查级联为同一结果。",
+        "cannot_en": "This cannot tell you the tools actually work — we never call business tools. If the handshake completed but tools/list answers 401 with a structurally valid WWW-Authenticate challenge, this check records UNVERIFIED with reason credential_required rather than FAILED; if the handshake itself was credential-gated, this check cascades to the same result."
+      }
+    },
+    {
+      "n": 8, "check_id": "error_taxonomy", "group": "proto", "docs_version": "v0.3.0",
+      "predicate_zh": "错误响应符合协议定义的形状",
+      "predicate_en": "error responses match the protocol's defined shape",
+      "failure_status": "OBSERVED_RISK",
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "触发一个安全的错误场景，看错误响应的形状是否符合协议。",
+        "what_en": "Triggers a safe error scenario and checks whether the error response's shape matches the protocol.",
+        "how_zh": "偏离记 OBSERVED_RISK——错误形状不规范会让 agent 无法正确重试。没能读完整份工具列表时（见 tools_list），我们不发这次调用，因为要调用的名字可能属于一个没读到的工具；本项记 UNVERIFIED，原因 probe_tool_name_unverifiable；若已读到的某一页列出了这个名字，原因则是 probe_tool_name_collision。",
+        "how_en": "A deviation is recorded as OBSERVED_RISK — a non-conformant error shape prevents an agent from retrying correctly. If we could not read the whole tool list (see tools_list), we do not send this call, since the name we would call could belong to a tool we did not see; this check is then UNVERIFIED with reason probe_tool_name_unverifiable, or probe_tool_name_collision when a page we did read lists that name.",
+        "cannot_zh": "不能说明所有错误路径都规范，我们只探了非破坏性的那几条。",
+        "cannot_en": "This cannot tell you every error path is conformant — we only probe the handful of non-destructive ones."
+      }
+    },
+    {
+      "n": 11, "check_id": "tls_certificate", "group": "sec", "docs_version": "v0.1.0",
+      "predicate_zh": "证书有效、未过期、SAN 匹配、链完整",
+      "predicate_en": "certificate is valid, unexpired, SAN matches, chain is complete",
+      "failure_status": "FAILED",
+      "requires_baseline": false,
+      "executor": "container",
+      "explain": {
+        "what_zh": "证书有效期、SAN 是否匹配、证书链是否完整。",
+        "what_en": "Certificate validity period, whether the SAN matches, and whether the certificate chain is complete.",
+        "how_zh": "过期 / 不匹配 / 链断裂均为 FAILED。确定性判定。",
+        "how_en": "Expired / mismatched / broken chain are all FAILED. A deterministic judgment.",
+        "cannot_zh": "这是最基础的传输层卫生，**和「这个 server 安全」是两回事**。",
+        "cannot_en": "This is the most basic transport-layer hygiene — **it is not the same thing as \"this server is secure.\"**"
+      }
+    },
+    {
+      "n": 12, "check_id": "redirect_policy", "group": "sec", "docs_version": "v0.3.0",
+      "predicate_zh": "重定向不跨越到非预期主机",
+      "predicate_en": "redirects do not cross to an unexpected host",
+      "failure_status": "OBSERVED_RISK",
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "重定向是否跨越到非预期主机。",
+        "what_en": "Whether a redirect crosses to an unexpected host.",
+        "how_zh": "跨主机重定向记 OBSERVED_RISK。只有读取授权元数据的 GET 会跟随重定向，最多 3 跳；协议 POST 收到重定向时只记录，不跟随。即使 run 在这之后停止（例如超过跳数上限、遇到我们不连接的另一个主机，或服务器要求我们稍后再来），已观察到的跨主机重定向也照样记录。",
+        "how_en": "A cross-host redirect is recorded as OBSERVED_RISK. Only the GET for authorization metadata follows redirects, for at most 3 hops; a protocol POST that gets a redirect is recorded, not followed. A cross-host redirect is recorded even when the run stops afterwards, for example at the hop limit, at another host we do not connect to, or because the server asked us to back off.",
+        "cannot_zh": "不能说明目标主机可信，只说明有没有发生跳转。",
+        "cannot_en": "This cannot tell you the destination host is trustworthy — only whether a redirect happened."
+      }
+    },
+    {
+      "n": 10, "check_id": "auth_metadata", "group": "sec", "docs_version": "v0.3.0",
+      "predicate_zh": "公开可观察的认证 metadata / challenge 结构合法",
+      "predicate_en": "publicly observable auth metadata / challenge structure is legal",
+      "failure_status": "OBSERVED_RISK",
+      "no_credential_status": "UNVERIFIED",
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "无凭据时公开可观察到的认证 metadata / challenge 结构是否合法。",
+        "what_en": "Whether the publicly observable authentication metadata / challenge structure, seen without credentials, is structurally valid.",
+        "how_zh": "结构不合法记 OBSERVED_RISK；完全无法观察时记 UNVERIFIED。",
+        "how_en": "An invalid structure is OBSERVED_RISK; when it can't be observed at all, it's UNVERIFIED.",
+        "cannot_zh": "**不能说明认证强度。** 我们没有凭据，看不到认证真正的执行路径。",
+        "cannot_en": "**This cannot tell you the strength of authentication.** We have no credentials, so we never see the real authentication path execute."
+      }
+    },
+    {
+      "n": 13, "check_id": "tool_description_hygiene", "group": "sec", "docs_version": "v0.2.0",
+      "predicate_zh": "tool name / description 不含针对 agent 的注入模式或隐藏字符",
+      "predicate_en": "tool name / description contains no agent-targeted injection patterns or hidden characters",
+      "failure_status": "OBSERVED_RISK",
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "tool name / description 中是否含隐藏字符或针对 agent 的注入模式。",
+        "what_en": "Whether tool name / description contains hidden characters or agent-targeted injection patterns.",
+        "how_zh": "零宽字符、Unicode Tag 区、双向覆盖符、异常长度、指向助手的祈使句式；命中记 OBSERVED_RISK。我们读取工具列表的全部页。没能读完整份列表时，已读到的工具里有命中仍记 OBSERVED_RISK；没有命中则记 UNVERIFIED 而不是 VERIFIED，因为没读到的工具没有检查过。",
+        "how_en": "Zero-width characters, Unicode Tag block, bidi override characters, anomalous length, imperative phrasing directed at an assistant — any hit is recorded as OBSERVED_RISK. We read every page of the tool list. If we could not read the whole list, a hit in the tools we did read is still OBSERVED_RISK, but no hit is UNVERIFIED rather than VERIFIED: the tools we did not see were not checked.",
+        "cannot_zh": "**不能推断意图。** 这些模式在合法工具里也可能出现（例如一个专门处理 Unicode 的工具）。我们只报告信号。",
+        "cannot_en": "**This cannot infer intent.** These patterns can also occur in legitimate tools (e.g. a tool that specifically handles Unicode). We only report the signal."
+      }
+    },
+    {
+      "n": 6, "check_id": "toolset_fingerprint", "group": "drift", "docs_version": "v0.2.0",
+      "predicate_zh": "工具集的 canonical fingerprint 可计算并已记录",
+      "predicate_en": "the toolset's canonical fingerprint is computable and recorded",
+      "failure_status": "FAILED",
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "把工具集做 JCS 规范化后计算 SHA-256 指纹并归档。",
+        "what_en": "Canonicalizes the toolset via JCS and computes a SHA-256 fingerprint, then archives it.",
+        "how_zh": "**算得出就是 VERIFIED**——只判断「可计算」，不判断「变没变」。指纹按工具列表的全部页计算；没能读完整份列表时（见 tools_list）不计算指纹，本项记 UNVERIFIED。",
+        "how_en": "**Computing successfully is VERIFIED** — this only judges \"can it be computed,\" not \"did it change.\" It is computed over every page of the tool list. If we could not read the whole list (see tools_list), no fingerprint is computed and this check is UNVERIFIED.",
+        "cannot_zh": "指纹本身不代表好坏，它只是一个可被第三方复算的事实。",
+        "cannot_en": "The fingerprint by itself says nothing about good or bad — it's only a fact a third party can independently recompute."
+      }
+    },
+    {
+      "n": 7, "check_id": "schema_fingerprint", "group": "drift", "docs_version": "v0.2.0",
+      "predicate_zh": "各 tool inputSchema 的 canonical fingerprint 可计算并已记录",
+      "predicate_en": "each tool's inputSchema canonical fingerprint is computable and recorded",
+      "failure_status": "FAILED",
+      "requires_baseline": false,
+      "explain": {
+        "what_zh": "把每个 tool 的 inputSchema 规范化后计算指纹并归档。",
+        "what_en": "Canonicalizes each tool's inputSchema and computes a fingerprint, then archives it.",
+        "how_zh": "同上：只判断可计算性。按工具列表的全部页计算；没能读完整份列表时记 UNVERIFIED。",
+        "how_en": "Same as above: only judges computability. It is computed over every page of the tool list, and is UNVERIFIED when we could not read the whole list.",
+        "cannot_zh": "同上。",
+        "cannot_en": "Same as above."
+      }
+    },
+    {
+      "n": 14, "check_id": "toolset_unchanged_vs_approved", "group": "drift", "docs_version": "v0.2.0",
+      "predicate_zh": "工具集相对已批准发布未变化",
+      "predicate_en": "toolset is unchanged relative to the approved release",
+      "failure_status": "FAILED",
+      "requires_baseline": true,
+      "no_baseline_status": "UNVERIFIED",
+      "no_baseline_reason_zh": "该 target 没有已批准基线",
+      "no_baseline_reason_en": "No approved baseline exists for this target.",
+      "explain": {
+        "what_zh": "当前工具集与**你批准过的那次发布**是否一致。",
+        "what_en": "Whether the current toolset matches the release you approved.",
+        "how_zh": "有已批准基线时才执行；新增 / 删除工具即 FAILED。没能读完整份工具列表时没有可比对的内容，记 UNVERIFIED。",
+        "how_en": "Only runs when an approved baseline exists; adding or removing a tool is FAILED. If we could not read the whole tool list, there is nothing to compare and this check is UNVERIFIED.",
+        "cannot_zh": "没有基线时永远是 UNVERIFIED——没人告诉过我们正确的样子是什么。",
+        "cannot_en": "Without a baseline it is always UNVERIFIED — nobody has told us what the correct shape looks like."
+      }
+    },
+    {
+      "n": 15, "check_id": "schema_unchanged_vs_approved", "group": "drift", "docs_version": "v0.2.0",
+      "predicate_zh": "canonical schema 相对已批准发布未变化",
+      "predicate_en": "canonical schema is unchanged relative to the approved release",
+      "failure_status": "FAILED",
+      "requires_baseline": true,
+      "no_baseline_status": "UNVERIFIED",
+      "no_baseline_reason_zh": "该 target 没有已批准基线",
+      "no_baseline_reason_en": "No approved baseline exists for this target.",
+      "explain": {
+        "what_zh": "每个 tool 的 canonical schema 与已批准基线是否一致。",
+        "what_en": "Whether each tool's canonical schema matches the approved baseline.",
+        "how_zh": "有基线时才执行。**这是拦 rug pull 最直接的一项。**没能读完整份工具列表时记 UNVERIFIED。",
+        "how_en": "Only runs when a baseline exists. **This is the most direct check against a rug pull.** If we could not read the whole tool list, it is UNVERIFIED.",
+        "cannot_zh": "同上：未认领的 server 上它只能是 UNVERIFIED。",
+        "cannot_en": "Same as above: on an unclaimed server, this can only ever be UNVERIFIED."
+      }
+    }
+  ],
+  "budget": {
+    "max_requests": 8,
+    "max_duration_ms": 10000,
+    "max_body_bytes": 2097152,
+    "max_redirects": 3,
+    "max_tools_list_pages": 10,
+    "unclaimed_max_requests": 8,
+    "on_exceeded": { "execution_status": "ERROR", "assertion_status": "UNVERIFIED" }
+  },
+  "forbidden": [
+    "调用业务工具", "写操作", "访问生产数据", "接触生产凭据",
+    "destructive test", "通过任意 URL 访问内网或云 metadata"
+  ]
+}

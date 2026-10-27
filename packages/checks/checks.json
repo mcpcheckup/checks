@@ -1,6 +1,6 @@
 {
   "$schema": "https://mcpcheckup.com/schema/checks-registry-v0.1.json",
-  "registry_version": "0.15.0",
+  "registry_version": "0.16.0",
   "suite_id": "remote-baseline-v0.1",
   "generated_from": "PRD v1.4 §5.2 / UI §5.2.1 §5.2.2",
   "groups": [
@@ -198,7 +198,7 @@
       }
     },
     {
-      "n": 13, "check_id": "tool_description_hygiene", "group": "sec", "docs_version": "v0.2.0",
+      "n": 13, "check_id": "tool_description_hygiene", "group": "sec", "docs_version": "v0.3.0",
       "predicate_zh": "tool name / description 不含针对 agent 的注入模式或隐藏字符",
       "predicate_en": "tool name / description contains no agent-targeted injection patterns or hidden characters",
       "failure_status": "OBSERVED_RISK",
@@ -206,8 +206,8 @@
       "explain": {
         "what_zh": "tool name / description 中是否含隐藏字符或针对 agent 的注入模式。",
         "what_en": "Whether tool name / description contains hidden characters or agent-targeted injection patterns.",
-        "how_zh": "零宽字符、Unicode Tag 区、双向覆盖符、异常长度、指向助手的祈使句式；命中记 OBSERVED_RISK。我们读取工具列表的全部页。没能读完整份列表时，已读到的工具里有命中仍记 OBSERVED_RISK；没有命中则记 UNVERIFIED 而不是 VERIFIED，因为没读到的工具没有检查过。",
-        "how_en": "Zero-width characters, Unicode Tag block, bidi override characters, anomalous length, imperative phrasing directed at an assistant — any hit is recorded as OBSERVED_RISK. We read every page of the tool list. If we could not read the whole list, a hit in the tools we did read is still OBSERVED_RISK, but no hit is UNVERIFIED rather than VERIFIED: the tools we did not see were not checked.",
+        "how_zh": "零宽字符、Unicode Tag 区、双向覆盖符、异常长度、指向助手的祈使句式；命中记 OBSERVED_RISK。夹在同一种文字的两个字符之间（跳过组合附加符号）、属于正常拼写的 ZWNJ / ZWJ（适用于阿拉伯文、天城文等我们列出的文字）不算命中；直接夹在两个图形符号（emoji）字符之间的 ZWJ 也不算，但跟在肤色修饰符后面的 ZWJ 仍算。「do not tell the user」（以及 inform、mention、reveal、show）只在后面紧跟 about、that you、what you、how you、anything、any of、. , ; : ! ) 之一或文本结尾时才算；「system prompt」「developer prompt」只在前面是 your，或是 reveal、print、output、repeat、disclose、leak、ignore、override、disregard、forget 之一（中间可隔 the、any 或 all）时才算。我们读取工具列表的全部页。没能读完整份列表时，已读到的工具里有命中仍记 OBSERVED_RISK；没有命中则记 UNVERIFIED 而不是 VERIFIED，因为没读到的工具没有检查过。",
+        "how_en": "Zero-width characters, Unicode Tag block, bidi override characters, anomalous length, imperative phrasing directed at an assistant — any hit is recorded as OBSERVED_RISK. A ZWNJ or ZWJ between two characters of one script that uses it in ordinary spelling (Arabic, Devanagari and the other scripts we list), combining marks skipped, is not a hit; nor is a ZWJ directly between two pictographic (emoji) characters, though a ZWJ after a skin-tone modifier still is. \"Do not tell the user\" (or inform, mention, reveal, show) counts only when followed by \"about\", \"that you\", \"what you\", \"how you\", \"anything\", \"any of\", one of . , ; : ! ) or the end of the text; \"system prompt\" or \"developer prompt\" counts only after \"your\" or after one of reveal, print, output, repeat, disclose, leak, ignore, override, disregard or forget (optionally followed by the, any or all). We read every page of the tool list. If we could not read the whole list, a hit in the tools we did read is still OBSERVED_RISK, but no hit is UNVERIFIED rather than VERIFIED: the tools we did not see were not checked.",
         "cannot_zh": "**不能推断意图。** 这些模式在合法工具里也可能出现（例如一个专门处理 Unicode 的工具）。我们只报告信号。",
         "cannot_en": "**This cannot infer intent.** These patterns can also occur in legitimate tools (e.g. a tool that specifically handles Unicode). We only report the signal."
       }

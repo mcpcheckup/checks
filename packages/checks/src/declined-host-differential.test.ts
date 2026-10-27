@@ -61,8 +61,8 @@ import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
 import { pagedToolsList } from './suite-0150-remap.ts'
-import { recordSuite0160, suite0160Remap } from './suite-0160-remap.ts'
-import type { Suite0160Observed } from './suite-0160-remap.ts'
+import { recordSuite0170, suite0170Remap } from './suite-0170-remap.ts'
+import type { Suite0170Observed } from './suite-0170-remap.ts'
 import { runProbe as frozen0100RunProbe } from './frozen/suite-0.10.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
@@ -263,7 +263,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0160Observed }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0170Observed }
 
 /** `live`: the implementation's request sequence for the same input, for 0.10.0's offerAsLive (suite 0.13.0); omitted on the implementation's own run. */
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
@@ -300,8 +300,8 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
   const offer = offerAsLive(recorded.fetchImpl, live)
-  // Suites 0.15.0 and 0.16.0: what suite0160Remap reads off this run's transport.
-  const suite0150 = recordSuite0160(offer.fetchImpl)
+  // Suites 0.15.0 to 0.17.0: what suite0170Remap reads off this run's transport.
+  const suite0150 = recordSuite0170(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
     fetchImpl: suite0150.fetchImpl,
@@ -404,7 +404,7 @@ for (const fixture of FIXTURE_CORPUS) {
       const old = await runOnce(frozen0100RunProbe, fixture.createHandler, v, now.requests)
       // Suite 0.15.0: a run whose tools/list paged is set aside (counted); suite-0150-differential.test.ts proves it.
       if (pagedToolsList(now.requests)) { pagedSetAside++; continue }
-      const want = suite0160Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed)
+      const want = suite0170Remap(suite0130Remap(suite0120Remap(old.result, old.toolsCallStatus), old.requests), old.observed)
       const offerProblem = offerSubstitutionProblem(old.result, old.substituted)
       if (offerProblem) violation(id, offerProblem)
       if (!identical(withoutAuthObservation(now.result), want)) violation(id, `ProbeResult differs\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
@@ -433,7 +433,7 @@ for (const fixture of FIXTURE_CORPUS) {
         if (now.threw !== old.threw) violation(id, 'one side reached the throwing request and the other did not')
         if (!now.threw) { seen.notReached++ }
         else seen.thrown.set(label, (seen.thrown.get(label) ?? 0) + 1)
-        const expected = suite0160Remap(suite0130Remap(suite0120Remap(now.threw && remaps ? remapped(old.result) : old.result, old.toolsCallStatus), old.requests), old.observed)
+        const expected = suite0170Remap(suite0130Remap(suite0120Remap(now.threw && remaps ? remapped(old.result) : old.result, old.toolsCallStatus), old.requests), old.observed)
         if (!identical(withoutAuthObservation(now.result), expected)) violation(id, `ProbeResult is not 0.10.0's ${remaps && now.threw ? 'with the one remap' : 'unchanged'}\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.reason]))}\n           old ${JSON.stringify(old.result.assertions.map((a) => [a.check_id, a.reason]))}`)
         if (now.threw && remaps) {
           const rows = now.result.assertions.filter((a) => identical(a.reason, DECLINED))
