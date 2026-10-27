@@ -49,8 +49,8 @@ import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { withoutAuthObservation } from './suite-0140-remap.ts'
 import { pagedToolsList } from './suite-0150-remap.ts'
-import { recordSuite0170, suite0170Remap } from './suite-0170-remap.ts'
-import type { Suite0170Observed } from './suite-0170-remap.ts'
+import { recordSuite0180, suite0180Remap } from './suite-0180-remap.ts'
+import type { Suite0180Observed } from './suite-0180-remap.ts'
 import { runProbe as frozen0130RunProbe } from './frozen/suite-0.13.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.13.0/src/other-host-declined.ts'
@@ -254,8 +254,8 @@ interface Run {
   threw: boolean
   /** The last request's method, status and body bytes, as the target answered it (null if it threw). */
   last: { method: string; status: number; body: Uint8Array } | null
-  /** Suites 0.15.0 to 0.17.0: what suite0170Remap reads off this run's transport. */
-  observed: Suite0170Observed
+  /** Suites 0.15.0 to 0.18.0: what suite0180Remap reads off this run's transport. */
+  observed: Suite0180Observed
 }
 
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant): Promise<Run> {
@@ -299,7 +299,7 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
     }
     return keep(method, await handler(input, init))
   }
-  const recorder = recordSuite0170(fetchImpl)
+  const recorder = recordSuite0180(fetchImpl)
   let seq = 0
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
@@ -385,7 +385,7 @@ function compare(id: string, now: Run, old: Run) {
   if (pagedToolsList(now.requests)) { seen.paged++; return }
   seen.runs++
   if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs')
-  if (!identical(withoutAuthObservation(now.result), suite0170Remap(old.result, old.observed))) {
+  if (!identical(withoutAuthObservation(now.result), suite0180Remap(old.result, old.observed))) {
     violation(id, `ProbeResult without authObservation is not 0.13.0's\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(old.result).slice(0, 400)}`)
   }
   const keys = Object.keys(now.result)

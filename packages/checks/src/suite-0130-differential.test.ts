@@ -60,8 +60,8 @@ import { LEGACY_OFFER_0130, LEGACY_OFFER_BEFORE_0130, MODERN_OFFER, offerAsLive,
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
 import { pagedToolsList } from './suite-0150-remap.ts'
-import { recordSuite0170, suite0170Remap } from './suite-0170-remap.ts'
-import type { Suite0170Observed } from './suite-0170-remap.ts'
+import { recordSuite0180, suite0180Remap } from './suite-0180-remap.ts'
+import type { Suite0180Observed } from './suite-0180-remap.ts'
 import { runProbe as frozen0120RunProbe } from './frozen/suite-0.12.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
 import { OtherHostDeclined as FrozenOtherHostDeclined } from './frozen/suite-0.12.0/src/other-host-declined.ts'
@@ -255,7 +255,7 @@ interface Variant {
   throwAt?: { position: number; make: () => unknown }
 }
 
-interface Run { result: ProbeResult; requests: string[]; threw: boolean; substituted: { body: number; header: number }; observed: Suite0170Observed }
+interface Run { result: ProbeResult; requests: string[]; threw: boolean; substituted: { body: number; header: number }; observed: Suite0180Observed }
 
 /** `live`: the implementation's request sequence for the same input, for the frozen run's offerAsLive; omitted on the implementation's own run. */
 async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>, v: Variant, live?: readonly string[]): Promise<Run> {
@@ -291,8 +291,8 @@ async function runOnce(probe: Probe, createHandler: () => (input: RequestInfo | 
   }
   let seq = 0
   const offer = offerAsLive(fetchImpl, live)
-  // Suites 0.15.0 to 0.17.0: what suite0170Remap reads off this run's transport.
-  const suite0150 = recordSuite0170(offer.fetchImpl)
+  // Suites 0.15.0 to 0.18.0: what suite0180Remap reads off this run's transport.
+  const suite0150 = recordSuite0180(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
     fetchImpl: suite0150.fetchImpl,
@@ -408,7 +408,7 @@ function compare(id: string, now: Run, old: Run) {
   if (!identical(now.requests, old.requests)) violation(id, 'request sequence differs (after the offer translation)')
   const problem = offerSubstitutionProblem(old.result, old.substituted)
   if (problem) violation(id, problem)
-  const want = suite0170Remap(suite0130Remap(old.result, old.requests), old.observed)
+  const want = suite0180Remap(suite0130Remap(old.result, old.requests), old.observed)
   if (!identical(withoutAuthObservation(now.result), want)) {
     violation(id, `ProbeResult is not 0.12.0's with probeOfferedRevision and nothing else\n           new ${JSON.stringify(now.result).slice(0, 400)}\n           old ${JSON.stringify(want).slice(0, 400)}`)
   }

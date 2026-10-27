@@ -231,7 +231,14 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  the live runHygieneCheck, so both sides here compute the suite 0.17.0 hygiene row from the same tools and the
  *  comparison this file makes is unchanged; the frozen side no longer reproduces its own suite's hygiene row,
  *  which this file never tested. The suite 0.17.0 change itself is carried by the remap (suite-0170-remap.ts) and proved against frozen 0.16.0 by
- *  suite-0170-differential.test.ts. */
+ *  suite-0170-differential.test.ts.
+ *
+ *  Suite 0.18.0 (tool_description_hygiene adds unconfirmed_spending and restores some injection_imperative forms)
+ *  re-pins the same two files: checks.json (registry 0.17.0: copy and docs_version v0.4.0 of
+ *  tool_description_hygiene), still reached type-only with the registry passed in as input, and hygiene.ts. Both
+ *  sides here still call the live runHygieneCheck, so the comparison this file makes is unchanged. The suite 0.18.0
+ *  change itself is carried by the remap (suite-0180-remap.ts) and proved against frozen 0.17.0 by
+ *  suite-0180-differential.test.ts. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
@@ -249,9 +256,9 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': '4c8562be8700fd9549372f5b0cb11d5092ebbe4d', // registry 0.16.0 (suite 0.17.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': 'd521f66781d593f0af7f36e221f8e314b68a4920', // registry 0.17.0 (suite 0.18.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
-  'packages/checks/src/hygiene.ts': '4c46c26bccb264cf285320f1294f88bc1077fd33', // suite 0.17.0 (see above) — git hash-object packages/checks/src/hygiene.ts
+  'packages/checks/src/hygiene.ts': 'f66c6aa9e9f938e31cc1bc9e7d878808649488a0', // suite 0.18.0 (see above) — git hash-object packages/checks/src/hygiene.ts
   'packages/checks/src/latency.ts': '64947a43c414ded3590e599a7f08569391da6bef', // suite 0.16.0, reached from wire.ts (see above) — git hash-object packages/checks/src/latency.ts
   'packages/checks/src/registry.ts': '6f610be98235985b0a27d4cfac5ba805b6a3f51b', // suite 0.15.0 (type-only; see above) — git hash-object packages/checks/src/registry.ts
   'packages/checks/src/types.ts': 'e5cb68a8775242ea17d8c1520076f54beaf2a393', // suite 0.16.0 (type-only; see above) — git hash-object packages/checks/src/types.ts

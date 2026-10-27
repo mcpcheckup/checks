@@ -4,6 +4,7 @@ import type { ChecksRegistry } from './registry.ts'
 import frozen0140Checks from './frozen/suite-0.14.0/checks.json' with { type: 'json' }
 import frozen0150Checks from './frozen/suite-0.15.0/checks.json' with { type: 'json' }
 import frozen0160Checks from './frozen/suite-0.16.0/checks.json' with { type: 'json' }
+import frozen0170Checks from './frozen/suite-0.17.0/checks.json' with { type: 'json' }
 
 /** Registry 0.13.0, the one suite 0.14.0 shipped with. */
 const FROZEN_0130_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0140Checks
@@ -11,6 +12,8 @@ const FROZEN_0130_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> 
 const FROZEN_0140_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0150Checks
 /** Registry 0.15.0, the one suite 0.16.0 shipped with. */
 const FROZEN_0150_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0160Checks
+/** Registry 0.16.0, the one suite 0.17.0 shipped with. */
+const FROZEN_0160_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0170Checks
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -184,7 +187,8 @@ const HYGIENE_INSERTED_0160 = {
 
 t('suite 0.17.0：tool_description_hygiene.how_en / how_zh = registry 0.15.0 的原文在第一句后插入两句（逐字固定）；其余检查与其余字段一字不动', () => {
   const before = FROZEN_0150_REGISTRY.checks.find((c) => c.check_id === 'tool_description_hygiene')!
-  const now = CHECKS_REGISTRY.checks.find((c) => c.check_id === 'tool_description_hygiene')!
+  // Registry 0.16.0 still carries this text; registry 0.17.0 rewrites it (pinned below).
+  const now = FROZEN_0160_REGISTRY.checks.find((c) => c.check_id === 'tool_description_hygiene')!
   const enCut = before.explain.how_en.indexOf(' We read every page')
   const zhCut = before.explain.how_zh.indexOf('我们读取工具列表的全部页')
   assert.ok(enCut > 0 && zhCut > 0)
@@ -193,8 +197,45 @@ t('suite 0.17.0：tool_description_hygiene.how_en / how_zh = registry 0.15.0 的
   assert.ok(now.explain.how_en.includes('anomalous length') && now.explain.how_zh.includes('异常长度'), 'the length wording stays (deferred to 0.18.0)')
   assert.deepStrictEqual({ ...now, docs_version: before.docs_version, explain: { ...now.explain, how_en: before.explain.how_en, how_zh: before.explain.how_zh } }, before)
   const others = (r: Pick<ChecksRegistry, 'checks'>) => r.checks.filter((c) => c.check_id !== 'tool_description_hygiene')
-  assert.deepStrictEqual(others(CHECKS_REGISTRY), others(FROZEN_0150_REGISTRY))
+  assert.deepStrictEqual(others(FROZEN_0160_REGISTRY), others(FROZEN_0150_REGISTRY))
   for (const text of Object.values(HYGIENE_INSERTED_0160)) assert.doesNotMatch(text, /certified|secure|safe|trusted|评分|健康度|通过率/i)
+})
+
+// Registry 0.17.0 (suite 0.18.0): tool_description_hygiene.how names the unconfirmed_spending
+// signal in its first sentence and replaces the injection sentences with the restored forms
+// and the spending phrases and guards; nothing else in checks.json moves but that check's
+// docs_version (pinned below). The anomalous-length wording is unchanged (demotion is 0.19.0).
+const HYGIENE_REPLACED_0170: { en: [string, string][]; zh: [string, string][] } = {
+  en: [
+    ["imperative phrasing directed at an assistant — any hit is recorded as OBSERVED_RISK.",
+     "imperative phrasing directed at an assistant, spending or sending identity data without per-action confirmation — any hit is recorded as OBSERVED_RISK."],
+    ["\"Do not tell the user\" (or inform, mention, reveal, show) counts only when followed by \"about\", \"that you\", \"what you\", \"how you\", \"anything\", \"any of\", one of . , ; : ! ) or the end of the text; \"system prompt\" or \"developer prompt\" counts only after \"your\" or after one of reveal, print, output, repeat, disclose, leak, ignore, override, disregard or forget (optionally followed by the, any or all).",
+     "\"Do not tell the user\" (or inform, mention, reveal, show; \"the\" optional, \"human\" for \"user\") counts when followed by \"about\", \"that you\", \"what you\", \"how you\", \"anything\", \"any of\", one of . , ; : ! ) or the end of the text; it also counts when followed by 's, a spaced hyphen, an en or em dash, a line break, or one of that, what, why, where, how, this or any, unless the rest of that clause has until, unless, yet, before, after, otherwise, once, while, if or when. \"System prompt\" or \"developer prompt\" counts after \"your\" or \"your new\"; after one of reveal, print, output, repeat, disclose, leak, ignore, override, disregard, forget, show, return, display, replace, dump, echo or act as, optionally followed in turn by out, by the, any, all or your, by previous, prior, above, earlier, original or contents of, and by the or your; or at the start of a line (after only spaces, #, *, >, [ or -) when followed by a colon or by \"override\". Spending or sending identity data without per-action confirmation is one of these phrases: \"pay\" followed by \"by default\" in the same sentence within 40 characters; \"no approval\" or \"no confirmation\" followed by needed or required (optionally after \"is\"); \"need not ask\"; \"zero questions\"; \"without asking\", unless never, not or a word ending in n't comes within 30 characters before it in the same sentence, or for or us follows it; \"does not\" or \"doesn't\" \"require\" per-change, per-action, per-call, per-purchase or per-payment \"approval\"; \"the\" grant, allowance or delegation \"is\" the or your permission, approval or consent; accept or approve, then all, every or any, then up to two words, then prompts, confirmations, dialogs or requests; continues, repeats or recurs \"automatically\"; the, your or this \"agent loop\"; \"git config\", then user.email (options such as --get may come between); \"never ask\" (optionally followed by \"the user\") \"before\" charging, paying, buying, purchasing, spending, billing, renewing or subscribing; 无需确认 or 无需另行确认; 视为同意 or 视为用户同意. It counts only when a money or identity word is within 200 characters of it (pay, payer, payment, paid, charge, credit, wallet, USDC, invoice, purchase, buy, subscribe, subscription, renew, bill, cost, fee, refund, spend, money, identity, email, a $ amount, or 扣费, 续费, 费用, 支付, 付款, 购买, 订阅, 钱包, 邮箱, 身份), and no cap, capped, limit, ceiling, max, maximum, policy, mandate, allowlist, whitelist, threshold or quota (or 上限, 额度, 限额, 策略, 白名单) is in the 120 characters before it. A money or identity word does not count when its own clause says it costs nothing or is not sent: \"cost\" or \"costs\" followed by \"nothing\" (up to two words between), \"free\", \"no charge\", \"no cost\" or \"no fee\" (or their plurals), does not, doesn't, do not, don't, never, will not or won't followed by send, collect, store or share (or sends, collects, stores, shares), or 免费 or 不收费; \"free\" right after \"feel\" does not count. A clause ends at . ! or ? followed by a space, at , ; or a line break, or at ，。！？；, and reaches at most 200 characters either side of the word; the same words in another clause change nothing. A phrase does not count when its own clause has \"no purchase\" (or \"no purchases\"), \"read-only\" (or \"read only\"), \"does not\" or \"doesn't\" followed by buy, purchase, register or charge, \"what it costs\" or \"how much\"; the same words in a money or identity word's own clause stop that word from counting, and in any other clause they change nothing."],
+  ],
+  zh: [
+    ["指向助手的祈使句式；命中记 OBSERVED_RISK。",
+     "指向助手的祈使句式、未经逐次确认的花费或身份信息发送；命中记 OBSERVED_RISK。"],
+    ["「do not tell the user」（以及 inform、mention、reveal、show）只在后面紧跟 about、that you、what you、how you、anything、any of、. , ; : ! ) 之一或文本结尾时才算；「system prompt」「developer prompt」只在前面是 your，或是 reveal、print、output、repeat、disclose、leak、ignore、override、disregard、forget 之一（中间可隔 the、any 或 all）时才算。",
+     "「do not tell the user」（以及 inform、mention、reveal、show；the 可省略，user 也可以是 human）在后面紧跟 about、that you、what you、how you、anything、any of、. , ; : ! ) 之一或文本结尾时算；后面紧跟 's、前有空格的连字符、en 或 em 破折号、换行，或 that、what、why、where、how、this、any 之一时也算，除非这个从句余下部分出现 until、unless、yet、before、after、otherwise、once、while、if、when 之一。「system prompt」「developer prompt」在前面是 your 或 your new 时算；前面是 reveal、print、output、repeat、disclose、leak、ignore、override、disregard、forget、show、return、display、replace、dump、echo、act as 之一时算，其后可依次隔 out，the、any、all 或 your，previous、prior、above、earlier、original 或 contents of，以及 the 或 your；位于行首（前面只有空格、#、*、>、[ 或 -）且后面紧跟冒号或 override 时也算。「未经逐次确认的花费或身份信息发送」指出现以下短语之一：pay 后面同一句内 40 个字符以内接 by default；no approval 或 no confirmation 后接 needed 或 required（中间可有 is）；need not ask；zero questions；without asking，但同一句内它前面 30 个字符以内有 never、not 或以 n't 结尾的词，或者它后面接 for 或 us 时不算；does not 或 doesn't require per-change、per-action、per-call、per-purchase 或 per-payment approval；the grant、allowance 或 delegation is the 或 your permission、approval 或 consent；accept 或 approve 后接 all、every 或 any，再隔至多两个词接 prompts、confirmations、dialogs 或 requests；continues、repeats 或 recurs automatically；the、your 或 this agent loop；git config 后接 user.email（中间可以有 --get 之类的选项）；never ask（中间可以有 the user）before 后接 charging、paying、buying、purchasing、spending、billing、renewing 或 subscribing；无需确认或无需另行确认；视为同意或视为用户同意。只有当它前后 200 个字符以内出现花费或身份类的词（pay、payer、payment、paid、charge、credit、wallet、USDC、invoice、purchase、buy、subscribe、subscription、renew、bill、cost、fee、refund、spend、money、identity、email、$ 加金额，或扣费、续费、费用、支付、付款、购买、订阅、钱包、邮箱、身份），并且它前面 120 个字符以内没有 cap、capped、limit、ceiling、max、maximum、policy、mandate、allowlist、whitelist、threshold、quota 或上限、额度、限额、策略、白名单时才算。花费或身份类的词所在的从句如果同时写明不花钱或不发送，这个词就不算：cost 或 costs 后接 nothing（中间至多两个词），free，no charge、no cost 或 no fee（含复数），does not、doesn't、do not、don't、never、will not 或 won't 后接 send、collect、store 或 share（含加 s 的形式），或者免费、不收费；紧跟在 feel 后面的 free 不算。从句在后面跟空格的 . ! ?、在 , ; 或换行、以及在，。！？；处结束，并且向这个词两侧各最多延伸 200 个字符；同样的词出现在别的从句里不起作用。短语所在的从句如果出现 no purchase（或 no purchases）、read-only（或 read only）、does not 或 doesn't 后接 buy、purchase、register 或 charge、what it costs 或 how much，这个短语就不算；这些词出现在某个花费或身份类的词自己的从句里时，那个词不算；出现在其他从句里不起作用。"],
+  ],
+}
+
+t('suite 0.18.0：tool_description_hygiene.how_en / how_zh = registry 0.16.0 的原文恰好替换两处（逐字固定）；其余检查与其余字段一字不动', () => {
+  const before = FROZEN_0160_REGISTRY.checks.find((c) => c.check_id === 'tool_description_hygiene')!
+  const now = CHECKS_REGISTRY.checks.find((c) => c.check_id === 'tool_description_hygiene')!
+  const apply = (text: string, pairs: [string, string][]) => pairs.reduce((acc, [from, to]) => {
+    assert.equal(acc.split(from).length - 1, 1, `exactly one occurrence of: ${from}`)
+    return acc.replace(from, () => to)
+  }, text)
+  assert.equal(now.explain.how_en, apply(before.explain.how_en, HYGIENE_REPLACED_0170.en))
+  assert.equal(now.explain.how_zh, apply(before.explain.how_zh, HYGIENE_REPLACED_0170.zh))
+  assert.ok(now.explain.how_en.includes('spending or sending identity data without per-action confirmation'), 'the approved note wording, en')
+  assert.ok(now.explain.how_zh.includes('未经逐次确认的花费或身份信息发送'), 'the approved note wording, zh')
+  assert.ok(now.explain.how_en.includes('anomalous length') && now.explain.how_zh.includes('异常长度'), 'the length wording stays (demotion deferred to 0.19.0)')
+  assert.deepStrictEqual({ ...now, docs_version: before.docs_version, explain: { ...now.explain, how_en: before.explain.how_en, how_zh: before.explain.how_zh } }, before)
+  const others = (r: Pick<ChecksRegistry, 'checks'>) => r.checks.filter((c) => c.check_id !== 'tool_description_hygiene')
+  assert.deepStrictEqual(others(CHECKS_REGISTRY), others(FROZEN_0160_REGISTRY))
+  for (const [, to] of [...HYGIENE_REPLACED_0170.en, ...HYGIENE_REPLACED_0170.zh]) assert.doesNotMatch(to, /certified|secure|safe|trusted|评分|健康度|通过率/i)
 })
 
 t('no_baseline_reason：两项基线检查的「没有基线」原因逐字固定，且不把「未认领」当作原因（已认领但未确认基线的 target 也走这条）', () => {
@@ -239,14 +280,27 @@ t('redirect_policy.how 不再写「所有请求都跟随」的旧说法，写的
 // every other value is registry 0.14.0's (frozen/suite-0.15.0/checks.json).
 // Registry 0.16.0 (suite 0.17.0) moves tool_description_hygiene alone (v0.3.0: the zero-width
 // and injection rules narrow); every other value is registry 0.15.0's
-// (frozen/suite-0.16.0/checks.json). A later bump of any check updates these tables in the
+// (frozen/suite-0.16.0/checks.json).
+// Registry 0.17.0 (suite 0.18.0) moves tool_description_hygiene alone (v0.4.0: unconfirmed_spending
+// and the restored injection forms); every other value is registry 0.16.0's
+// (frozen/suite-0.17.0/checks.json). A later bump of any check updates these tables in the
 // same change, deliberately.
+t('docs_version：registry 0.17.0 只动 tool_description_hygiene（v0.4.0），其余 14 项与 registry 0.16.0 的 checks.json 逐条相同', () => {
+  const previousRegistry = Object.fromEntries(FROZEN_0160_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(FROZEN_0160_REGISTRY.registry_version, '0.16.0')
+  assert.equal(CHECKS_REGISTRY.registry_version, '0.17.0')
+  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.deepStrictEqual(now, { ...previousRegistry, tool_description_hygiene: 'v0.4.0' })
+  assert.equal(previousRegistry.tool_description_hygiene, 'v0.3.0')
+})
+
 t('docs_version：registry 0.16.0 只动 tool_description_hygiene（v0.3.0），其余 14 项与 registry 0.15.0 的 checks.json 逐条相同', () => {
   const previousRegistry = Object.fromEntries(FROZEN_0150_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
   assert.equal(FROZEN_0150_REGISTRY.registry_version, '0.15.0')
-  assert.equal(CHECKS_REGISTRY.registry_version, '0.16.0')
-  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
-  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.equal(FROZEN_0160_REGISTRY.registry_version, '0.16.0')
+  const now = Object.fromEntries(FROZEN_0160_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(FROZEN_0160_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
   assert.deepStrictEqual(now, { ...previousRegistry, tool_description_hygiene: 'v0.3.0' })
   assert.equal(previousRegistry.tool_description_hygiene, 'v0.2.0')
 })

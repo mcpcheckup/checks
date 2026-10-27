@@ -57,8 +57,8 @@ import type { Assertion } from '@mcpcheckup/attestation-schema'
 import { FIXTURE_CORPUS } from '@mcpcheckup/fixtures'
 import { runProbe } from './probe.ts'
 import { pagedToolsList } from './suite-0150-remap.ts'
-import { recordSuite0170, suite0170Remap } from './suite-0170-remap.ts'
-import type { Suite0170Observed } from './suite-0170-remap.ts'
+import { recordSuite0180, suite0180Remap } from './suite-0180-remap.ts'
+import type { Suite0180Observed } from './suite-0180-remap.ts'
 import { recordRequest } from './suite-0130-remap.ts'
 import { runProbe as frozen0140RunProbe } from './frozen/suite-0.14.0/src/probe.ts'
 import { OtherHostDeclined } from './other-host-declined.ts'
@@ -250,7 +250,7 @@ interface Run {
   result: ProbeResult
   requests: string[]
   threw: boolean
-  observed: Suite0170Observed
+  observed: Suite0180Observed
 }
 
 async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant): Promise<Run> {
@@ -282,7 +282,7 @@ async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant): 
     }
     return handler(input, init)
   }
-  const recorder = recordSuite0170(transport)
+  const recorder = recordSuite0180(transport)
   let seq = 0
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
@@ -370,7 +370,7 @@ function compare(id: string, fixtureId: string, now: Run, old: Run) {
   }
   if (!identical(now.requests, old.requests)) { violation(id, 'request sequence differs'); return }
   let want: ProbeResult
-  try { want = suite0170Remap(old.result, old.observed) } catch (e) { violation(id, `remap refused: ${(e as Error).message}`); return }
+  try { want = suite0180Remap(old.result, old.observed) } catch (e) { violation(id, `remap refused: ${(e as Error).message}`); return }
   if (!identical(now.result, want)) {
     violation(id, `ProbeResult is not 0.14.0's after the remap\n           new ${JSON.stringify(now.result.assertions.map((a) => [a.check_id, a.assertion_status, a.reason]))}\n           old ${JSON.stringify(want.assertions.map((a) => [a.check_id, a.assertion_status, a.reason]))}`)
     return
@@ -647,7 +647,7 @@ for (const spec of pagedSpecs()) {
           if (failuresC.length < 50) failuresC.push(`${id}: ${calls} tools/call sent on an incomplete list`)
           continue
         }
-        const remapped = suite0170Remap(old.result, old.observed)
+        const remapped = suite0180Remap(old.result, old.observed)
         const expected = read.incomplete ? applyIncomplete(remapped) : remapped
         if (!identical(now.result, expected)) {
           violationsC++

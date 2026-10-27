@@ -15,6 +15,7 @@ export type HygieneFlag =
   | 'pseudo_system_delimiter'
   | 'embedded_markup'
   | 'non_ascii_tool_name'
+  | 'unconfirmed_spending'
 
 export interface HygieneHit {
   flag: HygieneFlag
@@ -118,12 +119,22 @@ const IMPERATIVES: [RegExp, string][] = [
   // user (about…, that you…, what you…, anything, or the clause ends there).
   // "Do not tell the user X until Y" is an ordinary flow instruction and no
   // longer counts.
-  [/\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b(?=\s*([.,;:!)]|$|(about|that\s+you|what\s+you|how\s+you|anything|any\s+of)\b))/i,
+  // Suite 0.18.0 also counts 's, a spaced dash, a line break, or that / what / why /
+  // where / how / this / any next, unless the clause that follows has a flow
+  // word (until, unless, yet, before, after, otherwise, once, while, if, when).
+  // Every alternative is suite 0.16.0's pattern followed by a lookahead, so it
+  // can only flag what 0.16.0 flagged.
+  [/\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b(?=\s*([.,;:!)]|$|(about|that\s+you|what\s+you|how\s+you|anything|any\s+of)\b)|(['’]s\b|[ \t]+-|[ \t]*[–—]|[ \t]*\r?\n|\s+(that|what|why|where|how|this|any)\b)(?![^.;!?\n]*?\b(until|unless|yet|before|after|otherwise|once|while|if|when)\b))/i,
    '要求对用户隐瞒信息'],
   // Suite 0.17.0: only the prompt of the assistant reading this ("your system
   // prompt"), or one being extracted or overridden. A system_prompt parameter, an
   // agent's configured prompt, or "never treat it as a system prompt" no longer counts.
-  [/\byour\s+(system|developer)\s+prompt\b|\b(reveal|print|output|repeat|disclose|leak|ignore|override|disregard|forget)\s+(the\s+|any\s+|all\s+)?(system|developer)\s+prompt\b/i,
+  // Suite 0.18.0 widens the verbs (show, return, display, replace, dump, echo,
+  // act as), allows out / previous / prior / above / earlier / original /
+  // contents of between, and counts "your new …" and a line that starts with
+  // "system prompt:" or "system prompt override". Each alternative contains
+  // suite 0.16.0's whole pattern, so it can only flag what 0.16.0 flagged.
+  [/\byour\s+(new\s+)?(system|developer)\s+prompt\b|\b(reveal|print|output|repeat|disclose|leak|ignore|override|disregard|forget|show|return|display|replace|dump|echo|act\s+as)\s+(out\s+)?(the\s+|any\s+|all\s+|your\s+)?((previous|prior|above|earlier|original|contents\s+of)\s+)?(the\s+|your\s+)?(system|developer)\s+prompt\b|(?<=^|\n)[ \t#*>[-]*(system|developer)\s+prompt\b\s*(:|override\b)/i,
    '提及 system / developer prompt'],
   [/\byou\s+(must|should|shall)\s+(always|never)\b/i, '对助手下达绝对指令'],
   [/\bbefore\s+(using|calling)\s+any\s+other\s+tool\b/i, '试图抢占其他工具的调用顺序'],
@@ -137,6 +148,83 @@ const IMPERATIVES: [RegExp, string][] = [
 const PSEUDO_DELIM = /<\/?(system|instructions?|important|assistant|user)\s*>|\[\/?INST\]|<\|[a-z_]+\|>/i
 /** 可能被下游渲染器执行的标记 */
 const EMBEDDED_MARKUP = /<script\b|<iframe\b|\bon(error|load|click)\s*=|javascript:/i
+
+/*
+ * Suite 0.18.0: unconfirmed_spending — text that steers the assistant to spend,
+ * or to send identity data, without a confirmation for each action. A phrase
+ * counts only where it is about money or identity and not inside a limit the
+ * user set: a SPEND_OR_IDENTITY word must occur within 200 characters either
+ * side of it, and no LIMIT word in the 120 characters before it (spending under
+ * the user's own cap, allowlist or policy is not a missing confirmation). A
+ * money or identity word does not count when its own clause says it costs
+ * nothing or is not sent (NO_COST_OR_NOT_SENT); a "free" in another clause
+ * changes nothing. A no-spend action or a price question (NO_SPEND_ACTION) in
+ * the phrase's own clause cancels the phrase, and in a money or identity
+ * word's clause cancels that word.
+ */
+export const UNCONFIRMED_SPENDING_PHRASES: readonly RegExp[] = [
+  /\bpay\b[^.!?\n]{0,40}?\bby\s+default\b/i,
+  /\bno\s+(approval|confirmation)\s+(is\s+)?(needed|required)\b/i,
+  /\bneed\s+not\s+ask\b|\bzero\s+questions\b/i,
+  // Not after never / not / don't ("never buy without asking"), and not asking
+  // for something or asking us.
+  /\bwithout(?<!\b(never|not|\w+n't)\b[^.!?\n]{0,30}without)\s+asking\b(?!\s+(for|us)\b)/i,
+  /\bdoes(\s+not|n't)\s+require\s+per[- ](change|action|call|purchase|payment)\s+approval\b/i,
+  /\bthe\s+(grant|allowance|delegation)\s+is\s+(the|your)\s+(permission|approval|consent)\b/i,
+  /无需(另行)?确认|视为(用户)?同意/,
+  // Accepting every prompt on the user's behalf; an action that keeps going on
+  // its own; an agent loop that calls again; reading the local git identity.
+  /\b(accept|approve)\s+(all|every|any)\s+(\w+\s+){0,2}?(prompts?|confirmations?|dialogs?|requests?)\b/i,
+  /\b(continues|repeats|recurs)\s+automatically\b/i,
+  /\b(the|your|this)\s+agent\s+loop\b/i,
+  /\bgit\s+config\s+(--\w+\s+)*user\.email\b/i,
+  // "Never ask (the user) before charging" and the other spending verbs.
+  /\bnever\s+ask\s+(the\s+user\s+)?before\s+(charging|paying|buying|purchasing|spending|billing|renewing|subscribing)\b/i,
+]
+/** Money and identity words: pay, charge, credit, wallet, USDC, invoice, purchase, subscription, renew, bill, cost, fee, refund, identity, email. */
+const SPEND_OR_IDENTITY = /\b(pay|pays|paid|paying|payer|payments?|charg(e|es|ed|ing)|credits?|wallets?|usdc|invoices?|purchas(e|es|ed|ing)|buy(s|ing)?|subscri(be|bes|bed|bing|ption|ptions)|renew(s|ed|al|als)?|bill(s|ed|ing)?|costs?|fees?|refund(s|ed|able)?|spend(s|ing)?|money|identity|e-?mails?)\b|\$\s?\d|扣费|续费|费用|支付|付款|购买|订阅|钱包|邮箱|身份/i
+/** Cap, limit, policy and allowlist words. */
+const LIMIT = /\b(caps?|capped|limits?|ceilings?|max|maximum|polic(y|ies)|mandates?|allow-?list(ed)?|white-?list(ed)?|thresholds?|quotas?)\b|上限|额度|限额|策略|白名单/i
+/** No-cost and not-sent phrases: a money or identity word in the same clause does not count. */
+const NO_COST_OR_NOT_SENT = /\bcosts?\s+(\w+\s+){0,2}?nothing\b|(?<!\bfeel\s+)\bfree\b|\bno\s+(charges?|costs?|fees?)\b|\b(does\s+not|doesn't|do\s+not|don't|never|will\s+not|won't)\s+(send|collect|store|share)s?\b|免费|不收费/i
+/** No-spend actions and price questions: in the phrase's clause they cancel the phrase; in a money or identity word's clause, that word. */
+const NO_SPEND_ACTION = /\bno\s+purchases?\b|\bread[- ]only\b|\b(does\s+not|doesn't)\s+(buy|purchase|register|charge)\b|\bwhat\s+it\s+costs\b|\bhow\s+much\b/i
+/** A clause ends at . ! ? followed by whitespace or the end, at , ; or a line break, or at ，。！？；. */
+const isClauseEnd = (text: string, i: number) =>
+  /[,;\n，。！？；]/.test(text[i]!) || (/[.!?]/.test(text[i]!) && (i + 1 === text.length || /\s/.test(text[i + 1]!)))
+
+/** The clause around index `at`, at most 200 characters either side of it. */
+function clauseAt(text: string, at: number): string {
+  let start = at, end = at
+  while (start > 0 && at - start < 200 && !isClauseEnd(text, start - 1)) start--
+  while (end < text.length && end - at < 200 && !isClauseEnd(text, end)) end++
+  return text.slice(start, end)
+}
+
+/** Whether a money or identity word in text[from, to) sits in a clause with no no-cost, not-sent or no-spend phrase. */
+function spendOrIdentityNear(text: string, from: number, to: number): boolean {
+  const words = new RegExp(SPEND_OR_IDENTITY.source, 'gi')
+  const near = text.slice(from, to)
+  for (let w = words.exec(near); w !== null; w = words.exec(near)) {
+    const clause = clauseAt(text, from + w.index)
+    if (!NO_COST_OR_NOT_SENT.test(clause) && !NO_SPEND_ACTION.test(clause)) return true
+  }
+  return false
+}
+
+/** The earliest phrase of UNCONFIRMED_SPENDING_PHRASES that the guards let through, or null. */
+function unconfirmedSpending(text: string): number | null {
+  let first: number | null = null
+  for (const pattern of UNCONFIRMED_SPENDING_PHRASES) {
+    const all = new RegExp(pattern.source, pattern.flags + 'g')
+    for (let m = all.exec(text); m !== null && (first === null || m.index < first); m = all.exec(text)) {
+      if (NO_SPEND_ACTION.test(clauseAt(text, m.index))) continue
+      const near = spendOrIdentityNear(text, Math.max(0, m.index - 200), m.index + m[0].length + 200)
+      if (near && !LIMIT.test(text.slice(Math.max(0, m.index - 120), m.index))) first = m.index
+    }
+  }
+  return first
+}
 
 function snippet(s: string, at: number): string {
   return s.slice(Math.max(0, at - 20), at + 40).replace(/\s+/g, ' ')
@@ -161,6 +249,9 @@ function scanText(text: string, where: string, out: HygieneHit[]): void {
     if (m) out.push({ flag: 'injection_imperative', note: `${where} ${note}`,
                       at: m.index, sample: snippet(text, m.index) })
   }
+  const s = unconfirmedSpending(text)
+  if (s !== null) out.push({ flag: 'unconfirmed_spending', note: `${where} 未经逐次确认的花费或身份信息发送`,
+                             at: s, sample: snippet(text, s) })
   const d = PSEUDO_DELIM.exec(text)
   if (d) out.push({ flag: 'pseudo_system_delimiter', note: `${where} 含伪造的系统边界标记`,
                     at: d.index, sample: snippet(text, d.index) })

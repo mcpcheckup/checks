@@ -620,6 +620,84 @@ subset of the 0.16.0 ones, a tool loses a flag only if the fixtures list it, and
 five must-hit inputs keep exactly their flags. `hygiene-0170.test.ts` pins the
 zero-width rule code point by code point.
 
+## Tool description hygiene: what suite 0.18.0 adds
+
+Suite 0.18.0 adds one flag and widens the two patterns suite 0.17.0 narrowed. Both
+changes can only add a flag, never remove one, and the signed result keeps its shape: the
+same reason keys and params, with more tools counted where a description hits.
+`excessive_length` is unchanged and still counts toward `OBSERVED_RISK`.
+
+**`unconfirmed_spending`: spending or sending identity data without per-action
+confirmation.** A hit is one of these phrases (case ignored):
+
+- `pay`, then `by default` in the same sentence within 40 characters;
+- `no approval` or `no confirmation`, then `needed` or `required` (optionally after `is`);
+- `need not ask`; `zero questions`;
+- `without asking`, unless `never`, `not` or a word ending in `n't` comes within 30
+  characters before it in the same sentence, or `for` or `us` follows it;
+- `does not` or `doesn't` `require` `per-change`, `per-action`, `per-call`,
+  `per-purchase` or `per-payment` `approval`;
+- `the` grant, allowance or delegation `is` the or your permission, approval or consent;
+- accept or approve, then all, every or any, then up to two words, then prompts,
+  confirmations, dialogs or requests;
+- continues, repeats or recurs `automatically`;
+- the, your or this `agent loop`;
+- `git config`, then `user.email` (options such as `--get` may come between);
+- `never ask` (optionally followed by `the user`) `before` charging, paying, buying,
+  purchasing, spending, billing, renewing or subscribing;
+- 无需确认 or 无需另行确认; 视为同意 or 视为用户同意.
+
+A phrase counts only when both guards pass. **Proximity:** a money or identity word (see
+**Negation** below) is
+within 200 characters before or after it: pay, payer, payment, paid, charge, credit,
+wallet, USDC, invoice, purchase, buy, subscribe, subscription, renew, bill, cost, fee,
+refund, spend, money, identity, email, a `$` amount, or 扣费, 续费, 费用, 支付, 付款,
+购买, 订阅, 钱包, 邮箱, 身份. **Limit:** no cap, capped, limit, ceiling, max, maximum,
+policy, mandate, allowlist, whitelist, threshold or quota (or 上限, 额度, 限额, 策略, 白名单)
+is in the 120 characters before it, because spending inside a cap, allowlist or policy the
+user set is not a missing confirmation. A limit word after the phrase does not suppress it.
+
+**Negation:** a money or identity word does not count when its own clause says it costs
+nothing or is not sent: `cost` or `costs` followed by `nothing` (up to two words between),
+`free`, `no charge`, `no cost` or `no fee` (or their plurals), does not, doesn't, do not,
+don't, never, will not or won't followed by send, collect, store or share (or sends,
+collects, stores, shares), or 免费 or 不收费; `free` right after `feel` does not count. A
+clause ends at `.` `!` or `?` followed by a space, at `,` `;` or a line break, or at ，。！？；,
+and reaches at most 200 characters either side of the word. The same words in another
+clause change nothing: "a free trial. Then 99 a year is charged …" still counts the charge.
+
+**No-spend:** a phrase does not count when its own clause has `no purchase` (or
+`no purchases`), `read-only` (or `read only`), `does not` or `doesn't` followed by buy,
+purchase, register or charge, `what it costs` or `how much`. The same words in a money or
+identity word's own clause stop that word from counting; in any other clause they change
+nothing. A spending phrase that is itself a negation ("No confirmation needed: …", "Never
+ask the user before charging") is not cancelled by its own negation.
+
+**`injection_imperative`, the two patterns suite 0.17.0 narrowed.** Each new form is
+suite 0.16.0's own pattern followed (or, for the prompt rule, surrounded) by a further
+condition, so it can only flag text suite 0.16.0 flagged.
+
+- "do not tell / inform / mention / reveal / show (the) user or human" is also a hit when
+  followed by `'s`, a hyphen with a space before it, an en or em dash, a line break, or
+  one of `that`, `what`, `why`, `where`, `how`, `this`, `any`, unless the rest of that
+  clause has until, unless, yet, before, after, otherwise, once, while, if or when. "Do not
+  tell the user that the seat is held until the id comes back" stays a non-hit.
+- "system prompt" / "developer prompt" is also a hit after `your new`; after show,
+  return, display, replace, dump, echo or act as as well as the 0.17.0 verbs, optionally
+  followed in turn by `out`, by the, any, all or your, by previous, prior, above, earlier,
+  original or `contents of`, and by the or your; and at the start of a line (after only
+  spaces, `#`, `*`, `>`, `[` or `-`) when followed by a colon or `override`. A `returns
+  the system prompt` field and a mid-line `system prompt:` label stay non-hits.
+
+`hygiene-0180-fixtures.ts` holds the evidence, all invented sentences: one SPENDING
+fixture per phrase form, NOT_SPENDING inputs for each guard, the RESTORED injection forms
+and the STILL_REMOVED ones. `suite-0180-differential.test.ts` holds the live suite
+against frozen suite 0.17.0: on every tool description the differentials serve and every
+fixture, the 0.17.0 flags are a subset of the 0.18.0 ones, a tool gains a flag only if the
+fixtures declare it, every added `injection_imperative` is one frozen suite 0.16.0 also
+flags, and the SPENDING must-hit set is exact. `hygiene-0180.test.ts` pins the guards at
+their character boundaries.
+
 ## What's out of scope in this implementation
 
 - **`tls_certificate`** (`checks.json`'s one check with `executor: "container"`) is
