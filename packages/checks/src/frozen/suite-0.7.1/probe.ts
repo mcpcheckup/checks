@@ -6,7 +6,7 @@ import { assertUnverifiedHasReason } from '@mcpcheckup/attestation-schema'
 import type { Assertion } from '@mcpcheckup/attestation-schema'
 
 type ExecutionStatus = Assertion['execution_status']
-import { runHygieneCheck } from '../../hygiene.ts'
+import { runHygieneCheck } from './hygiene.ts'
 import { createProbeContext, ProbeAborted } from '../../wire.ts'
 import type { ProbeContext } from '../../wire.ts'
 import { performHandshake, performToolsList, performUnknownToolCall } from './protocol.ts'

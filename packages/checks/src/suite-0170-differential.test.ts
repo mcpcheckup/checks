@@ -39,6 +39,11 @@
  * here applies hygiene0180Remap after the 0.17.0 step, which changes no row on
  * these inputs (suite-0180-differential.test.ts proves 0.18.0 adds flags only to
  * hygiene-0180-fixtures.ts's SPENDING and RESTORED fixtures, none served here).
+ *
+ * Since suite 0.19.0 hygiene0190Remap follows, which changes no row on these inputs
+ * either (suite-0190-differential.test.ts proves 0.19.0 changes flags only on
+ * hygiene-0190-fixtures.ts's fixtures, none served here, and that none of these is
+ * flagged excessive_length alone).
  */
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
@@ -54,6 +59,7 @@ import { checkTool } from './hygiene.ts'
 import type { HygieneFlag } from './hygiene.ts'
 import { hygiene0170Remap } from './suite-0170-remap.ts'
 import { hygiene0180Remap } from './suite-0180-remap.ts'
+import { hygiene0190Remap } from './suite-0190-remap.ts'
 import { recordRequest } from './suite-0130-remap.ts'
 import { runProbe as frozen0160RunProbe } from './frozen/suite-0.16.0/src/probe.ts'
 import { checkTool as frozen0160CheckTool } from './frozen/suite-0.16.0/src/hygiene.ts'
@@ -389,7 +395,7 @@ for (const timed of [false, true]) {
       try {
         const now = await runOnce(runProbe, fixture.createHandler, v, timed)
         const old = await runOnce(frozen0160RunProbe as Probe, fixture.createHandler, v, timed)
-        compare(id, now, old, (r) => hygiene0180Remap(hygiene0170Remap(r)))
+        compare(id, now, old, (r) => hygiene0190Remap(hygiene0180Remap(hygiene0170Remap(r))))
       } catch (e) {
         violation(id, `threw ${(e as Error).message}`)
       }
@@ -401,7 +407,7 @@ for (const timed of [false, true]) {
         try {
           const now = await runOnce(runProbe, fixture.createHandler, { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make } }, timed)
           const old = await runOnce(frozen0160RunProbe as Probe, fixture.createHandler, { budget: DEFAULT_PROBE_BUDGET, throwAt: { position, make: makeFrozen } }, timed)
-          compare(id, now, old, (r) => hygiene0180Remap(hygiene0170Remap(r)))
+          compare(id, now, old, (r) => hygiene0190Remap(hygiene0180Remap(hygiene0170Remap(r))))
         } catch (e) {
           violation(id, `threw ${(e as Error).message}`)
         }
@@ -502,7 +508,7 @@ for (const mode of ['modern', 'legacy'] as const) {
       try {
         const now = await runOnce(runProbe, () => hygieneServer(mode, tools), { budget: DEFAULT_PROBE_BUDGET }, timed)
         const old = await runOnce(frozen0160RunProbe as Probe, () => hygieneServer(mode, tools), { budget: DEFAULT_PROBE_BUDGET }, timed)
-        compare(id, now, old, (r) => hygiene0180Remap(hygieneOracle(r, fixtures)))
+        compare(id, now, old, (r) => hygiene0190Remap(hygiene0180Remap(hygieneOracle(r, fixtures))))
         const h = now.result.assertions.find((a) => a.check_id === 'tool_description_hygiene')!
         const o = old.result.assertions.find((a) => a.check_id === 'tool_description_hygiene')!
         const key = `${o.assertion_status}→${h.assertion_status}`

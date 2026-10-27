@@ -8,6 +8,8 @@ import { checkTool, runHygieneCheck, UNCONFIRMED_SPENDING_PHRASES } from './hygi
 import { checkTool as checkTool0160 } from './frozen/suite-0.16.0/src/hygiene.ts'
 import { checkTool as checkTool0170 } from './frozen/suite-0.17.0/src/hygiene.ts'
 import { NOT_SPENDING, RESTORED, SPENDING, STILL_REMOVED } from './hygiene-0180-fixtures.ts'
+import { SPENDING_0190 } from './hygiene-0190-fixtures.ts'
+import { runHygieneCheck as runHygieneCheck0180 } from './frozen/suite-0.18.0/src/hygiene.ts'
 import type { HygieneFlag } from './hygiene.ts'
 
 let pass = 0, fail = 0
@@ -30,9 +32,9 @@ t('spending: each fixture gains exactly unconfirmed_spending over frozen 0.17.0 
   }
 })
 
-t('spending: every phrase form has a fixture that only it catches, so dropping any one form turns that fixture red', () => {
+t('spending: every phrase form has a fixture that only it catches, so dropping any one form turns that fixture red (the suite 0.19.0 form: its SPENDING_0190 fixture)', () => {
   UNCONFIRMED_SPENDING_PHRASES.forEach((phrase, i) => {
-    const own = SPENDING.filter((f) => phrase.test(f.tool.description) &&
+    const own = [...SPENDING, ...SPENDING_0190].filter((f) => phrase.test(f.tool.description) &&
       UNCONFIRMED_SPENDING_PHRASES.every((other, j) => j === i || !other.test(f.tool.description)))
     assert.ok(own.length > 0, `phrase ${i} ${phrase} has no fixture of its own`)
   })
@@ -164,10 +166,13 @@ t('prompt rule: each alternative stops exactly where 0.16.0\'s whole-word "syste
   }
 })
 
-t('excessive_length is unchanged: a 2049-character description is flagged and counts toward OBSERVED_RISK', () => {
-  const r = runHygieneCheck([{ name: 'long', description: 'a'.repeat(2049) }])
+t('excessive_length in suite 0.18.0 (frozen): a 2049-character description is flagged and counts toward OBSERVED_RISK; since suite 0.19.0 it is still flagged but alone does not count (hygiene-0190.test.ts)', () => {
+  const r = runHygieneCheck0180([{ name: 'long', description: 'a'.repeat(2049) }])
   assert.deepStrictEqual(r.flags_by_tool, { long: ['excessive_length'] })
   assert.equal(r.assertion_status, 'OBSERVED_RISK')
+  const live = runHygieneCheck([{ name: 'long', description: 'a'.repeat(2049) }])
+  assert.deepStrictEqual(live.flags_by_tool, { long: ['excessive_length'] })
+  assert.equal(live.assertion_status, 'VERIFIED')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

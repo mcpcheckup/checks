@@ -58,6 +58,7 @@ const FROZEN_071_BLOBS: Record<string, string> = {
   'auth': '926a95cf8753f79c1d7085589f836bcde857b534',
   'protocol': '5f246eb66fa9397bcfc3c0779c5551761fdc56b5',
   'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
+  'hygiene': '1120712366d47ee75588280a9967ea758f5a943d', // TODO 1301: the hygiene.ts this suite shipped with, frozen beside probe.ts (see the frozen file's header)
 }
 
 await t('the frozen 0.7.1 files are the 2c99377 blobs: header dropped, import paths restored, git blob id recomputed', () => {

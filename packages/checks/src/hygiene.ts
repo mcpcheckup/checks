@@ -16,6 +16,7 @@ export type HygieneFlag =
   | 'embedded_markup'
   | 'non_ascii_tool_name'
   | 'unconfirmed_spending'
+  | 'unprompted_continuation'
 
 export interface HygieneHit {
   flag: HygieneFlag
@@ -123,8 +124,9 @@ const IMPERATIVES: [RegExp, string][] = [
   // where / how / this / any next, unless the clause that follows has a flow
   // word (until, unless, yet, before, after, otherwise, once, while, if, when).
   // Every alternative is suite 0.16.0's pattern followed by a lookahead, so it
-  // can only flag what 0.16.0 flagged.
-  [/\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b(?=\s*([.,;:!)]|$|(about|that\s+you|what\s+you|how\s+you|anything|any\s+of)\b)|(['’]s\b|[ \t]+-|[ \t]*[–—]|[ \t]*\r?\n|\s+(that|what|why|where|how|this|any)\b)(?![^.;!?\n]*?\b(until|unless|yet|before|after|otherwise|once|while|if|when)\b))/i,
+  // can only flag what 0.16.0 flagged. Suite 0.19.0: the flow-word lookahead
+  // stops at a comma and at ，。！？； as well, as a clause does in clauseAt.
+  [/\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b(?=\s*([.,;:!)]|$|(about|that\s+you|what\s+you|how\s+you|anything|any\s+of)\b)|(['’]s\b|[ \t]+-|[ \t]*[–—]|[ \t]*\r?\n|\s+(that|what|why|where|how|this|any)\b)(?![^.,;!?\n，。！？；]*?\b(until|unless|yet|before|after|otherwise|once|while|if|when)\b))/i,
    '要求对用户隐瞒信息'],
   // Suite 0.17.0: only the prompt of the assistant reading this ("your system
   // prompt"), or one being extracted or overridden. A system_prompt parameter, an
@@ -162,13 +164,26 @@ const EMBEDDED_MARKUP = /<script\b|<iframe\b|\bon(error|load|click)\s*=|javascri
  * the phrase's own clause cancels the phrase, and in a money or identity
  * word's clause cancels that word.
  */
+/*
+ * Suite 0.19.0, two more forms (the last two of UNCONFIRMED_SPENDING_PHRASES):
+ * RAISE_OWN_LIMIT, telling the assistant to raise or switch off its own spending
+ * limit (exempt from the LIMIT suppression: the limit is what it is about); and
+ * PAYS_FROM_OWNER, paying from the owner's or user's money, which a CONFIRMATION
+ * word in the same or the next sentence cancels.
+ */
+const SPEND_LIMIT_NAME = String.raw`(spendControls(\.\w+)?|maxAmountPerPayment|spend(ing)?\s+(limits?|caps?)|payment\s+caps?)`
+export const RAISE_OWN_LIMIT = new RegExp(String.raw`\b(raise|increase|disable|turn\s+off)\s+(the\s+|your\s+)?${SPEND_LIMIT_NAME}\b|\bset\s+(the\s+|your\s+)?${SPEND_LIMIT_NAME}\s*(:|=|\s+to)?\s*(false|0)(?![.\w])`, 'i')
+export const PAYS_FROM_OWNER = /\b(pays|charges|spends)\b[^.!?\n。！？]{0,40}?\bfrom\s+(your\s+owner|the\s+user|your\s+human|the\s+human)['’]s\s+(credits?|balance|wallet|funds)\b/i
+/** Confirmation words: in PAYS_FROM_OWNER's sentence or the next, they cancel it. "Explain … to your human" is not one. */
+const CONFIRMATION = /\b(confirm(s|ed|ing|ation|ations)?|approv(e|es|ed|ing|al|als))\b|\bask(s|ed|ing)?\b[^.!?\n。！？]{0,40}?\bpermission\b/i
 export const UNCONFIRMED_SPENDING_PHRASES: readonly RegExp[] = [
-  /\bpay\b[^.!?\n]{0,40}?\bby\s+default\b/i,
+  // Suite 0.19.0: the same-sentence windows here also end at 。！？.
+  /\bpay\b[^.!?\n。！？]{0,40}?\bby\s+default\b/i,
   /\bno\s+(approval|confirmation)\s+(is\s+)?(needed|required)\b/i,
   /\bneed\s+not\s+ask\b|\bzero\s+questions\b/i,
   // Not after never / not / don't ("never buy without asking"), and not asking
   // for something or asking us.
-  /\bwithout(?<!\b(never|not|\w+n't)\b[^.!?\n]{0,30}without)\s+asking\b(?!\s+(for|us)\b)/i,
+  /\bwithout(?<!\b(never|not|\w+n't)\b[^.!?\n。！？]{0,30}without)\s+asking\b(?!\s+(for|us)\b)/i,
   /\bdoes(\s+not|n't)\s+require\s+per[- ](change|action|call|purchase|payment)\s+approval\b/i,
   /\bthe\s+(grant|allowance|delegation)\s+is\s+(the|your)\s+(permission|approval|consent)\b/i,
   /无需(另行)?确认|视为(用户)?同意/,
@@ -180,7 +195,17 @@ export const UNCONFIRMED_SPENDING_PHRASES: readonly RegExp[] = [
   /\bgit\s+config\s+(--\w+\s+)*user\.email\b/i,
   // "Never ask (the user) before charging" and the other spending verbs.
   /\bnever\s+ask\s+(the\s+user\s+)?before\s+(charging|paying|buying|purchasing|spending|billing|renewing|subscribing)\b/i,
+  // Suite 0.19.0: selling on what the user or operator entrusted or lent to the assistant.
+  /\b(re)?sell(s|ing|able)?\b[^.!?\n。！？]{0,80}?\b(entrusted|lent)\s+(to\s+)?you\b/i,
+  RAISE_OWN_LIMIT,
+  PAYS_FROM_OWNER,
 ]
+/*
+ * Suite 0.19.0: unprompted_continuation — text saying the assistant goes on
+ * working past the user's request without the user asking again. Fixed phrases,
+ * no guard.
+ */
+export const UNPROMPTED_CONTINUATION = /\bwithout\s+(waiting\s+for\s+)?(another|a\s+further|any\s+further|further|a\s+new|a\s+second|an\s+additional|additional)\s+(user|human)\s+(prompts?|messages?|requests?|turns?|repl(y|ies))\b/i
 /** Money and identity words: pay, charge, credit, wallet, USDC, invoice, purchase, subscription, renew, bill, cost, fee, refund, identity, email. */
 const SPEND_OR_IDENTITY = /\b(pay|pays|paid|paying|payer|payments?|charg(e|es|ed|ing)|credits?|wallets?|usdc|invoices?|purchas(e|es|ed|ing)|buy(s|ing)?|subscri(be|bes|bed|bing|ption|ptions)|renew(s|ed|al|als)?|bill(s|ed|ing)?|costs?|fees?|refund(s|ed|able)?|spend(s|ing)?|money|identity|e-?mails?)\b|\$\s?\d|扣费|续费|费用|支付|付款|购买|订阅|钱包|邮箱|身份/i
 /** Cap, limit, policy and allowlist words. */
@@ -193,12 +218,49 @@ const NO_SPEND_ACTION = /\bno\s+purchases?\b|\bread[- ]only\b|\b(does\s+not|does
 const isClauseEnd = (text: string, i: number) =>
   /[,;\n，。！？；]/.test(text[i]!) || (/[.!?]/.test(text[i]!) && (i + 1 === text.length || /\s/.test(text[i + 1]!)))
 
-/** The clause around index `at`, at most 200 characters either side of it. */
-function clauseAt(text: string, at: number): string {
+/** The bounds [start, end) of the clause around index `at`, at most 200 characters either side of it. */
+function clauseBounds(text: string, at: number): [number, number] {
   let start = at, end = at
   while (start > 0 && at - start < 200 && !isClauseEnd(text, start - 1)) start--
   while (end < text.length && end - at < 200 && !isClauseEnd(text, end)) end++
-  return text.slice(start, end)
+  return [start, end]
+}
+/** The clause around index `at`, at most 200 characters either side of it. */
+const clauseAt = (text: string, at: number) => text.slice(...clauseBounds(text, at))
+
+/** A sentence ends at . ! ? followed by whitespace or the end, at a line break, or at 。！？. */
+const isSentenceEnd = (text: string, i: number) =>
+  /[\n。！？]/.test(text[i]!) || (/[.!?]/.test(text[i]!) && (i + 1 === text.length || /\s/.test(text[i + 1]!)))
+
+/** The sentence around index `at` and the one after it, at most 400 characters before `at` and 800 after. */
+function sentenceAndNext(text: string, at: number): string {
+  let start = at, end = at, ends = 0
+  while (start > 0 && at - start < 400 && !isSentenceEnd(text, start - 1)) start--
+  while (end < text.length && end - at < 800 && !(isSentenceEnd(text, end) && ++ends === 2)) end++
+  return text.slice(start, end + 1)
+}
+
+/*
+ * Suite 0.19.0: telling the assistant not to say that a check is missing,
+ * unverified or failed. A CONCEAL_OUTCOME_VERB counts when a CONCEAL_OUTCOME_WORD
+ * follows it in the same clause (clauseBounds) with no SUBORDINATOR between them
+ * ("never say it was saved when some failed" asks for honesty, not concealment).
+ * Reported as injection_imperative; unlike every other injection form this one is
+ * not within suite 0.16.0's patterns.
+ */
+export const CONCEAL_OUTCOME_VERB = /\b(never|do\s+not|don['’]t)\s+(say|mention|tell|disclose|reveal|state)\b/i
+const CONCEAL_OUTCOME_WORD = /\b(missing|not\s+verified|unverified|failed|absent)\b/i
+const SUBORDINATOR = /\b(because|when|if|unless|since|as|so)\b/i
+
+/** The first CONCEAL_OUTCOME_VERB with a CONCEAL_OUTCOME_WORD after it in its clause and no SUBORDINATOR between, or null. */
+function concealedOutcome(text: string): number | null {
+  const verbs = new RegExp(CONCEAL_OUTCOME_VERB.source, 'gi')
+  for (let m = verbs.exec(text); m !== null; m = verbs.exec(text)) {
+    const rest = text.slice(m.index + m[0].length, clauseBounds(text, m.index)[1])
+    const word = CONCEAL_OUTCOME_WORD.exec(rest)
+    if (word !== null && !SUBORDINATOR.test(rest.slice(0, word.index))) return m.index
+  }
+  return null
 }
 
 /** Whether a money or identity word in text[from, to) sits in a clause with no no-cost, not-sent or no-spend phrase. */
@@ -220,7 +282,10 @@ function unconfirmedSpending(text: string): number | null {
     for (let m = all.exec(text); m !== null && (first === null || m.index < first); m = all.exec(text)) {
       if (NO_SPEND_ACTION.test(clauseAt(text, m.index))) continue
       const near = spendOrIdentityNear(text, Math.max(0, m.index - 200), m.index + m[0].length + 200)
-      if (near && !LIMIT.test(text.slice(Math.max(0, m.index - 120), m.index))) first = m.index
+      // RAISE_OWN_LIMIT is about the limit itself, so a limit word before it does not suppress it.
+      if (!near || (pattern !== RAISE_OWN_LIMIT && LIMIT.test(text.slice(Math.max(0, m.index - 120), m.index)))) continue
+      if (pattern === PAYS_FROM_OWNER && CONFIRMATION.test(sentenceAndNext(text, m.index))) continue
+      first = m.index
     }
   }
   return first
@@ -249,9 +314,15 @@ function scanText(text: string, where: string, out: HygieneHit[]): void {
     if (m) out.push({ flag: 'injection_imperative', note: `${where} ${note}`,
                       at: m.index, sample: snippet(text, m.index) })
   }
+  const o = concealedOutcome(text)
+  if (o !== null) out.push({ flag: 'injection_imperative', note: `${where} 要求不说出缺失、未核验或失败的检查`,
+                             at: o, sample: snippet(text, o) })
   const s = unconfirmedSpending(text)
   if (s !== null) out.push({ flag: 'unconfirmed_spending', note: `${where} 未经逐次确认的花费或身份信息发送`,
                              at: s, sample: snippet(text, s) })
+  const c = UNPROMPTED_CONTINUATION.exec(text)
+  if (c) out.push({ flag: 'unprompted_continuation', note: `${where} 要求不等用户再次提出就继续工作`,
+                    at: c.index, sample: snippet(text, c.index) })
   const d = PSEUDO_DELIM.exec(text)
   if (d) out.push({ flag: 'pseudo_system_delimiter', note: `${where} 含伪造的系统边界标记`,
                     at: d.index, sample: snippet(text, d.index) })
@@ -287,8 +358,12 @@ export function runHygieneCheck(tools: { name: string; description?: string }[])
   const flags_by_tool: Record<string, HygieneFlag[]> = {}
   const details: string[] = []
   let hitTools = 0
+  // Suite 0.19.0: a tool counts toward OBSERVED_RISK and hitCount only with a
+  // flag other than excessive_length; a length-only tool keeps its flag.
+  let riskTools = 0
   for (const t of tools) {
     const hits = checkTool(t)
+    if (hits.some((h) => h.flag !== 'excessive_length')) riskTools++
     if (hits.length) {
       hitTools++
       flags_by_tool[t.name] = [...new Set(hits.map(h => h.flag))]
@@ -298,9 +373,9 @@ export function runHygieneCheck(tools: { name: string; description?: string }[])
   details.push(`Info: 共扫描 ${tools.length} 个工具，${tools.length - hitTools} 个未命中任何信号`)
   return {
     // 只报告信号，不推断意图 —— 因此永远不是 FAILED
-    assertion_status: hitTools ? 'OBSERVED_RISK' : 'VERIFIED',
-    reason: hitTools
-      ? { key: 'hygiene_risk_detected', params: { hitCount: hitTools, totalCount: tools.length } }
+    assertion_status: riskTools ? 'OBSERVED_RISK' : 'VERIFIED',
+    reason: riskTools
+      ? { key: 'hygiene_risk_detected', params: { hitCount: riskTools, totalCount: tools.length } }
       : { key: 'hygiene_no_risk', params: { totalCount: tools.length } },
     details,
     flags_by_tool,

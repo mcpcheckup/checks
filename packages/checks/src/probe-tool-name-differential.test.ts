@@ -111,6 +111,7 @@ const FROZEN_BLOBS: Record<string, string> = {
   'auth': '926a95cf8753f79c1d7085589f836bcde857b534',
   'protocol': '8edaf3a8dd2c2af90e9702425557ca9601fe0342',
   'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
+  'hygiene': '1120712366d47ee75588280a9967ea758f5a943d', // TODO 1301: the hygiene.ts this suite shipped with, frozen beside probe.ts (see the frozen file's header)
 }
 
 /** Blob ids of packages/checks/src/{name}.ts at 2c99377 (suite 0.7.1; the
@@ -120,6 +121,7 @@ const FROZEN_071_BLOBS: Record<string, string> = {
   'auth': '926a95cf8753f79c1d7085589f836bcde857b534',
   'protocol': '5f246eb66fa9397bcfc3c0779c5551761fdc56b5',
   'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
+  'hygiene': '1120712366d47ee75588280a9967ea758f5a943d', // TODO 1301: the hygiene.ts this suite shipped with, frozen beside probe.ts (see the frozen file's header)
 }
 
 /** The in-repo import closure of frozen/suite-0.7.1, pinned to its blobs at
@@ -238,7 +240,20 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  tool_description_hygiene), still reached type-only with the registry passed in as input, and hygiene.ts. Both
  *  sides here still call the live runHygieneCheck, so the comparison this file makes is unchanged. The suite 0.18.0
  *  change itself is carried by the remap (suite-0180-remap.ts) and proved against frozen 0.17.0 by
- *  suite-0180-differential.test.ts. */
+ *  suite-0180-differential.test.ts.
+ *
+ *  TODO 1301 supersedes the two paragraphs above on one point: the frozen probe.ts no longer calls the live
+ *  runHygieneCheck. Each frozen suite directory carries its own hygiene.ts (the git blob the suite shipped with, pinned
+ *  in the frozen-file map above), so hygiene.ts is no longer part of the closure below, and the frozen side computes
+ *  its own suite's tool_description_hygiene row. The remaps leave that row unchanged on these inputs, so the
+ *  comparison now checks that the live row equals the frozen suite's row; before, both sides read the same code.
+ *
+ *  Suite 0.19.0 (tool_description_hygiene: length alone no longer counts, unprompted_continuation, one more
+ *  unconfirmed_spending form, TODO 1316 boundaries) re-pins checks.json (registry 0.18.0: copy and docs_version
+ *  v0.5.0 of tool_description_hygiene), still reached type-only with the registry passed in as input. hygiene.ts
+ *  stays out of this closure (TODO 1301). On these inputs suite 0.19.0 computes the same hygiene row as the frozen
+ *  suite: suite-0190-differential.test.ts proves no corpus tool gains or loses a flag and none is flagged
+ *  excessive_length alone, so the remap (suite-0190-remap.ts) changes no row and the comparison is unchanged. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
@@ -256,9 +271,9 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': 'd521f66781d593f0af7f36e221f8e314b68a4920', // registry 0.17.0 (suite 0.18.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': 'a0fe59fd894bf8299d25f47615049e9baa8fd000', // registry 0.18.0 (suite 0.19.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
-  'packages/checks/src/hygiene.ts': 'f66c6aa9e9f938e31cc1bc9e7d878808649488a0', // suite 0.18.0 (see above) — git hash-object packages/checks/src/hygiene.ts
+  // hygiene.ts is no longer in this closure: the frozen probe.ts imports its own frozen copy (TODO 1301).
   'packages/checks/src/latency.ts': '64947a43c414ded3590e599a7f08569391da6bef', // suite 0.16.0, reached from wire.ts (see above) — git hash-object packages/checks/src/latency.ts
   'packages/checks/src/registry.ts': '6f610be98235985b0a27d4cfac5ba805b6a3f51b', // suite 0.15.0 (type-only; see above) — git hash-object packages/checks/src/registry.ts
   'packages/checks/src/types.ts': 'e5cb68a8775242ea17d8c1520076f54beaf2a393', // suite 0.16.0 (type-only; see above) — git hash-object packages/checks/src/types.ts

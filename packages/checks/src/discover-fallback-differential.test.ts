@@ -93,8 +93,8 @@ import { offerAsLive, offerSubstitutionProblem, suite0130Remap } from './suite-0
 // (suite-0140-remap.ts); suite-0140-differential.test.ts proves that key against frozen 0.13.0.
 import { withoutAuthObservation } from './suite-0140-remap.ts'
 import { pagedToolsList } from './suite-0150-remap.ts'
-import { recordSuite0180, suite0180Remap } from './suite-0180-remap.ts'
-import type { Suite0180Observed } from './suite-0180-remap.ts'
+import { recordSuite0190, suite0190Remap } from './suite-0190-remap.ts'
+import type { Suite0190Observed } from './suite-0190-remap.ts'
 import { runProbe as frozen090RunProbe } from './frozen/suite-0.9.0/probe.ts'
 import { CHECKS_REGISTRY } from './registry.ts'
 import type { ApprovedBaseline, GuardSignals, FetchLike, ProbeResult } from './types.ts'
@@ -115,6 +115,7 @@ const FROZEN_090_BLOBS: Record<string, string> = {
   'protocol': 'e66f8fdddbd0e945bd30487e1b23a3d17aa56745',
   'auth': 'f8b78f074b997b38e39319d97ec93807f73a0c65',
   'error-taxonomy': '93d0c1862dc60a690dbf15c7feb4a10f135a8945',
+  'hygiene': '1120712366d47ee75588280a9967ea758f5a943d', // TODO 1301: the hygiene.ts this suite shipped with, frozen beside probe.ts (see the frozen file's header)
 }
 
 /** The in-repo import closure of frozen/suite-0.9.0 outside that directory
@@ -207,7 +208,20 @@ const FROZEN_090_BLOBS: Record<string, string> = {
  *  tool_description_hygiene), still reached type-only with the registry passed in as input, and hygiene.ts. Both
  *  sides here still call the live runHygieneCheck, so the comparison this file makes is unchanged. The suite 0.18.0
  *  change itself is carried by the remap (suite-0180-remap.ts) and proved against frozen 0.17.0 by
- *  suite-0180-differential.test.ts. */
+ *  suite-0180-differential.test.ts.
+ *
+ *  TODO 1301 supersedes the two paragraphs above on one point: the frozen probe.ts no longer calls the live
+ *  runHygieneCheck. Each frozen suite directory carries its own hygiene.ts (the git blob the suite shipped with, pinned
+ *  in the frozen-file map above), so hygiene.ts is no longer part of the closure below, and the frozen side computes
+ *  its own suite's tool_description_hygiene row. The remaps leave that row unchanged on these inputs, so the
+ *  comparison now checks that the live row equals the frozen suite's row; before, both sides read the same code.
+ *
+ *  Suite 0.19.0 (tool_description_hygiene: length alone no longer counts, unprompted_continuation, one more
+ *  unconfirmed_spending form, TODO 1316 boundaries) re-pins checks.json (registry 0.18.0: copy and docs_version
+ *  v0.5.0 of tool_description_hygiene), still reached type-only with the registry passed in as input. hygiene.ts
+ *  stays out of this closure (TODO 1301). On these inputs suite 0.19.0 computes the same hygiene row as the frozen
+ *  suite: suite-0190-differential.test.ts proves no corpus tool gains or loses a flag and none is flagged
+ *  excessive_length alone, so the remap (suite-0190-remap.ts) changes no row and the comparison is unchanged. */
 const CLOSURE_090_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
@@ -225,9 +239,9 @@ const CLOSURE_090_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': 'd521f66781d593f0af7f36e221f8e314b68a4920', // registry 0.17.0 (suite 0.18.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': 'a0fe59fd894bf8299d25f47615049e9baa8fd000', // registry 0.18.0 (suite 0.19.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
-  'packages/checks/src/hygiene.ts': 'f66c6aa9e9f938e31cc1bc9e7d878808649488a0', // suite 0.18.0 (see above) — git hash-object packages/checks/src/hygiene.ts
+  // hygiene.ts is no longer in this closure: the frozen probe.ts imports its own frozen copy (TODO 1301).
   'packages/checks/src/latency.ts': '64947a43c414ded3590e599a7f08569391da6bef', // suite 0.16.0, reached from wire.ts (see above) — git hash-object packages/checks/src/latency.ts
   'packages/checks/src/registry.ts': '6f610be98235985b0a27d4cfac5ba805b6a3f51b', // suite 0.15.0 (type-only; see above) — git hash-object packages/checks/src/registry.ts
   'packages/checks/src/types.ts': 'e5cb68a8775242ea17d8c1520076f54beaf2a393', // suite 0.16.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
@@ -348,7 +362,7 @@ interface Variant {
 
 /** `discoverStatus`: the status of the answer to the (only) server/discover
  *  request, or undefined when none came back. */
-interface Run { result: ProbeResult; requests: string[]; discoverStatus: number | undefined; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0180Observed }
+interface Run { result: ProbeResult; requests: string[]; discoverStatus: number | undefined; toolsCallStatus: number | null; substituted: { body: number; header: number }; observed: Suite0190Observed }
 
 const isDiscover = (init?: RequestInit) => {
   if (typeof init?.body !== 'string') return false
@@ -391,8 +405,8 @@ async function runOnce(probe: Probe, createHandler: () => Handler, v: Variant, l
   let seq = 0
   const recorded = recordToolsCallStatus(fetchImpl)
   const offer = offerAsLive(recorded.fetchImpl, live)
-  // Suites 0.15.0 to 0.18.0: what suite0180Remap reads off this run's transport.
-  const suite0150 = recordSuite0180(offer.fetchImpl)
+  // Suites 0.15.0 to 0.19.0: what suite0190Remap reads off this run's transport.
+  const suite0150 = recordSuite0190(offer.fetchImpl)
   const result = await probe({
     target: { slug: 'example/notes-mcp', transport: 'remote', endpointUrl: ENDPOINT },
     fetchImpl: suite0150.fetchImpl,
@@ -506,20 +520,20 @@ async function check(serve: (discoverStatus?: number) => () => Handler, v: Varia
   if (c.klass === 'UNAFFECTED') {
     assert.deepStrictEqual(now.requests, then.requests, 'unaffected: request sequence identical to 0.9.0')
     assert.equal(offerSubstitutionProblem(then.result, then.substituted), null, 'unaffected: the offer header replaced on a run whose server declared a version')
-    assert.ok(identical(withoutAuthObservation(now.result), suite0180Remap(suite0130Remap(suite0120Remap(then.result, then.toolsCallStatus), then.requests), then.observed)), 'unaffected: ProbeResult identical to 0.9.0 (after the suite 0.12.0 and 0.13.0 remaps)')
+    assert.ok(identical(withoutAuthObservation(now.result), suite0190Remap(suite0130Remap(suite0120Remap(then.result, then.toolsCallStatus), then.requests), then.observed)), 'unaffected: ProbeResult identical to 0.9.0 (after the suite 0.12.0 and 0.13.0 remaps)')
     return c
   }
   if (c.klass === 'REJECTED') {
     assert.deepStrictEqual(now.requests, then.requests, 'rejected: request sequence identical to 0.9.0')
     const want = { ...then.result, assertions: then.result.assertions.map((a) => (a.check_id === 'discovery_handshake' ? { ...a, reason: { key: 'handshake_discover_rejected', params: { status: then.discoverStatus!, jsonrpc_error_code: c.code! } } } : a)) }
     assert.equal(offerSubstitutionProblem(then.result, then.substituted), null, 'rejected: the offer header replaced on a run whose server declared a version')
-    assert.ok(identical(withoutAuthObservation(now.result), suite0180Remap(suite0130Remap(suite0120Remap(want, then.toolsCallStatus), then.requests), then.observed)), `rejected: ProbeResult is 0.9.0's with discovery_handshake reason handshake_discover_rejected {status:${then.discoverStatus}} and nothing else`)
+    assert.ok(identical(withoutAuthObservation(now.result), suite0190Remap(suite0130Remap(suite0120Remap(want, then.toolsCallStatus), then.requests), then.observed)), `rejected: ProbeResult is 0.9.0's with discovery_handshake reason handshake_discover_rejected {status:${then.discoverStatus}} and nothing else`)
     return c
   }
   const counterfactual = await runOnce(frozen090RunProbe, serve(c.klass === 'FALLBACK' ? 404 : 200), v, now.requests)
   assert.deepStrictEqual(now.requests, counterfactual.requests, `${c.klass}: request sequence is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200}`)
   assert.equal(offerSubstitutionProblem(counterfactual.result, counterfactual.substituted), null, `${c.klass}: the offer header replaced on a run whose server declared a version`)
-  assert.ok(identical(withoutAuthObservation(now.result), suite0180Remap(suite0130Remap(suite0120Remap(counterfactual.result, counterfactual.toolsCallStatus), counterfactual.requests), counterfactual.observed)), `${c.klass}: ProbeResult is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200} (after the suite 0.12.0 and 0.13.0 remaps)`)
+  assert.ok(identical(withoutAuthObservation(now.result), suite0190Remap(suite0130Remap(suite0120Remap(counterfactual.result, counterfactual.toolsCallStatus), counterfactual.requests), counterfactual.observed)), `${c.klass}: ProbeResult is 0.9.0's with discover answered ${c.klass === 'FALLBACK' ? 404 : 200} (after the suite 0.12.0 and 0.13.0 remaps)`)
   assert.equal(now.requests[0], then.requests[0], `${c.klass}: the discover request itself is unchanged`)
   if (c.klass === 'FALLBACK') {
     if (now.requests.length > 1) assert.equal(methodOf(now.requests[1]!), 'initialize', 'fallback: the next request is initialize')
