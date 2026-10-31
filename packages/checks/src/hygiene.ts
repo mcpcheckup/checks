@@ -112,8 +112,64 @@ function zeroWidthSignal(text: string): { index: number; char: string } | null {
   return null
 }
 
-/** 指向助手而非描述工具本身的祈使句式 */
-const IMPERATIVES: [RegExp, string][] = [
+/** The position of the first element of ascending `sorted` that is >= `at` (sorted.length if none). */
+function lowerBound(sorted: readonly number[], at: number): number {
+  let lo = 0, hi = sorted.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (sorted[mid]! < at) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
+/** Where `re` (global) matches in `text`, in order. */
+const startsOf = (re: RegExp, text: string): number[] => Array.from(text.matchAll(re), (m) => m.index)
+
+/*
+ * The "do not tell the user" form below, as a scan. Suite 0.19.1: the same rule
+ * as suite 0.19.0's single expression, in time that grows with the text rather
+ * than with its square (that expression re-read the rest of the clause from
+ * every candidate, so a long clause full of candidates cost its length squared). A candidate is suite
+ * 0.16.0's pattern (CONCEAL_FROM_USER). It counts when CONCEAL_CLOSES follows it,
+ * or when one of CONCEAL_FOLLOWS does and no FLOW_WORD starts after that before
+ * the next FLOW_STOP; the flow words and stops of the text are found once.
+ */
+const CONCEAL_FROM_USER = /\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b/gi
+const CONCEAL_CLOSES = /\s*([.,;:!)]|$|(about|that\s+you|what\s+you|how\s+you|anything|any\s+of)\b)/iy
+const CONCEAL_FOLLOWS: readonly RegExp[] = [/['’]s\b/iy, /[ \t]+-/iy, /[ \t]*[–—]/iy, /[ \t]*\r?\n/iy, /\s+(that|what|why|where|how|this|any)\b/iy]
+const FLOW_WORD = /\b(until|unless|yet|before|after|otherwise|once|while|if|when)\b/gi
+const FLOW_STOP = /[.,;!?\n，。！？；]/g
+
+/** Whether sticky `re` matches at `at`; the length of the match, or -1. */
+function matchedAt(re: RegExp, text: string, at: number): number {
+  re.lastIndex = at
+  const m = re.exec(text)
+  return m === null ? -1 : m[0].length
+}
+
+/** The first CONCEAL_FROM_USER candidate that counts, or null. Like RegExp exec, it reads a text that is not a string as String(text). */
+function concealFromUser(input: string): number | null {
+  const text = String(input)
+  let flows: number[] | undefined, stops: number[] | undefined
+  for (const m of text.matchAll(CONCEAL_FROM_USER)) {
+    const end = m.index + m[0].length
+    if (matchedAt(CONCEAL_CLOSES, text, end) >= 0) return m.index
+    flows ??= startsOf(FLOW_WORD, text)
+    stops ??= startsOf(FLOW_STOP, text)
+    for (const follow of CONCEAL_FOLLOWS) {
+      const length = matchedAt(follow, text, end)
+      if (length < 0) continue
+      const after = end + length
+      const flow = flows[lowerBound(flows, after)] ?? Infinity
+      if (flow >= (stops[lowerBound(stops, after)] ?? text.length)) return m.index
+    }
+  }
+  return null
+}
+
+/** 指向助手而非描述工具本身的祈使句式。Each is a pattern, or a scan returning where it matched, and its note (exported for the tests). */
+export const IMPERATIVES: readonly (readonly [RegExp | ((text: string) => number | null), string])[] = [
   [/\bignore\s+(all\s+|any\s+)?(previous|prior|above|earlier)\b/i, '包含「ignore previous」类指令'],
   [/\bdisregard\s+(all\s+|any\s+)?(previous|prior|above|the)\b/i, '包含「disregard previous」类指令'],
   // Suite 0.17.0: only when what follows "the user" makes it concealment from the
@@ -126,8 +182,8 @@ const IMPERATIVES: [RegExp, string][] = [
   // Every alternative is suite 0.16.0's pattern followed by a lookahead, so it
   // can only flag what 0.16.0 flagged. Suite 0.19.0: the flow-word lookahead
   // stops at a comma and at ，。！？； as well, as a clause does in clauseAt.
-  [/\bdo\s+not\s+(tell|inform|mention|reveal|show)\s+(the\s+)?(user|human)\b(?=\s*([.,;:!)]|$|(about|that\s+you|what\s+you|how\s+you|anything|any\s+of)\b)|(['’]s\b|[ \t]+-|[ \t]*[–—]|[ \t]*\r?\n|\s+(that|what|why|where|how|this|any)\b)(?![^.,;!?\n，。！？；]*?\b(until|unless|yet|before|after|otherwise|once|while|if|when)\b))/i,
-   '要求对用户隐瞒信息'],
+  // Suite 0.19.1: the same rule, as the scan concealFromUser.
+  [concealFromUser, '要求对用户隐瞒信息'],
   // Suite 0.17.0: only the prompt of the assistant reading this ("your system
   // prompt"), or one being extracted or overridden. A system_prompt parameter, an
   // agent's configured prompt, or "never treat it as a system prompt" no longer counts.
@@ -215,29 +271,53 @@ const NO_COST_OR_NOT_SENT = /\bcosts?\s+(\w+\s+){0,2}?nothing\b|(?<!\bfeel\s+)\b
 /** No-spend actions and price questions: in the phrase's clause they cancel the phrase; in a money or identity word's clause, that word. */
 const NO_SPEND_ACTION = /\bno\s+purchases?\b|\bread[- ]only\b|\b(does\s+not|doesn't)\s+(buy|purchase|register|charge)\b|\bwhat\s+it\s+costs\b|\bhow\s+much\b/i
 /** A clause ends at . ! ? followed by whitespace or the end, at , ; or a line break, or at ，。！？；. */
-const isClauseEnd = (text: string, i: number) =>
-  /[,;\n，。！？；]/.test(text[i]!) || (/[.!?]/.test(text[i]!) && (i + 1 === text.length || /\s/.test(text[i + 1]!)))
-
-/** The bounds [start, end) of the clause around index `at`, at most 200 characters either side of it. */
-function clauseBounds(text: string, at: number): [number, number] {
-  let start = at, end = at
-  while (start > 0 && at - start < 200 && !isClauseEnd(text, start - 1)) start--
-  while (end < text.length && end - at < 200 && !isClauseEnd(text, end)) end++
-  return [start, end]
-}
-/** The clause around index `at`, at most 200 characters either side of it. */
-const clauseAt = (text: string, at: number) => text.slice(...clauseBounds(text, at))
+const CLAUSE_END = /[,;\n，。！？；]|[.!?](?=\s|$)/g
 
 /** A sentence ends at . ! ? followed by whitespace or the end, at a line break, or at 。！？. */
+const SENTENCE_END = /[\n。！？]|[.!?](?=\s|$)/g
+
+/** Suite 0.19.1: the clause or sentence ends of one text, found once, on first use; clauseBounds and sentenceAndNext look them up. */
+type Ends = () => readonly number[]
+function endsOf(re: RegExp, text: string): Ends {
+  let ends: number[] | undefined
+  return () => (ends ??= startsOf(re, text))
+}
+
+/*
+ * Nothing checks that a tool's name or description is a string. One that is not
+ * (an array, say) keeps suite 0.19.0's walk below, character by character with
+ * isClauseEnd and isSentenceEnd, so it is read exactly as suite 0.19.0 read it.
+ */
+const isClauseEnd = (text: string, i: number) =>
+  /[,;\n，。！？；]/.test(text[i]!) || (/[.!?]/.test(text[i]!) && (i + 1 === text.length || /\s/.test(text[i + 1]!)))
 const isSentenceEnd = (text: string, i: number) =>
   /[\n。！？]/.test(text[i]!) || (/[.!?]/.test(text[i]!) && (i + 1 === text.length || /\s/.test(text[i + 1]!)))
 
-/** The sentence around index `at` and the one after it, at most 400 characters before `at` and 800 after. */
-function sentenceAndNext(text: string, at: number): string {
-  let start = at, end = at, ends = 0
-  while (start > 0 && at - start < 400 && !isSentenceEnd(text, start - 1)) start--
-  while (end < text.length && end - at < 800 && !(isSentenceEnd(text, end) && ++ends === 2)) end++
-  return text.slice(start, end + 1)
+/** The bounds [start, end) of the clause around index `at`, at most 200 characters either side of it. */
+function clauseBounds(text: string, clauseEnds: Ends, at: number): [number, number] {
+  if (typeof text !== 'string') {
+    let start = at, end = at
+    while (start > 0 && at - start < 200 && !isClauseEnd(text, start - 1)) start--
+    while (end < (text as string).length && end - at < 200 && !isClauseEnd(text, end)) end++
+    return [start, end]
+  }
+  const ends = clauseEnds(), k = lowerBound(ends, at)
+  return [Math.max(k > 0 ? ends[k - 1]! + 1 : 0, at - 200), Math.min(ends[k] ?? text.length, at + 200)]
+}
+/** The clause around index `at`, at most 200 characters either side of it. */
+const clauseAt = (text: string, clauseEnds: Ends, at: number) => text.slice(...clauseBounds(text, clauseEnds, at))
+
+/** The sentence around index `at` and the one after it, at most 400 characters before `at` and 800 after (the second end included). */
+function sentenceAndNext(text: string, sentenceEnds: Ends, at: number): string {
+  if (typeof text !== 'string') {
+    let start = at, end = at, ends = 0
+    while (start > 0 && at - start < 400 && !isSentenceEnd(text, start - 1)) start--
+    while (end < (text as string).length && end - at < 800 && !(isSentenceEnd(text, end) && ++ends === 2)) end++
+    return (text as string).slice(start, end + 1)
+  }
+  const ends = sentenceEnds(), k = lowerBound(ends, at)
+  const start = Math.max(k > 0 ? ends[k - 1]! + 1 : 0, at - 400)
+  return text.slice(start, Math.min(ends[k + 1] ?? text.length, at + 800) + 1)
 }
 
 /*
@@ -253,38 +333,50 @@ const CONCEAL_OUTCOME_WORD = /\b(missing|not\s+verified|unverified|failed|absent
 const SUBORDINATOR = /\b(because|when|if|unless|since|as|so)\b/i
 
 /** The first CONCEAL_OUTCOME_VERB with a CONCEAL_OUTCOME_WORD after it in its clause and no SUBORDINATOR between, or null. */
-function concealedOutcome(text: string): number | null {
+function concealedOutcome(text: string, clauseEnds: Ends): number | null {
   const verbs = new RegExp(CONCEAL_OUTCOME_VERB.source, 'gi')
   for (let m = verbs.exec(text); m !== null; m = verbs.exec(text)) {
-    const rest = text.slice(m.index + m[0].length, clauseBounds(text, m.index)[1])
+    const rest = text.slice(m.index + m[0].length, clauseBounds(text, clauseEnds, m.index)[1])
     const word = CONCEAL_OUTCOME_WORD.exec(rest)
     if (word !== null && !SUBORDINATOR.test(rest.slice(0, word.index))) return m.index
   }
   return null
 }
 
-/** Whether a money or identity word in text[from, to) sits in a clause with no no-cost, not-sent or no-spend phrase. */
-function spendOrIdentityNear(text: string, from: number, to: number): boolean {
+/**
+ * Whether a money or identity word in text[from, to) sits in a clause with no
+ * no-cost, not-sent or no-spend phrase. A word's clause depends only on where
+ * the word is, so `counts` keeps the answer for each position of the text
+ * (suite 0.19.1): nearby phrases' windows overlap, and each word is judged once.
+ */
+function spendOrIdentityNear(text: string, clauseEnds: Ends, counts: Map<number, boolean>, from: number, to: number): boolean {
   const words = new RegExp(SPEND_OR_IDENTITY.source, 'gi')
   const near = text.slice(from, to)
   for (let w = words.exec(near); w !== null; w = words.exec(near)) {
-    const clause = clauseAt(text, from + w.index)
-    if (!NO_COST_OR_NOT_SENT.test(clause) && !NO_SPEND_ACTION.test(clause)) return true
+    const at = from + w.index
+    let counted = counts.get(at)
+    if (counted === undefined) {
+      const clause = clauseAt(text, clauseEnds, at)
+      counted = !NO_COST_OR_NOT_SENT.test(clause) && !NO_SPEND_ACTION.test(clause)
+      counts.set(at, counted)
+    }
+    if (counted) return true
   }
   return false
 }
 
 /** The earliest phrase of UNCONFIRMED_SPENDING_PHRASES that the guards let through, or null. */
-function unconfirmedSpending(text: string): number | null {
+function unconfirmedSpending(text: string, clauseEnds: Ends, sentenceEnds: Ends): number | null {
   let first: number | null = null
+  const counts = new Map<number, boolean>()
   for (const pattern of UNCONFIRMED_SPENDING_PHRASES) {
     const all = new RegExp(pattern.source, pattern.flags + 'g')
     for (let m = all.exec(text); m !== null && (first === null || m.index < first); m = all.exec(text)) {
-      if (NO_SPEND_ACTION.test(clauseAt(text, m.index))) continue
-      const near = spendOrIdentityNear(text, Math.max(0, m.index - 200), m.index + m[0].length + 200)
+      if (NO_SPEND_ACTION.test(clauseAt(text, clauseEnds, m.index))) continue
+      const near = spendOrIdentityNear(text, clauseEnds, counts, Math.max(0, m.index - 200), m.index + m[0].length + 200)
       // RAISE_OWN_LIMIT is about the limit itself, so a limit word before it does not suppress it.
       if (!near || (pattern !== RAISE_OWN_LIMIT && LIMIT.test(text.slice(Math.max(0, m.index - 120), m.index)))) continue
-      if (pattern === PAYS_FROM_OWNER && CONFIRMATION.test(sentenceAndNext(text, m.index))) continue
+      if (pattern === PAYS_FROM_OWNER && CONFIRMATION.test(sentenceAndNext(text, sentenceEnds, m.index))) continue
       first = m.index
     }
   }
@@ -309,15 +401,16 @@ function scanText(text: string, where: string, out: HygieneHit[]): void {
     if (m) out.push({ flag, note: `${where} ${note}`, at: m.index,
                       sample: JSON.stringify(m[0]) })
   }
-  for (const [re, note] of IMPERATIVES) {
-    const m = re.exec(text)
-    if (m) out.push({ flag: 'injection_imperative', note: `${where} ${note}`,
-                      at: m.index, sample: snippet(text, m.index) })
+  for (const [rule, note] of IMPERATIVES) {
+    const at = typeof rule === 'function' ? rule(text) : rule.exec(text)?.index ?? null
+    if (at !== null) out.push({ flag: 'injection_imperative', note: `${where} ${note}`,
+                                at, sample: snippet(text, at) })
   }
-  const o = concealedOutcome(text)
+  const clauseEnds = endsOf(CLAUSE_END, text)
+  const o = concealedOutcome(text, clauseEnds)
   if (o !== null) out.push({ flag: 'injection_imperative', note: `${where} 要求不说出缺失、未核验或失败的检查`,
                              at: o, sample: snippet(text, o) })
-  const s = unconfirmedSpending(text)
+  const s = unconfirmedSpending(text, clauseEnds, endsOf(SENTENCE_END, text))
   if (s !== null) out.push({ flag: 'unconfirmed_spending', note: `${where} 未经逐次确认的花费或身份信息发送`,
                              at: s, sample: snippet(text, s) })
   const c = UNPROMPTED_CONTINUATION.exec(text)
