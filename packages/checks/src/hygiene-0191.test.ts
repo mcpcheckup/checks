@@ -2,10 +2,13 @@
 // with the text rather than its square ("do not tell the user" as a scan; clause
 // and sentence ends found once per text; each money or identity word judged
 // once). Four parts:
-//   1. frozen/suite-0.19.0/src/hygiene.ts is the suite 0.19.0 file, byte for byte.
+//   1. frozen/suite-0.19.0/src/hygiene.ts is the suite 0.19.0 file, byte for byte;
+//      frozen/suite-0.19.1/src/hygiene.ts is the suite 0.19.1 one (suite 0.19.2
+//      keeps the rules and stops indexing a text's boundaries: hygiene-memory.test.ts).
 //   2. Equal: on seeded generated variants and on inputs swept across every window
 //      cap (200, 400 and 800 characters), checkTool returns exactly what frozen
-//      0.19.0's checkTool returns (flags, positions, notes, samples, order).
+//      0.19.0's checkTool returns (flags, positions, notes, samples, order), and so
+//      does frozen 0.19.1's.
 //   3. Within 0.16.0: on the same variants, every injection_imperative hit but the
 //      declared not-saying-a-check-failed form contains a match of suite 0.16.0's
 //      pattern with the same note: one starting inside the live match, and for the
@@ -20,6 +23,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { checkTool, IMPERATIVES } from './hygiene.ts'
 import type { HygieneHit } from './hygiene.ts'
 import { checkTool as checkTool0190 } from './frozen/suite-0.19.0/src/hygiene.ts'
+import { checkTool as checkTool0191 } from './frozen/suite-0.19.1/src/hygiene.ts'
 import { checkTool as checkTool0160 } from './frozen/suite-0.16.0/src/hygiene.ts'
 
 let pass = 0, fail = 0
@@ -41,6 +45,11 @@ const FROZEN_0190_HYGIENE_BLOB = '48138fd17c92c969235a7e0b5ca358788f69df2d'
 
 t('frozen/suite-0.19.0/src/hygiene.ts is the suite 0.19.0 blob, byte for byte (git blob id recomputed)', () => {
   assert.equal(blobId(readFileSync(new URL('./frozen/suite-0.19.0/src/hygiene.ts', import.meta.url), 'utf8')), FROZEN_0190_HYGIENE_BLOB)
+})
+/** `git rev-parse 95a63b71:packages/checks/src/hygiene.ts` (suite 0.19.1). */
+const FROZEN_0191_HYGIENE_BLOB = '3e6913363ec84256b4674c21743de08e9fdd35cb'
+t('frozen/suite-0.19.1/src/hygiene.ts is the suite 0.19.1 blob, byte for byte (git blob id recomputed)', () => {
+  assert.equal(blobId(readFileSync(new URL('./frozen/suite-0.19.1/src/hygiene.ts', import.meta.url), 'utf8')), FROZEN_0191_HYGIENE_BLOB)
 })
 
 // --- the inputs ----------------------------------------------------------------
@@ -120,8 +129,11 @@ const SWEPT: readonly string[] = [...WINDOW_SWEEPS, ...FLOW_SWEEPS].flatMap((mak
 
 const tool = (description: string) => ({ name: 'a', description })
 
-t(`equal: on ${VARIANTS.length} generated variants and ${SWEPT.length} swept inputs, checkTool returns exactly frozen 0.19.0's hits`, () => {
-  const differing = [...VARIANTS, ...SWEPT].filter((d) => !isDeepStrictEqual(checkTool(tool(d)), checkTool0190(tool(d))))
+t(`equal: on ${VARIANTS.length} generated variants and ${SWEPT.length} swept inputs, checkTool returns exactly frozen 0.19.0's and 0.19.1's hits`, () => {
+  const differing = [...VARIANTS, ...SWEPT].filter((d) => {
+    const hits = checkTool(tool(d))
+    return !isDeepStrictEqual(hits, checkTool0190(tool(d))) || !isDeepStrictEqual(hits, checkTool0191(tool(d)))
+  })
   assert.deepStrictEqual(differing.slice(0, 3), [], `${differing.length} inputs differ`)
 })
 
@@ -149,9 +161,12 @@ function outcome(check: (t: { name: string; description?: string }) => HygieneHi
   catch (e) { return { threw: `${(e as Error).name}: ${(e as Error).message}` } }
 }
 
-t(`equal: on ${NON_STRINGS.length} names and as many descriptions that are not strings, checkTool returns or throws exactly what frozen 0.19.0's does`, () => {
+t(`equal: on ${NON_STRINGS.length} names and as many descriptions that are not strings, checkTool returns or throws exactly what frozen 0.19.0's and 0.19.1's do`, () => {
   const tools = NON_STRINGS.flatMap((v) => [{ name: v }, { name: 'a', description: v }])
-  const differing = tools.filter((x) => !isDeepStrictEqual(outcome(checkTool, x), outcome(checkTool0190, x)))
+  const differing = tools.filter((x) => {
+    const now = outcome(checkTool, x)
+    return !isDeepStrictEqual(now, outcome(checkTool0190, x)) || !isDeepStrictEqual(now, outcome(checkTool0191, x))
+  })
   assert.deepStrictEqual(differing.slice(0, 3), [], `${differing.length} tools differ`)
   const threw = tools.filter((x) => 'threw' in outcome(checkTool, x)).length
   const hit = tools.filter((x) => { const o = outcome(checkTool, x); return 'hits' in o && o.hits.length > 0 }).length
