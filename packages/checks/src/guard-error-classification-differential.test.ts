@@ -177,7 +177,8 @@ const FROZEN_080_BLOBS: Record<string, string> = {
  *  any lookup). Neither can alter what this differential computes: the files
  *  in this closure reach ssrf-guard only for its error classes and the
  *  ProbeBudget type, and nothing they run calls guardedFetch, classifyIp or
- *  parseGuardedTarget.
+ *  parseGuardedTarget. The IPv6 allow-list change (2000::/3) re-pins
+ *  ip-policy.ts once more, for the same reason.
  *
  *  Suite 0.15.0 re-pins three files to their 0.15.0 blob (git hash-object <path>): checks.json (registry 0.14.0:
  *  the new budget.max_tools_list_pages, copy and docs_version of ten checks), registry.ts (the type of that field)
@@ -256,7 +257,7 @@ const CLOSURE_080_BLOBS: Record<string, string> = {
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57', // T85 round 2 (hop field) — git rev-parse 962fdc6:packages/ssrf-guard/src/errors.ts
   'packages/ssrf-guard/src/guarded-fetch.ts': 'eda760ca7ffb210feb2a685ca0dd43d34a9ab86a', // suite 0.11.0 (followRedirects; see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755', // T85: git rev-parse 3696518:packages/ssrf-guard/src/index.ts
-  'packages/ssrf-guard/src/ip-policy.ts': 'c40a0ef0a1af6ea5721edebcdd3e0660831b411e', // special-purpose address change (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
+  'packages/ssrf-guard/src/ip-policy.ts': 'e37dc33e27da394c7de7a6c40f277d6ace7eeacb', // IPv6 allow-list change (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
   'packages/ssrf-guard/src/resolve.ts': '8ba7ae7c4a97c0589fbb8da1166de89f36bdb5d0', // T85 PR-1b (DoH timeout, R16) — git rev-parse "$(git log -n1 --format=%h -G'DOH_TIMEOUT_MS' -- packages/ssrf-guard/src/resolve.ts)":packages/ssrf-guard/src/resolve.ts
   'packages/ssrf-guard/src/response-view.ts': 'b1b0e3e040f6d6acf66700758323b6bfae223d96', // T85: git rev-parse 3696518:packages/ssrf-guard/src/response-view.ts

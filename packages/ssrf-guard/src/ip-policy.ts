@@ -41,6 +41,8 @@ function block(code: IpBlockCode, description: string): IpVerdict {
  * specific allocation"). Which rows are null is pinned by ip-policy.test.ts, so a new
  * one cannot be added without that test changing. Rows the registry does not list, or
  * lists as True / N/A / without a value but which are blocked anyway, say so beside them.
+ * For IPv6 the table decides only inside global unicast, 2000::/3: outside it a row can
+ * only choose the code an address is blocked with, never allow it (see classifyIpv6).
  */
 interface RangeRow {
   base: string
@@ -181,8 +183,8 @@ const IPV6_CLOUD_METADATA = 'fd00:ec2::254'
 
 const IPV6_ROWS: RangeRow[] = [
   // IANA IPv6 Special-Purpose Address Registry, in registry order. ::ffff:0:0/96
-  // (IPv4-mapped) is not a row: classifyIpv6 unwraps it and judges the embedded IPv4
-  // address by the IPv4 table instead (see extractMappedIpv4).
+  // (IPv4-mapped) is not a row: classifyIpv6 blocks it whole, with the code the IPv4
+  // table gives the embedded address, or RESERVED (see extractMappedIpv4).
   { base: '::1', prefix: 128, code: 'LOOPBACK', description: 'loopback (::1/128, RFC 4291)' },
   { base: '::', prefix: 128, code: 'UNSPECIFIED', description: 'unspecified address (::/128, RFC 4291)' },
   // The registry marks this prefix Globally Reachable = True. Blocked whole anyway: the
@@ -223,7 +225,12 @@ const IPV6_ROWS: RangeRow[] = [
 
 const IPV6_TABLE = mostSpecificFirst(IPV6_ROWS)
 
-/** ::ffff:0:0/96 — the low 32 bits are an embedded IPv4 address that must be unwrapped and re-checked against the IPv4 policy, not treated as opaque IPv6 bits. */
+/** IPv6 global unicast, 2000::/3 (IANA IPv6 Address Space registry): the only IPv6 space
+ *  in which anything is allowed. Checked after the table lookup and outside it, so no
+ *  row, not even a `code: null` one, can allow an address outside this block. */
+const IPV6_GLOBAL_UNICAST = { base: '2000::', prefix: 3 }
+
+/** ::ffff:0:0/96 — the low 32 bits are an embedded IPv4 address. The block is blocked whole; the embedded address only chooses the code (the IPv4 policy's own, where it blocks that address). */
 function extractMappedIpv4(groups: number[]): string | null {
   const isMapped = groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0xffff
   if (!isMapped) return null
@@ -239,15 +246,18 @@ export function classifyIpv6(ip: string): IpVerdict {
   const mapped = extractMappedIpv4(groups)
   if (mapped !== null) {
     const v4Verdict = classifyIpv4(mapped)
-    if (v4Verdict.blocked) return v4Verdict
-    return ALLOWED
+    return v4Verdict.blocked ? v4Verdict : block('RESERVED', 'IPv4-mapped address (::ffff:0:0/96, RFC 4291)')
   }
 
   if (ipv6Equals(groups, IPV6_CLOUD_METADATA)) {
     return block('CLOUD_METADATA', 'cloud instance metadata address (fd00:ec2::254)')
   }
 
-  return verdictFor(IPV6_TABLE.find((row) => inIpv6Range(groups, row.base, row.prefix)))
+  // The most specific row decides first, so a blocking row outside 2000::/3 keeps its
+  // own code; whatever the table would allow outside 2000::/3 is blocked as RESERVED.
+  const verdict = verdictFor(IPV6_TABLE.find((row) => inIpv6Range(groups, row.base, row.prefix)))
+  if (verdict.blocked || inIpv6Range(groups, IPV6_GLOBAL_UNICAST.base, IPV6_GLOBAL_UNICAST.prefix)) return verdict
+  return block('RESERVED', 'outside IPv6 global unicast (2000::/3): reserved by the IETF, or not global unicast, in the IANA IPv6 Address Space registry')
 }
 
 function ipv6Equals(groups: number[], other: string): boolean {

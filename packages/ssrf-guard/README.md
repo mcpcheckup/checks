@@ -39,9 +39,8 @@ not just a general assertion that "bad things are blocked":
   dropped and the name lower-cased first, so `LOCALHOST.` is `localhost`.
 - **Special-purpose IPv4 and IPv6 ranges, taken from the IANA IPv4 and IPv6
   Special-Purpose Address Registries** (both last updated 2025-10-09): every entry the
-  registry marks *Globally Reachable = False* is rejected, with one exception: an
-  IPv4-mapped address (`::ffff:0:0/96`) is unwrapped and judged as the IPv4 address it
-  carries. Among them: `0.0.0.0/8`,
+  registry marks *Globally Reachable = False* is rejected, the IPv4-mapped
+  `::ffff:0:0/96` included. Among them: `0.0.0.0/8`,
   `10.0.0.0/8`, `100.64.0.0/10` (carrier-grade NAT), `127.0.0.0/8`, `169.254.0.0/16`,
   `172.16.0.0/12`, `192.0.0.0/24`, the documentation blocks `192.0.2.0/24`,
   `198.51.100.0/24` and `203.0.113.0/24`, `192.168.0.0/16`, `198.18.0.0/15` and
@@ -61,13 +60,18 @@ not just a general assertion that "bad things are blocked":
   and `fd00:ec2::254` (AWS IMDSv2 over IPv6) get their own dedicated block reason and
   test, even though both already fall inside a broader blocked range — so the reason a
   request was rejected is legible, not just "link-local."
-- **IPv6**: `::1`, `::`, `fc00::/7` (unique local), `fe80::/10` (link-local).
-- **IPv4-mapped IPv6** (`::ffff:0:0/96`): the embedded IPv4 address is extracted and
-  re-checked against the IPv4 policy — `::ffff:127.0.0.1` is rejected as loopback,
-  `::ffff:8.8.8.8` is allowed, proving this is a real unwrap-and-recheck and not a
-  blanket accept or reject of the whole prefix. The registry marks this block *Globally
-  Reachable = False*. This package judges it by the IPv4 address it carries instead of
-  rejecting it whole.
+- **IPv6 is an allow-list**: only global unicast, `2000::/3`, can be allowed, and inside
+  it the registry entries above decide. Every address outside `2000::/3` is rejected.
+  One inside a block listed here (`::1`, `::`, `fc00::/7` unique local, `fe80::/10`
+  link-local, and the others above) gets that block's reason; any other, such as
+  `4000::1` or the rest of `::/8`, is space the IANA IPv6 Address Space registry lists as
+  reserved by the IETF or as not global unicast, and is rejected as reserved. No entry
+  outside `2000::/3` can allow an address, whatever the registry marks it.
+- **IPv4-mapped IPv6** (`::ffff:0:0/96`) is rejected whole, as the registry marks it
+  *Globally Reachable = False*. Where the IPv4 policy rejects the embedded IPv4 address,
+  its reason is kept — `::ffff:127.0.0.1` is rejected as loopback,
+  `::ffff:169.254.169.254` as cloud metadata; otherwise the reason is reserved, so
+  `::ffff:8.8.8.8` is rejected too.
 - **Obfuscated IP-literal forms** (`http://0x7f000001/`, `http://017700000001/`, <!-- scan-secrets-allow: obfuscated-loopback examples, not real hosts -->
   `http://127.1/`): these are never a special case in our own code. `new URL(...)` <!-- scan-secrets-allow: obfuscated-loopback example, not a real host -->
   (the WHATWG URL parser, the same one Node and Workers both implement) normalizes all

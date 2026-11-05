@@ -90,9 +90,9 @@ console.log('\nclassifyIp: IPv6 — fc00::/7 (ULA)')
 t('fc00::1 blocked', () => blocked('fc00::1', 6, 'UNIQUE_LOCAL'))
 t('fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff blocked (top of range)', () =>
   blocked('fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 6, 'UNIQUE_LOCAL'))
-t('fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff allowed (just below range)', () =>
-  allowed('fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 6))
-t('fe00:: allowed (just above range)', () => allowed('fe00::', 6))
+t('fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff blocked as RESERVED (just below range: outside 2000::/3, so no longer allowed)', () =>
+  blocked('fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 6, 'RESERVED'))
+t('fe00:: blocked as RESERVED (just above range: outside 2000::/3, so no longer allowed)', () => blocked('fe00::', 6, 'RESERVED'))
 
 console.log('\nclassifyIp: IPv6 — fd00:ec2::254（AWS IMDSv2 的 IPv6 metadata 地址，专用测试）')
 t('fd00:ec2::254 blocked with dedicated CLOUD_METADATA code（不是笼统的 UNIQUE_LOCAL）', () =>
@@ -102,15 +102,17 @@ console.log('\nclassifyIp: IPv6 — fe80::/10 (link-local)')
 t('fe80::1 blocked', () => blocked('fe80::1', 6, 'LINK_LOCAL'))
 t('febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff blocked (top of range)', () =>
   blocked('febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 6, 'LINK_LOCAL'))
-t('fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff allowed (just below range)', () =>
-  allowed('fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 6))
+t('fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff blocked as RESERVED (just below range: outside 2000::/3, so no longer allowed)', () =>
+  blocked('fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 6, 'RESERVED'))
 t('fec0:: blocked as SITE_LOCAL (just above link-local: the deprecated site-local block, fec0::/10)', () => blocked('fec0::', 6, 'SITE_LOCAL'))
 
-console.log('\nclassifyIp: IPv6 — ::ffff:0:0/96 (IPv4-mapped，必须解出内嵌 v4 再校验)')
-t('::ffff:7f00:1 (内嵌 127.0.0.1) blocked as LOOPBACK（证明真的解出内嵌 v4 并复用 v4 规则，不是整段放行或整段拦截）', () =>
+console.log('\nclassifyIp: IPv6 — ::ffff:0:0/96 (IPv4-mapped：整段拦截，内嵌 v4 被 v4 规则拦时用 v4 的码，否则 RESERVED)')
+t('::ffff:7f00:1 (内嵌 127.0.0.1) blocked as LOOPBACK（内嵌 v4 被 v4 规则拦截时沿用它自己的码）', () =>
   blocked('::ffff:7f00:1', 6, 'LOOPBACK'))
-t('::ffff:808:808 (内嵌 8.8.8.8) allowed（同一前缀下内嵌公网地址必须放行，证明不是整段拦截）', () =>
-  allowed('::ffff:808:808', 6))
+t('::ffff:808:808 (内嵌 8.8.8.8) blocked as RESERVED（整段拦截：内嵌公网地址也不再放行）', () =>
+  blocked('::ffff:808:808', 6, 'RESERVED'))
+t('::ffff:c000:9 (内嵌 192.0.0.9，IPv4 登记表 True 行) blocked as RESERVED（v4 规则放行的内嵌地址同样拦截）', () =>
+  blocked('::ffff:c000:9', 6, 'RESERVED'))
 t('::ffff:a9fe:a9fe (内嵌 169.254.169.254) blocked as CLOUD_METADATA', () =>
   blocked('::ffff:a9fe:a9fe', 6, 'CLOUD_METADATA'))
 
@@ -155,7 +157,7 @@ const REGISTRY_V4: Array<[entry: string, address: string, expected: string | nul
 const REGISTRY_V6: Array<[entry: string, address: string, expected: string | null, note?: string]> = [
   ['::1/128', '::1', 'LOOPBACK'],
   ['::/128', '::', 'UNSPECIFIED'],
-  ['::ffff:0:0/96', '::ffff:a00:1', 'PRIVATE_USE', 'judged by the embedded IPv4 address (10.0.0.1), see the IPv4-mapped tests above'],
+  ['::ffff:0:0/96', '::ffff:a00:1', 'PRIVATE_USE', 'blocked whole; the code is the IPv4 policy\'s for the embedded 10.0.0.1, see the IPv4-mapped tests above'],
   ['64:ff9b::/96', '64:ff9b::808:808', 'NAT64', 'Globally Reachable = True in the registry; blocked whole, even with a public IPv4 address embedded'],
   ['64:ff9b:1::/48', '64:ff9b:1::1', 'NAT64'],
   ['100::/64', '100::1', 'DISCARD_ONLY'],
@@ -218,6 +220,43 @@ t('2001:ffff:ffff:ffff:ffff:ffff:ffff:ffff allowed / 2003::1 allowed (either sid
 t('2001:db7:ffff:ffff:ffff:ffff:ffff:ffff allowed / 2001:db9::1 allowed (either side of 2001:db8::/32)', () => { allowed('2001:db7:ffff:ffff:ffff:ffff:ffff:ffff', 6); allowed('2001:db9::1', 6) })
 t('::1 stays LOOPBACK and :: stays UNSPECIFIED inside ::/96 (the /128 entries are more specific)', () => { blocked('::1', 6, 'LOOPBACK'); blocked('::', 6, 'UNSPECIFIED') })
 
+console.log('\nIPv6 allow-list: only 2000::/3 (global unicast) can be allowed; outside it every address is blocked')
+const OUTSIDE_GLOBAL_UNICAST: Array<[address: string, note: string]> = [
+  ['::2:0:0:1', 'unlisted 0000::/8 address, outside ::/96'],
+  ['::1:0:0:1', 'unlisted 0000::/8 address, outside ::/96'],
+  ['::ffff:0:808:808', 'IPv4-translated ::ffff:0:0:0/96 (RFC 2765), not in any row'],
+  ['100:0:0:2::1', '0100::/8 outside the two special-purpose /64 rows'],
+  ['400::1', '0400::/6, reserved by the IETF'],
+  ['1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 'just below 2000::/3'],
+  ['4000::', 'just above 2000::/3'],
+  ['4000::1', '4000::/3'],
+  ['8000::1', '8000::/3'],
+  ['c000::1', 'c000::/3'],
+  ['e000::1', 'e000::/4'],
+]
+for (const [address, note] of OUTSIDE_GLOBAL_UNICAST) {
+  t(`${address} blocked as RESERVED (${note})`, () => blocked(address, 6, 'RESERVED'))
+}
+t('2000:: allowed / 3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff allowed (both ends of 2000::/3, outside every row)', () => {
+  allowed('2000::', 6); allowed('3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 6)
+})
+t('inside 2000::/3 the table decides: 2606:4700::1111 allowed, 3fff::1 blocked as DOCUMENTATION, 2001:3::1 (True row) allowed', () => {
+  allowed('2606:4700::1111', 6); blocked('3fff::1', 6, 'DOCUMENTATION'); allowed('2001:3::1', 6)
+})
+/** Every blocking row outside 2000::/3, and the cloud-metadata address: each keeps its
+ *  own code rather than the RESERVED that the 2000::/3 gate would give (the table is
+ *  consulted first). Written out by hand, like the registry tables above. */
+const SPECIFIC_OUTSIDE: Array<[address: string, code: string]> = [
+  ['::1', 'LOOPBACK'], ['::', 'UNSPECIFIED'], ['::808:808', 'IPV4_COMPATIBLE'],
+  ['64:ff9b::808:808', 'NAT64'], ['64:ff9b:1::1', 'NAT64'], ['100::1', 'DISCARD_ONLY'],
+  ['100:0:0:1::1', 'DUMMY_PREFIX'], ['5f00::1', 'SEGMENT_ROUTING'], ['fc00::1', 'UNIQUE_LOCAL'],
+  ['fe80::1', 'LINK_LOCAL'], ['fec0::1', 'SITE_LOCAL'], ['ff02::1', 'MULTICAST'],
+  ['fd00:ec2::254', 'CLOUD_METADATA'],
+]
+t('outside 2000::/3 a more specific blocking row keeps its own code (13 cases), not RESERVED', () => {
+  for (const [address, code] of SPECIFIC_OUTSIDE) blocked(address, 6, code)
+})
+
 /** The rows of ip-policy.ts that block nothing (`code: null`), read off its TypeScript
  *  AST: base/prefix of every object literal whose `code` property is the `null` keyword.
  *  Each must be a registry entry marked Globally Reachable = True; this list is the whole
@@ -249,6 +288,13 @@ t('the rows that block nothing are exactly the registry entries marked Globally 
     '2001:1::1/128', '2001:1::2/128', '2001:1::3/128', '2001:20::/28', '2001:30::/28', '2001:3::/32', '2001:4:112::/48',
     '2620:4f:8000::/48',
   ])
+})
+
+t('every IPv6 row that blocks nothing lies inside 2000::/3 (read off the AST)', () => {
+  for (const row of nonBlockingRowsInSource().filter((r) => r.includes(':'))) {
+    const first = parseInt(row.split(':')[0]!, 16)
+    assert.ok(row.split(':')[0] !== '' && first >= 0x2000 && first <= 0x3fff, `${row} blocks nothing but lies outside 2000::/3`)
+  }
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -120,7 +120,8 @@ const FROZEN_0100_BLOBS: Record<string, string> = {
  *  special-purpose address tables) and url-target.ts (host name rules, before
  *  any lookup). Neither can alter what the frozen files compute: they reach
  *  ssrf-guard only for its error classes and the ProbeBudget type, and nothing
- *  they run calls guardedFetch, classifyIp or parseGuardedTarget. */
+ *  they run calls guardedFetch, classifyIp or parseGuardedTarget. The IPv6 allow-list change
+ *  (2000::/3) re-pins ip-policy.ts once more, for the same reason. */
 const CLOSURE_0100_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
@@ -144,7 +145,7 @@ const CLOSURE_0100_BLOBS: Record<string, string> = {
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57',
   'packages/ssrf-guard/src/guarded-fetch.ts': 'eda760ca7ffb210feb2a685ca0dd43d34a9ab86a', // suite 0.11.0 (followRedirects; see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755',
-  'packages/ssrf-guard/src/ip-policy.ts': 'c40a0ef0a1af6ea5721edebcdd3e0660831b411e', // special-purpose address change (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
+  'packages/ssrf-guard/src/ip-policy.ts': 'e37dc33e27da394c7de7a6c40f277d6ace7eeacb', // IPv6 allow-list change (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
   'packages/ssrf-guard/src/resolve.ts': '8ba7ae7c4a97c0589fbb8da1166de89f36bdb5d0',
   'packages/ssrf-guard/src/response-view.ts': 'b1b0e3e040f6d6acf66700758323b6bfae223d96',
