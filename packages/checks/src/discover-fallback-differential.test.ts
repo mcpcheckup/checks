@@ -174,7 +174,10 @@ const FROZEN_090_BLOBS: Record<string, string> = {
  *  in this closure reach ssrf-guard only for its error classes and the
  *  ProbeBudget type, and nothing they run calls guardedFetch, classifyIp or
  *  parseGuardedTarget. The IPv6 allow-list change (2000::/3) re-pins
- *  ip-policy.ts once more, for the same reason.
+ *  ip-policy.ts once more, for the same reason. TODO 1902 (the caller signal; the
+ *  deadline checked again before sending) re-pins guarded-fetch.ts and
+ *  response-view.ts, for the same reason: nothing they run calls guardedFetch or
+ *  createSafeResponseHandle.
  *
  *  Suite 0.15.0 re-pins three files to their 0.15.0 blob (git hash-object <path>): checks.json (registry 0.14.0:
  *  the new budget.max_tools_list_pages, copy and docs_version of ten checks), registry.ts (the type of that field)
@@ -222,7 +225,14 @@ const FROZEN_090_BLOBS: Record<string, string> = {
  *  v0.5.0 of tool_description_hygiene), still reached type-only with the registry passed in as input. hygiene.ts
  *  stays out of this closure (TODO 1301). On these inputs suite 0.19.0 computes the same hygiene row as the frozen
  *  suite: suite-0190-differential.test.ts proves no corpus tool gains or loses a flag and none is flagged
- *  excessive_length alone, so the remap (suite-0190-remap.ts) changes no row and the comparison is unchanged. */
+ *  excessive_length alone, so the remap (suite-0190-remap.ts) changes no row and the comparison is unchanged.
+ *
+ *  Suite 0.19.3 (TODO 1902: sendRequest aborts the signal it handed a call once its own timer has put that call
+ *  down) re-pins wire.ts and types.ts (FetchCallOptions gains the optional signal, and its doc; reached type-only).
+ *  Both parties here run the same live wire.ts. The signal is aborted only after the step has already ended with
+ *  ProbeAborted MAX_DURATION, it decides no outcome, and no FetchLike in this file reads the fourth argument, so the
+ *  comparison this file makes is unchanged. suite-0193-differential.test.ts proves the change against suite 0.19.2's
+ *  wire.ts. */
 const CLOSURE_090_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
@@ -245,18 +255,18 @@ const CLOSURE_090_BLOBS: Record<string, string> = {
   // hygiene.ts is no longer in this closure: the frozen probe.ts imports its own frozen copy (TODO 1301).
   'packages/checks/src/latency.ts': '64947a43c414ded3590e599a7f08569391da6bef', // suite 0.16.0, reached from wire.ts (see above) — git hash-object packages/checks/src/latency.ts
   'packages/checks/src/registry.ts': '6f610be98235985b0a27d4cfac5ba805b6a3f51b', // suite 0.15.0 (type-only; see above) — git hash-object packages/checks/src/registry.ts
-  'packages/checks/src/types.ts': 'e5cb68a8775242ea17d8c1520076f54beaf2a393', // suite 0.16.0 (type-only; see above) — git hash-object packages/checks/src/types.ts
-  'packages/checks/src/wire.ts': '4eaaee5217f9acc55457191b123bc27127a83505', // suite 0.16.0 (see above) — git hash-object packages/checks/src/wire.ts
+  'packages/checks/src/types.ts': 'a5ad5a9faed20a67b72929945b644a295c1135b2', // suite 0.19.3 (type-only; see above) — git hash-object packages/checks/src/types.ts
+  'packages/checks/src/wire.ts': '4057b3771d2b4cdbd0822f02750daf5578811dba', // suite 0.19.3 (see above) — git hash-object packages/checks/src/wire.ts
   'packages/ssrf-guard/src/audit.ts': 'c2f08ab05e4bdb6425c5feba789d19e0c7293073',
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
   'packages/ssrf-guard/src/dns-wire.ts': '04357f1c08ee2d649a382d2640580903323af222',
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57',
-  'packages/ssrf-guard/src/guarded-fetch.ts': 'eda760ca7ffb210feb2a685ca0dd43d34a9ab86a', // suite 0.11.0 (see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
+  'packages/ssrf-guard/src/guarded-fetch.ts': '5349d316e3ac68d93f2ee5f1c204cf449a7f4d4e', // TODO 1902 (caller signal; see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755',
   'packages/ssrf-guard/src/ip-policy.ts': 'e37dc33e27da394c7de7a6c40f277d6ace7eeacb', // IPv6 allow-list change (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
   'packages/ssrf-guard/src/resolve.ts': '8ba7ae7c4a97c0589fbb8da1166de89f36bdb5d0',
-  'packages/ssrf-guard/src/response-view.ts': 'b1b0e3e040f6d6acf66700758323b6bfae223d96',
+  'packages/ssrf-guard/src/response-view.ts': '2c6c8076ac4998e1bb870e113c7c763ce2ac63e2', // TODO 1902 (caller signal; see above) — git hash-object packages/ssrf-guard/src/response-view.ts
   'packages/ssrf-guard/src/url-target.ts': 'c1d8f47ef7b0402b45bd9f555cd82fd0f0ec103a', // special-purpose address change (see above) — git hash-object packages/ssrf-guard/src/url-target.ts
 }
 const CLOSURE_090_THIRD_PARTY: string[] = []

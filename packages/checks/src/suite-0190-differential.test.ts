@@ -134,12 +134,12 @@ const CLOSURE_0180_BLOBS: Record<string, string> = {
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
   'packages/ssrf-guard/src/dns-wire.ts': '04357f1c08ee2d649a382d2640580903323af222',
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57',
-  'packages/ssrf-guard/src/guarded-fetch.ts': 'eda760ca7ffb210feb2a685ca0dd43d34a9ab86a',
+  'packages/ssrf-guard/src/guarded-fetch.ts': '5349d316e3ac68d93f2ee5f1c204cf449a7f4d4e', // TODO 1902 (caller signal; deadline checked again before sending): re-pinned to git hash-object packages/ssrf-guard/src/guarded-fetch.ts; the frozen copy reaches ssrf-guard only for its error classes and the ProbeBudget type, and never calls guardedFetch or createSafeResponseHandle
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755',
   'packages/ssrf-guard/src/ip-policy.ts': 'e37dc33e27da394c7de7a6c40f277d6ace7eeacb', // IPv6 allow-list change (2000::/3): re-pinned to git hash-object packages/ssrf-guard/src/ip-policy.ts; the frozen copy reaches ssrf-guard only for its error classes and the ProbeBudget type, and never calls classifyIp
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
   'packages/ssrf-guard/src/resolve.ts': '8ba7ae7c4a97c0589fbb8da1166de89f36bdb5d0',
-  'packages/ssrf-guard/src/response-view.ts': 'b1b0e3e040f6d6acf66700758323b6bfae223d96',
+  'packages/ssrf-guard/src/response-view.ts': '2c6c8076ac4998e1bb870e113c7c763ce2ac63e2', // TODO 1902 (caller signal; deadline checked again before sending): re-pinned to git hash-object packages/ssrf-guard/src/response-view.ts; the frozen copy reaches ssrf-guard only for its error classes and the ProbeBudget type, and never calls guardedFetch or createSafeResponseHandle
   'packages/ssrf-guard/src/url-target.ts': 'c1d8f47ef7b0402b45bd9f555cd82fd0f0ec103a',
 }
 const CLOSURE_0180_THIRD_PARTY: string[] = []

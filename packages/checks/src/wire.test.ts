@@ -427,14 +427,52 @@ const isDurationAbort = (budget: ProbeBudget) => (e: unknown) =>
   e instanceof ProbeAborted && e.code === 'MAX_DURATION' && e.message === `探测已超过 ${budget.maxDurationMs}ms 的总预算` &&
   JSON.stringify(e.details) === JSON.stringify({ maxDurationMs: budget.maxDurationMs })
 
-await t('fetchImpl 收到第 4 参 { timeoutMs }，值是整轮预算的剩余时间，不是一份全新的 maxDurationMs', async () => {
+await t('fetchImpl 收到第 4 参 { timeoutMs, signal }，timeoutMs 是整轮预算的剩余时间，不是一份全新的 maxDurationMs；signal 未中止（suite 0.19.3）', async () => {
   const seen: unknown[] = []
   const fetchImpl: FetchLike = async (_i, _init, _s, options) => { seen.push(options); return new Response('ok') }
   await sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctxWithLeft(1_000))
   assert.equal(seen.length, 1)
   const timeoutMs = (seen[0] as { timeoutMs: number }).timeoutMs
   assert.ok(timeoutMs > 0 && timeoutMs <= 1_000, `timeoutMs 必须是剩余的约 1000 ms，实得 ${timeoutMs}`)
-  assert.deepEqual(Object.keys(seen[0] as object), ['timeoutMs'])
+  assert.deepEqual(Object.keys(seen[0] as object), ['timeoutMs', 'signal'])
+  const signal = (seen[0] as { signal: unknown }).signal
+  assert.ok(signal instanceof AbortSignal && !signal.aborted)
+})
+
+console.log('suite 0.19.3（TODO 1902）：截止时间到点后，被丢下的那一步的 signal 被中止')
+
+await t('一直不返回、只认 signal 的 fetchImpl：计时器在截止时间处结束这一步并中止它的 signal；结论仍是 ProbeAborted(MAX_DURATION)（原文案、原 details），不是 fetchImpl 因中止而抛的错', async () => {
+  let signal: AbortSignal | undefined
+  let abortedAt: number | undefined
+  const fetchImpl: FetchLike = (_i, _init, _s, options) => new Promise<Response>((_resolve, reject) => {
+    signal = options!.signal!
+    // Like the platform fetch: an aborted request rejects with the signal's reason.
+    signal.addEventListener('abort', () => { abortedAt = Date.now(); reject(new TypeError('aborted by the caller')) }, { once: true })
+  })
+  const ctx = ctxWithLeft(200)
+  await assert.rejects(() => watchdog(sendRequest(fetchImpl, 'https://example.com/a', {}, BUDGET, ctx)), isDurationAbort(BUDGET))
+  assert.ok(signal !== undefined, '前提：请求确实发出了')
+  assert.equal(signal.aborted, true, '计时器必须中止这一步的 signal')
+  // 只有 wire.ts 握着这个 controller，且中止时不带参数（AbortError）；时间只做下界检查（计时器可能早约 1 ms），
+  // 不设上界：负载高的机器上计时器可能晚到，而这不改变是谁中止的。
+  assert.equal((signal.reason as { name?: unknown }).name, 'AbortError')
+  const lateBy = abortedAt! - deadlineOf(ctx)
+  assert.ok(lateBy >= -2, `不得早于截止时间中止，实际相差 ${lateBy} ms`)
+})
+
+await t('在截止时间之前结束的调用：signal 从不被中止，每一跳各有自己的 signal（GET 302 一跳）', async () => {
+  const signals: AbortSignal[] = []
+  const fetchImpl: FetchLike = async (input, _init, _s, options) => {
+    signals.push(options!.signal!)
+    if (String(input).endsWith('/a')) return new Response(null, { status: 302, headers: { location: '/b' } })
+    return new Response('ok')
+  }
+  const r = await sendRequest(fetchImpl, 'https://example.com/a', { method: 'GET' }, BUDGET, ctxWithLeft(300))
+  assert.equal(r.bodyText, 'ok')
+  await sleep(400) // 过了原先的截止时间：已清掉的计时器不得再中止任何 signal
+  assert.equal(signals.length, 2)
+  assert.notEqual(signals[0], signals[1])
+  assert.deepEqual(signals.map((s) => s.aborted), [false, false])
 })
 
 await t('重定向循环的每一跳都重新计算剩余时间：第二跳拿到的比第一跳少，少的正是第一跳花掉的时间', async () => {

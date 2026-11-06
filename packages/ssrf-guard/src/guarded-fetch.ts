@@ -34,6 +34,14 @@ export interface GuardedFetchOptions<T> {
    *  never looser: each hop the caller then requests is a new guardedFetch call,
    *  validated from scratch. */
   followRedirects?: boolean
+  /** The caller has given up. Once it is aborted, a request in flight is aborted, no
+   *  further request is sent and no more of a response body is read; a call still
+   *  sending or reading rejects with BudgetExceeded('MAX_DURATION') — the same error,
+   *  with the same `hop`, as running out of budget.maxDurationMs. Our own
+   *  DoH lookups are not cancelled by it (they never contact the target); it is checked
+   *  after each one returns instead. Stricter, never looser: it can only end a call
+   *  sooner, never skip a check. */
+  signal?: AbortSignal
 }
 
 export interface GuardedFetchResult<T> {
@@ -198,6 +206,14 @@ export async function guardedFetch<T>(
   const resolveHostImpl = opts.resolveHostImpl ?? resolveHost
 
   const deadline = Date.now() + budget.maxDurationMs
+  const callerSignal = opts.signal
+  // Out of time: the deadline has been reached, or the caller has given up.
+  // Functions, not inline reads: TypeScript would otherwise carry the narrowing of
+  // `aborted` from one check across the awaits that follow it.
+  const callerAborted = (): boolean => callerSignal?.aborted === true
+  const outOfTime = (): boolean => deadline - Date.now() <= 0 || callerAborted()
+  const durationExceeded = (): BudgetExceeded =>
+    new BudgetExceeded('MAX_DURATION', `probe exceeded its ${budget.maxDurationMs}ms wall-clock budget`)
   const hops: ProbeHopRecord[] = []
   let dnsAnswerChanged = false
   let redirectCrossHostObserved = false
@@ -238,9 +254,7 @@ export async function guardedFetch<T>(
     let requestsUsed = 0
 
     for (;;) {
-      if (Date.now() > deadline) {
-        throw new BudgetExceeded('MAX_DURATION', `probe exceeded its ${budget.maxDurationMs}ms wall-clock budget`)
-      }
+      if (outOfTime()) throw durationExceeded()
       if (requestsUsed >= budget.maxRequests) {
         throw new BudgetExceeded('MAX_REQUESTS', `probe exceeded its ${budget.maxRequests}-request budget`)
       }
@@ -255,16 +269,22 @@ export async function guardedFetch<T>(
       } else {
         preAddresses = await resolveAndValidateHostImpl(target.hostname)
       }
+      // Checked again after the DoH await and before sending (TODO 1902): a lookup that
+      // returned at or after the deadline, or after the caller gave up, sends nothing.
+      // One clock reading decides both whether to send and the request's timeout, so a
+      // tick in between can never send with a timeout of 0.
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0 || callerAborted()) throw durationExceeded()
 
       requestsUsed++
-      const remainingMs = Math.max(0, deadline - Date.now())
+      const timeoutSignal = AbortSignal.timeout(remainingMs)
       // Built before the try below, so that only the fetch call itself sits in it:
       // anything our own code throws here is never wrapped as UpstreamFetchFailed.
       const init: RequestInit = {
         method,
         headers: currentHeaders,
         redirect: 'manual',
-        signal: AbortSignal.timeout(remainingMs),
+        signal: callerSignal === undefined ? timeoutSignal : AbortSignal.any([timeoutSignal, callerSignal]),
         // Cast: a known @types/node + lib.dom.d.ts friction point, not a real type
         // hazard — Uint8Array is a wholly valid BodyInit at runtime (same friction
         // point already documented in the calling prober's own wire-adapter layer).
@@ -274,10 +294,10 @@ export async function guardedFetch<T>(
       try {
         response = await fetchImpl(target.url, init)
       } catch (cause) {
+        // The caller's abort first: its reason can be any value, not only an AbortError.
+        if (callerSignal?.aborted === true) throw durationExceeded()
         const name = (cause as { name?: string } | undefined)?.name
-        if (name === 'TimeoutError' || name === 'AbortError') {
-          throw new BudgetExceeded('MAX_DURATION', `probe exceeded its ${budget.maxDurationMs}ms wall-clock budget`)
-        }
+        if (name === 'TimeoutError' || name === 'AbortError') throw durationExceeded()
         throw new UpstreamFetchFailed(cause)
       }
 
@@ -295,6 +315,14 @@ export async function guardedFetch<T>(
         }
         if (changed) dnsAnswerChanged = true
       }
+      // After the fetch (and, for a host name, its DNS re-check), the caller's abort only:
+      // its response is then never parsed or used. The deadline is not re-checked here —
+      // nothing more is sent before the loop-top check, and a response that arrived in
+      // time stays usable (the request's own timeout signal still bounds its body).
+      if (callerSignal?.aborted === true) {
+        discardBody(response)
+        throw durationExceeded()
+      }
 
       const isRedirect = REDIRECT_STATUSES.has(response.status) && response.headers.has('location')
 
@@ -308,7 +336,7 @@ export async function guardedFetch<T>(
         const location = response.headers.get('location')!
         redirectCrossHostObserved = isCrossHostRedirect(location, target.url, target.hostname)
 
-        const handle = createSafeResponseHandle(response, budget.maxBodyBytes)
+        const handle = createSafeResponseHandle(response, budget.maxBodyBytes, callerSignal)
         const parsed = await opts.parseResponse(handle)
 
         record.targetHost = targetHost
@@ -346,7 +374,7 @@ export async function guardedFetch<T>(
         continue
       }
 
-      const handle = createSafeResponseHandle(response, budget.maxBodyBytes)
+      const handle = createSafeResponseHandle(response, budget.maxBodyBytes, callerSignal)
       const parsed = await opts.parseResponse(handle)
 
       record.targetHost = targetHost

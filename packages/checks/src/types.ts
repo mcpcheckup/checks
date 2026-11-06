@@ -38,6 +38,14 @@ export interface FetchCallOptions {
    *  that beats sendRequest's timer is reported as that failure, not as the
    *  budget running out. */
   timeoutMs: number
+  /** The step was abandoned (TODO 1902, suite 0.19.3): sendRequest aborts this
+   *  signal when its timer for the deadline fires while the call is still
+   *  running, after it has already put the step down. Nothing the call
+   *  produces after that is read either way; an implementation that honours
+   *  the signal just stops sooner (the production adapter hands it to
+   *  guardedFetch, which then sends nothing more and reads no more of a
+   *  body). Never aborted for a call that settled in time. */
+  signal?: AbortSignal
 }
 
 /** The sole outbound-network seam this package uses. Almost structurally

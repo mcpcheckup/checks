@@ -370,6 +370,7 @@ const result = await guardedFetch(
     callerIdentifier: 'session:abc123',   // for the audit trail — never PII, your call
     method: 'POST',                       // defaults to 'GET'; only 'GET' | 'POST'
     // followRedirects: false,            // GET only: return a 3xx instead of following it (default true)
+    // signal: controller.signal,         // the caller has given up: stop, reject with MAX_DURATION
     headers: { 'content-type': 'application/json', 'mcp-protocol-version': '2026-07-28' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     parseResponse: async (handle) => {
@@ -412,6 +413,18 @@ is thrown as `BudgetExceeded('MAX_DURATION')` instead. That is a legitimate obse
 for the caller's own assertion logic to interpret (see `CLAUDE.md`'s
 `execution_status`), not a guard rejection: nothing about the target's address or the
 request was refused.
+
+The wall-clock budget is checked again immediately before each request is sent, after
+that request's own DoH lookup has returned: a lookup that comes back at or after the
+deadline ends the call with `BudgetExceeded('MAX_DURATION')`, and that request is never
+sent. A caller can also pass `signal`, an `AbortSignal` meaning "the caller has given
+up". Once it is aborted, a request in flight is aborted, no further request is sent, and
+no more of any response body is read; a call still sending a request or reading a body
+then rejects with `BudgetExceeded('MAX_DURATION')`, whatever reason the signal was
+aborted with: never `UpstreamFetchFailed`, and never a body cut short returned as if it
+were complete. Our own DoH lookups are not aborted by the signal, since they never
+contact the target; it is checked after each one returns instead. Without a signal, each
+request is built exactly as before.
 
 Every `SsrfGuardError` and `UpstreamFetchFailed` that leaves `guardedFetch` carries `hop`:
 how many redirects it had followed before the request that failed, 0 being the URL it

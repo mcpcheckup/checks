@@ -147,7 +147,10 @@ function durationAbort(budget: ProbeBudget): ProbeAborted {
  * FetchLike built on guardedFetch adds a fixed grace on top of timeoutMs for
  * guardedFetch's internal backstop. Our timer is therefore always first to
  * fire and ends the step; guardedFetch's own timeout only ever fires after
- * the step was abandoned, when nothing reads its result. */
+ * the step was abandoned, when nothing reads its result. Since suite 0.19.3
+ * the timer, once it has ended the step, also aborts the signal it handed the
+ * call (FetchCallOptions.signal), so an implementation that honours it stops
+ * sending and reading at the deadline instead of at its own later timeout. */
 
 async function readBodyWithBudget(response: Response, maxBodyBytes: number): Promise<string> {
   const declared = response.headers.get('content-length')
@@ -231,7 +234,8 @@ function withoutCredentialHeaders(init: RequestInit): RequestInit {
  *  body read are raced against this function's own timer set to that
  *  deadline. When the timer wins, the run stops with ProbeAborted
  *  ('MAX_DURATION') and nothing the abandoned call produces afterwards — its
- *  Response, its body, a GuardSignals report — is read or recorded. No step
+ *  Response, its body, a GuardSignals report — is read or recorded; the
+ *  call's signal is then aborted (suite 0.19.3). No step
  *  is started once no time is left; a call that settles between the deadline
  *  and the timer's callback is not abandoned (see the note above
  *  readBodyWithBudget). Before
@@ -282,20 +286,28 @@ export async function sendRequest(
   // step (a resolved fetchImpl, a buffered body) would otherwise win the race
   // against a zero-delay timer and be used after the deadline. The time left
   // is computed once and is both the timer's delay and what the step is told.
-  const withinDeadline = async <T>(step: (leftMs: number) => Promise<T>, left: number = leftMs()): Promise<T> => {
+  // Suite 0.19.3 (TODO 1902): each step also gets its own AbortController,
+  // aborted by that timer only after the step has been put down, so the
+  // abandoned call can stop sending and reading at once. The abort decides
+  // nothing: the step ends with the deadline's ProbeAborted exactly as before,
+  // whatever the aborted call then throws. A step that settled in time is
+  // never aborted.
+  const withinDeadline = async <T>(step: (leftMs: number, signal: AbortSignal) => Promise<T>, left: number = leftMs()): Promise<T> => {
     if (left <= 0) {
       abandoned = true
       throw durationAbort(budget)
     }
+    const abandon = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const expiry = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         abandoned = true
         reject(durationAbort(budget))
+        abandon.abort()
       }, left)
     })
     try {
-      return await Promise.race([step(left), expiry])
+      return await Promise.race([step(left, abandon.signal), expiry])
     } catch (e) {
       if (abandoned) throw durationAbort(budget)
       throw e
@@ -311,7 +323,7 @@ export async function sendRequest(
       throw new ProbeAborted('MAX_REQUESTS', `探测已达到 ${budget.maxRequests} 次请求的总预算`, { maxRequests: budget.maxRequests })
     }
     ctx.requestCount++
-    const response = await withinDeadline((timeoutMs) => fetchImpl(currentUrl, currentInit, onGuardSignal, { timeoutMs }), remainingMs)
+    const response = await withinDeadline((timeoutMs, signal) => fetchImpl(currentUrl, currentInit, onGuardSignal, { timeoutMs, signal }), remainingMs)
     if (timesThisCall && !callTimed) ctx.latency.untimedResponses++
 
     // Checked before anything else this response could lead to — before the
