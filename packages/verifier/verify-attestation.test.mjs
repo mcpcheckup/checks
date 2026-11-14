@@ -238,6 +238,104 @@ await t('payload 字节是合法 JSON 且签名正确，但不是 nfc-jcs/v1 的
   assert.ok(/signature verification[^\n]*PASS/.test(r.stdout), `expected signature verification to PASS on its own, got:\n${r.stdout}`)
 })
 
+console.log('\nbase64 必须是规范的标准写法（宽松解码器读得出同样字节的拼写也要拒）')
+
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+// Other spellings of a padded base64 text that Node's lenient decoder reads as
+// the very same bytes, so a signature over those bytes stays valid and only a
+// strict decoder can refuse them. Each spelling is checked against the lenient
+// decoder here, so a fixture that stopped decoding to the same bytes fails
+// loudly instead of passing for the wrong reason.
+function nonCanonicalSpellings(b64) {
+  assert.ok(b64.endsWith('='), 'the fixture needs a padded base64 text')
+  const body = b64.replace(/=+$/, '')
+  const pad = b64.slice(body.length)
+  // Bit 0 of the last data character is one of the unused low bits of the final group.
+  const lowBitSet = B64_ALPHABET[B64_ALPHABET.indexOf(body.slice(-1)) ^ 1]
+  const spellings = {
+    '缺填充': body,
+    '多一个多余的 "="': b64 + '=',
+    '最后一个字符的未用低位被置位': body.slice(0, -1) + lowBitSet + pad,
+    '中间夹换行': body.slice(0, 4) + '\n' + b64.slice(4),
+  }
+  for (const [name, text] of Object.entries(spellings)) {
+    assert.notEqual(text, b64, name)
+    assert.ok(Buffer.from(text, 'base64').equals(Buffer.from(b64, 'base64')), `${name}: the lenient decoder must still read the same bytes`)
+  }
+  return spellings
+}
+
+// A validly-signed envelope whose payload base64 carries padding. The payload
+// length steps by one byte until one of three consecutive lengths needs it.
+async function paddedPayloadEnvelope(key) {
+  for (let n = 1; n <= 3; n++) {
+    const built = await buildEnvelope({ key, payloadObj: { canonicalization: 'nfc-jcs/v1', observed_at: OBSERVED_AT, note: 'x'.repeat(n) } })
+    if (built.envelope.payload.endsWith('=')) return built
+  }
+  throw new Error('no padded payload found')
+}
+
+await t('payload 的 base64 拼写不规范（字节相同、签名有效）-> 拒收并点名 payload，--pubkey 与 --keys 两条路径都一样', async () => {
+  const k = await makeKey()
+  const { envelope, pubkeyBase64 } = await paddedPayloadEnvelope(k)
+  assert.ok(passed(runVerify(envelope, { pubkey: pubkeyBase64 })), 'the canonical spelling of this very envelope must still pass')
+  assert.ok(passed(runVerify(envelope, { keys: keyDoc(keyEntry(k)) })), 'and pass under --keys')
+  for (const [name, text] of Object.entries(nonCanonicalSpellings(envelope.payload))) {
+    for (const opts of [{ pubkey: pubkeyBase64 }, { keys: keyDoc(keyEntry(k)) }]) {
+      const r = runVerify({ ...envelope, payload: text }, opts)
+      assertFails(r, /envelope payload (must be standard base64|is not canonical standard base64)/, name)
+      assert.equal(r.status, 1, name)
+    }
+  }
+})
+
+await t('签名的 base64 拼写不规范（字节相同）-> 该签名 FAIL 并点名 signature sig，整体 exit 非 0', async () => {
+  const { envelope, pubkeyBase64, key } = await buildEnvelope()
+  assert.ok(envelope.signatures[0].sig.endsWith('='), 'a 64-byte signature is always padded')
+  for (const [name, text] of Object.entries(nonCanonicalSpellings(envelope.signatures[0].sig))) {
+    const bad = { ...envelope, signatures: [{ ...envelope.signatures[0], sig: text }] }
+    for (const opts of [{ pubkey: pubkeyBase64 }, { keys: keyDoc(keyEntry(key)) }]) {
+      const r = runVerify(bad, opts)
+      assertFails(r, /signature sig (must be standard base64|is not canonical standard base64)/, name)
+      assert.ok(/RESULT:\s*FAIL/.test(r.stdout), name)
+    }
+  }
+})
+
+await t('签名缺失（sig 不是字符串）-> 该签名 FAIL 并点名 signature sig', async () => {
+  const { envelope, pubkeyBase64 } = await buildEnvelope()
+  for (const sig of [undefined, null, 7]) {
+    const bad = { ...envelope, signatures: [{ keyid: envelope.signatures[0].keyid, sig }] }
+    assertFails(runVerify(bad, { pubkey: pubkeyBase64 }), /signature sig must be standard base64/, String(sig))
+  }
+})
+
+await t('--pubkey 的 base64 拼写不规范（字节相同）-> 非 0 退出并点名 public key', async () => {
+  const { envelope, pubkeyBase64 } = await buildEnvelope()
+  assert.ok(passed(runVerify(envelope, { pubkey: pubkeyBase64 })), 'the canonical spelling must still pass')
+  for (const [name, text] of Object.entries(nonCanonicalSpellings(pubkeyBase64))) {
+    const r = runVerify(envelope, { pubkey: text })
+    assertFails(r, /failed to import public key from --pubkey[\s\S]*public key (must be standard base64|is not canonical standard base64)/, name)
+    assert.equal(r.status, 1, name)
+  }
+})
+
+await t('--pubkey 给文件路径：文件内容规范（含结尾换行）仍通过，不规范则拒', async () => {
+  const { envelope, pubkeyBase64 } = await buildEnvelope()
+  const dir = mkdtempSync(join(tmpdir(), 'verify-attestation-test-'))
+  try {
+    const good = join(dir, 'good.pub')
+    writeFileSync(good, `${pubkeyBase64}\n`, 'utf8')
+    assert.ok(passed(runVerify(envelope, { pubkey: good })), 'a canonical key file with a trailing newline must pass')
+    const bad = join(dir, 'bad.pub')
+    writeFileSync(bad, `${pubkeyBase64.replace(/=+$/, '')}\n`, 'utf8')
+    assertFails(runVerify(envelope, { pubkey: bad }), /public key is not canonical standard base64/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 console.log('\npayloadType 白名单')
 
 await t('不在白名单的 payloadType（即使签名对它是有效的）-> exit 非 0，且在任何验签动作之前就失败', async () => {
@@ -431,6 +529,8 @@ console.log('\n--keys：坏文档（每一种都必须非 0 退出并给出原�
   const other = await makeKey()
   const { envelope } = await buildEnvelope({ key: k })
   const urlSafe = k.spkiBase64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const lowBitSpki = k.spkiBase64.slice(0, -2) + B64_ALPHABET[B64_ALPHABET.indexOf(k.spkiBase64.slice(-2, -1)) ^ 1] + '='
+  assert.ok(Buffer.from(lowBitSpki, 'base64').equals(Buffer.from(k.spkiBase64, 'base64')) && lowBitSpki !== k.spkiBase64)
   const badHeader = new Uint8Array(k.spkiBytes); badHeader[2] ^= 0x01
   const shortSpki = k.spkiBytes.subarray(0, 43)
   const longSpki = new Uint8Array([...k.spkiBytes, 0])
@@ -445,6 +545,9 @@ console.log('\n--keys：坏文档（每一种都必须非 0 退出并给出原�
     ['缺 valid_until 字段（必须存在，空时为 null）', dropped('valid_until'), /field valid_until is missing/],
     ['缺 revoked_at 字段', dropped('revoked_at'), /field revoked_at is missing/],
     ['spki 是 url-safe base64', keyDoc(keyEntry(k, { spki: urlSafe })), /standard base64/],
+    ['spki 缺填充（字节相同）', keyDoc(keyEntry(k, { spki: k.spkiBase64.replace(/=+$/, '') })), /spki is not canonical standard base64/],
+    ['spki 最后一个字符的未用低位被置位（字节相同）', keyDoc(keyEntry(k, { spki: lowBitSpki })), /spki is not canonical standard base64/],
+    ['spki 不是字符串', keyDoc(keyEntry(k, { spki: 7 })), /spki must be standard base64/],
     ['spki 解出 43 字节', keyDoc(keyEntry(k, { spki: Buffer.from(shortSpki).toString('base64') })), /decode to 44 bytes, got 43/],
     ['spki 解出 45 字节', keyDoc(keyEntry(k, { spki: Buffer.from(longSpki).toString('base64') })), /decode to 44 bytes, got 45/],
     ['spki 头不是 Ed25519 的', keyDoc(keyEntry(k, { spki: Buffer.from(badHeader).toString('base64') })), /Ed25519 SubjectPublicKeyInfo header/],

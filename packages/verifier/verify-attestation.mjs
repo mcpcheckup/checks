@@ -55,6 +55,11 @@
  *      actually true, or the payload was altered in a way that happens to
  *      still parse as the same JSON.
  *
+ * Every base64 text read here (the payload, each signature, --pubkey, and each
+ * key's spki) must be the canonical standard-alphabet spelling of its bytes:
+ * padded, no whitespace, no URL-safe characters, no stray bits. A text that
+ * merely decodes to the right bytes by Node's lenient rules is refused.
+ *
  * This script never writes any file — it only reads the envelope (and,
  * optionally, the keys / pubkey file) and prints a summary to stdout/stderr.
  */
@@ -179,6 +184,21 @@ function bytesEqual(a, b) {
   return true
 }
 
+/**
+ * Decodes standard base64 and nothing else. Node's own decoder is lenient
+ * (it skips whitespace, accepts the URL-safe alphabet, ignores bad padding and
+ * leftover bits), so two different texts can decode to the same bytes. This
+ * accepts a text only when re-encoding the decoded bytes gives that exact
+ * text, which leaves one canonical spelling per byte string. Throws an Error
+ * whose message names `what` and says why the text was refused.
+ */
+function strictBase64(text, what) {
+  if (typeof text !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) throw new Error(`${what} must be standard base64`)
+  const bytes = new Uint8Array(Buffer.from(text, 'base64'))
+  if (Buffer.from(bytes).toString('base64') !== text) throw new Error(`${what} is not canonical standard base64`)
+  return bytes
+}
+
 async function sha256Hex(bytes) {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('')
@@ -247,9 +267,8 @@ async function loadKeyDocument(path) {
     for (const f of ['valid_until', 'revoked_at']) {
       if (!Object.hasOwn(k, f)) fail(`field ${f} is missing (it must be present, null when empty)`)
     }
-    if (typeof k.spki !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(k.spki)) fail('spki must be standard base64')
-    const spkiBytes = new Uint8Array(Buffer.from(k.spki, 'base64'))
-    if (Buffer.from(spkiBytes).toString('base64') !== k.spki) fail('spki is not canonical standard base64')
+    let spkiBytes
+    try { spkiBytes = strictBase64(k.spki, 'spki') } catch (e) { fail(e.message) }
     if (spkiBytes.length !== ED25519_SPKI_LENGTH) fail(`spki must decode to ${ED25519_SPKI_LENGTH} bytes, got ${spkiBytes.length}`)
     if (!bytesEqual(spkiBytes.subarray(0, ED25519_SPKI_HEADER.length), ED25519_SPKI_HEADER)) fail('spki does not start with the Ed25519 SubjectPublicKeyInfo header')
     if (typeof k.spki_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(k.spki_sha256)) fail('spki_sha256 must be 64 lowercase hex characters')
@@ -341,7 +360,7 @@ async function main() {
   } else {
     try {
       const spkiBase64 = resolvePubkeyBase64(args.pubkey)
-      const spkiBytes = new Uint8Array(Buffer.from(spkiBase64, 'base64'))
+      const spkiBytes = strictBase64(spkiBase64, 'public key')
       const cryptoKey = await crypto.subtle.importKey('spki', spkiBytes, { name: 'Ed25519' }, false, ['verify'])
       singleKey = { cryptoKey, keyId: await keyIdOfSpki(spkiBytes) }
     } catch (error) {
@@ -361,7 +380,13 @@ async function main() {
     return
   }
 
-  const payloadBytes = new Uint8Array(Buffer.from(envelope.payload, 'base64'))
+  let payloadBytes
+  try {
+    payloadBytes = strictBase64(envelope.payload, 'envelope payload')
+  } catch (error) {
+    console.error(`invalid envelope: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
   const preAuth = pae(envelope.payloadType, payloadBytes)
 
   // Parse the payload once: --keys needs its observed_at, and step 2 reuses it.
@@ -413,7 +438,7 @@ async function main() {
     }
 
     try {
-      const sigBytes = new Uint8Array(Buffer.from(String(signature?.sig ?? ''), 'base64'))
+      const sigBytes = strictBase64(signature?.sig, 'signature sig')
       result.ok = await crypto.subtle.verify({ name: 'Ed25519' }, cryptoKey, sigBytes, preAuth)
     } catch (e) {
       result.error = e instanceof Error ? e.message : String(e)
