@@ -106,6 +106,7 @@ const CASES: Case[] = [
   { name: '[::ffff:127.0.0.1]', url: 'https://[::ffff:127.0.0.1]/', expected: 'SsrfBlocked:LOOPBACK|0' },
   { name: '[::ffff:8.8.8.8]', url: 'https://[::ffff:8.8.8.8]/', expected: 'SsrfBlocked:RESERVED|0' }, // scan-secrets-allow: RFC special-use / placeholder address, a block-code test input, never contacted
   { name: '[4000::1]', url: 'https://[4000::1]/', expected: 'SsrfBlocked:RESERVED|0' }, // scan-secrets-allow: RFC special-use / placeholder address, a block-code test input, never contacted
+  { name: 'ISATAP [2606:4700:4700:1:200:5efe:a00:1]', url: 'https://[2606:4700:4700:1:200:5efe:a00:1]/', expected: 'SsrfBlocked:PRIVATE_USE|0' }, // scan-secrets-allow: ISATAP address embedding RFC 1918 10.0.0.1, a block-code test input, never contacted
   // resolve.ts through the real validating resolver, fake DoH
   { name: 'name resolving to 10.0.0.1', url: 'https://example.com/', resolve: viaDoh({ a: [[10, 0, 0, 1]] }), expected: 'SsrfBlocked:PRIVATE_USE|0' },
   { name: 'name resolving to 169.254.169.254', url: 'https://example.com/', resolve: viaDoh({ a: [[169, 254, 169, 254]] }), expected: 'SsrfBlocked:CLOUD_METADATA|0' },

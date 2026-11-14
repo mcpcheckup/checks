@@ -72,6 +72,13 @@ not just a general assertion that "bad things are blocked":
   its reason is kept — `::ffff:127.0.0.1` is rejected as loopback,
   `::ffff:169.254.169.254` as cloud metadata; otherwise the reason is reserved, so
   `::ffff:8.8.8.8` is rejected too.
+- **ISATAP interface identifiers** (RFC 5214): an address inside `2000::/3` that the
+  entries above allow, but whose low 64 bits are `0:5efe:<IPv4>` or `200:5efe:<IPv4>`
+  (or `100:` / `300:`, the other two settings of the u and g bits), is rejected when the
+  IPv4 policy rejects the embedded IPv4 address, with that address's reason:
+  `2606:4700:4700:1:0:5efe:a00:1` is rejected as private-use (10.0.0.1). With a public
+  embedded IPv4 address it stays allowed. This check only rejects: an address the
+  entries above already reject keeps its own reason.
 - **Obfuscated IP-literal forms** (`http://0x7f000001/`, `http://017700000001/`, <!-- scan-secrets-allow: obfuscated-loopback examples, not real hosts -->
   `http://127.1/`): these are never a special case in our own code. `new URL(...)` <!-- scan-secrets-allow: obfuscated-loopback example, not a real host -->
   (the WHATWG URL parser, the same one Node and Workers both implement) normalizes all
@@ -147,6 +154,10 @@ other JavaScript running in the Worker. That is deployment configuration — out
 scope for this package per `CLAUDE.md`'s boundary rule (`packages/` ships the policy
 *implementation*; deployment thresholds and infrastructure are private) — but worth
 knowing about if you're deciding how much to trust the userland check alone.
+
+Separately, an IPv6 address under a network-specific NAT64 prefix (RFC 6052) is not
+recognized as one: an operator chooses its own NAT64 prefix, so there is no fixed range
+to match, and such an address is judged by the entries above like any other IPv6 address.
 
 ## Beyond IP validation
 

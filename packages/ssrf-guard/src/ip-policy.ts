@@ -43,6 +43,9 @@ function block(code: IpBlockCode, description: string): IpVerdict {
  * lists as True / N/A / without a value but which are blocked anyway, say so beside them.
  * For IPv6 the table decides only inside global unicast, 2000::/3: outside it a row can
  * only choose the code an address is blocked with, never allow it (see classifyIpv6).
+ * Inside 2000::/3 one check follows the table and can only block: an address the table
+ * allows whose interface identifier is ISATAP's (RFC 5214) is blocked when the IPv4
+ * policy blocks the embedded IPv4 address, with that policy's code.
  */
 interface RangeRow {
   base: string
@@ -233,10 +236,23 @@ const IPV6_GLOBAL_UNICAST = { base: '2000::', prefix: 3 }
 /** ::ffff:0:0/96 — the low 32 bits are an embedded IPv4 address. The block is blocked whole; the embedded address only chooses the code (the IPv4 policy's own, where it blocks that address). */
 function extractMappedIpv4(groups: number[]): string | null {
   const isMapped = groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0xffff
-  if (!isMapped) return null
+  return isMapped ? low32AsIpv4(groups) : null
+}
+
+/** The low 32 bits of an IPv6 address, as a dotted-decimal IPv4 address. */
+function low32AsIpv4(groups: number[]): string {
   const g6 = groups[6]!
   const g7 = groups[7]!
   return `${(g6 >> 8) & 0xff}.${g6 & 0xff}.${(g7 >> 8) & 0xff}.${g7 & 0xff}`
+}
+
+/** ISATAP interface identifier (RFC 5214 §6.1): the low 64 bits are `000000ug 00000000`,
+ *  `0x5efe`, then an IPv4 address in the low 32 bits, so the first of those hextets is
+ *  0000, 0100, 0200 or 0300 (the u and g bits) and the second is exactly 5efe. Returns
+ *  the embedded IPv4 address, or null when the interface identifier is not of that shape. */
+function extractIsatapIpv4(groups: number[]): string | null {
+  if ((groups[4]! & 0xfcff) !== 0 || groups[5] !== 0x5efe) return null
+  return low32AsIpv4(groups)
 }
 
 export function classifyIpv6(ip: string): IpVerdict {
@@ -256,8 +272,22 @@ export function classifyIpv6(ip: string): IpVerdict {
   // The most specific row decides first, so a blocking row outside 2000::/3 keeps its
   // own code; whatever the table would allow outside 2000::/3 is blocked as RESERVED.
   const verdict = verdictFor(IPV6_TABLE.find((row) => inIpv6Range(groups, row.base, row.prefix)))
-  if (verdict.blocked || inIpv6Range(groups, IPV6_GLOBAL_UNICAST.base, IPV6_GLOBAL_UNICAST.prefix)) return verdict
-  return block('RESERVED', 'outside IPv6 global unicast (2000::/3): reserved by the IETF, or not global unicast, in the IANA IPv6 Address Space registry')
+  if (verdict.blocked) return verdict
+  if (!inIpv6Range(groups, IPV6_GLOBAL_UNICAST.base, IPV6_GLOBAL_UNICAST.prefix)) {
+    return block('RESERVED', 'outside IPv6 global unicast (2000::/3): reserved by the IETF, or not global unicast, in the IANA IPv6 Address Space registry')
+  }
+
+  // Reached only by an address the table and the 2000::/3 gate allow, so this can only
+  // tighten: an ISATAP interface identifier whose embedded IPv4 address the IPv4 policy
+  // blocks is blocked with that policy's code, as for ::ffff:0:0/96; a public one stays
+  // allowed. Blocks already blocked whole (2002::/16, NAT64 and the rest) keep their code.
+  const isatap = extractIsatapIpv4(groups)
+  if (isatap !== null) {
+    const v4Verdict = classifyIpv4(isatap)
+    if (v4Verdict.blocked) return v4Verdict
+  }
+  // Not done: a network-specific NAT64 prefix (RFC 6052) is chosen by its operator, so there is no fixed range to match.
+  return verdict
 }
 
 function ipv6Equals(groups: number[], other: string): boolean {

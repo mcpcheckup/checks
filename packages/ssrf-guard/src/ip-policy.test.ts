@@ -257,6 +257,78 @@ t('outside 2000::/3 a more specific blocking row keeps its own code (13 cases), 
   for (const [address, code] of SPECIFIC_OUTSIDE) blocked(address, 6, code)
 })
 
+/** ISATAP interface identifiers (RFC 5214 §6.1: `000000ug 00000000`, `5efe`, then the
+ *  IPv4 address) under prefixes the table and the 2000::/3 gate allow. The embedded IPv4
+ *  address is judged by the IPv4 policy; where it blocks, its code is the address's code.
+ *  `null` = the embedded address is public, so the address stays allowed. Written out by
+ *  hand, like the tables above. */
+const ISATAP: Array<[address: string, expected: string | null, note: string]> = [
+  ['2606:4700:4700:1:0:5efe:a00:1', 'PRIVATE_USE', '0000 form, embedded 10.0.0.1'],
+  ['2606:4700:4700:1:200:5efe:a00:1', 'PRIVATE_USE', '0200 form (u bit), embedded 10.0.0.1'],
+  ['2606:4700:4700:1:100:5efe:a00:1', 'PRIVATE_USE', '0100 form (g bit), embedded 10.0.0.1'],
+  ['2606:4700:4700:1:300:5efe:a00:1', 'PRIVATE_USE', '0300 form (u and g bits), embedded 10.0.0.1'],
+  ['2606:4700:4700:1:0:5efe:ac14:1', 'PRIVATE_USE', 'embedded 172.20.0.1'],
+  ['2606:4700:4700:1:200:5efe:c0a8:101', 'PRIVATE_USE', 'embedded 192.168.1.1'],
+  ['2606:4700:4700:1:0:5efe:7f00:1', 'LOOPBACK', 'embedded 127.0.0.1'],
+  ['2606:4700:4700:1:200:5efe:7f00:1', 'LOOPBACK', '0200 form, embedded 127.0.0.1'],
+  ['2606:4700:4700:1:0:5efe:a9fe:101', 'LINK_LOCAL', 'embedded 169.254.1.1'],
+  ['2606:4700:4700:1:200:5efe:a9fe:a9fe', 'CLOUD_METADATA', 'embedded 169.254.169.254'],
+  ['2606:4700:4700:1:0:5efe:6440:1', 'CGNAT', 'embedded 100.64.0.1'],
+  ['2606:4700:4700:1:200:5efe:6440:1', 'CGNAT', '0200 form, embedded 100.64.0.1'],
+  ['2606:4700:4700:1:0:5efe:c000:201', 'DOCUMENTATION', 'embedded 192.0.2.1 (TEST-NET-1)'],
+  ['2606:4700:4700:1:200:5efe:c633:6407', 'DOCUMENTATION', 'embedded 198.51.100.7 (TEST-NET-2)'],
+  ['2606:4700:4700:1:0:5efe:cb00:7109', 'DOCUMENTATION', 'embedded 203.0.113.9 (TEST-NET-3)'],
+  ['2606:4700:4700:1:0:5efe:c000:8', 'PROTOCOL_ASSIGNMENT', 'embedded 192.0.0.8'],
+  ['2606:4700:4700:1:0:5efe:0:0', 'THIS_NETWORK', 'embedded 0.0.0.0'],
+  ['2606:4700:4700:1:0:5efe:e000:1', 'MULTICAST', 'embedded 224.0.0.1'],
+  ['2606:4700:4700:1:0:5efe:ffff:ffff', 'RESERVED', 'embedded 255.255.255.255'],
+  ['2001:3::5efe:a00:1', 'PRIVATE_USE', 'under 2001:3::/32, a row that allows: the check follows the table'],
+  ['2606:4700:4700:1:0:5efe:808:808', null, 'embedded 8.8.8.8 is public'],
+  ['2606:4700:4700:1:200:5efe:101:101', null, '0200 form, embedded 1.1.1.1 is public'],
+  ['2606:4700:4700:1:0:5efe:c000:9', null, 'embedded 192.0.0.9, a row the IPv4 policy allows'],
+  ['2001:3::5efe:808:808', null, 'under 2001:3::/32, embedded 8.8.8.8 is public'],
+]
+console.log('\nISATAP interface identifiers inside 2000::/3: the embedded IPv4 address is judged by the IPv4 policy')
+for (const [address, expected, note] of ISATAP) {
+  t(`${address} ${show(expected)} (${note})`, () => expected === null ? allowed(address, 6) : blocked(address, 6, expected))
+}
+/** Interface identifiers one bit or one hextet away from ISATAP's: not ISATAP, so a
+ *  non-public IPv4 address in the low 32 bits does not block them. */
+const NOT_ISATAP: Array<[address: string, note: string]> = [
+  ['2606:4700:4700:1:0:5efd:a00:1', '5efd, not 5efe'],
+  ['2606:4700:4700:1:0:5eff:a00:1', '5eff, not 5efe'],
+  ['2606:4700:4700:1:400:5efe:a00:1', '0400: a bit RFC 5214 requires to be zero is set'],
+  ['2606:4700:4700:1:8000:5efe:a00:1', '8000: the top bit is set'],
+  ['2606:4700:4700:1:1:5efe:a00:1', '0001: the low byte of the first hextet must be zero'],
+  ['2606:4700:4700:1:5efe:0:a00:1', '5efe one hextet too early'],
+  ['2606:4700:4700:5efe:0:0:a00:1', '5efe in the prefix, not the interface identifier'],
+]
+for (const [address, note] of NOT_ISATAP) {
+  t(`${address} allowed (not an ISATAP interface identifier: ${note})`, () => allowed(address, 6))
+}
+/** An ISATAP-shaped interface identifier under a block that is already blocked keeps that
+ *  block's code, whatever IPv4 address it embeds: the ISATAP check is reached only by
+ *  addresses that would otherwise be allowed. */
+const ISATAP_UNDER_BLOCKED: Array<[address: string, code: string, note: string]> = [
+  ['2002:c000:204::5efe:a00:1', 'SIX_TO_FOUR', '2002::/16, embedded 10.0.0.1'],
+  ['2002:808:808::200:5efe:808:808', 'SIX_TO_FOUR', '2002::/16, embedded 8.8.8.8: still blocked whole'],
+  ['2001:0:4136:e378:0:5efe:a00:1', 'TEREDO', '2001::/32'],
+  ['2001:db8::5efe:7f00:1', 'DOCUMENTATION', '2001:db8::/32'],
+  ['2001:100::5efe:808:808', 'PROTOCOL_ASSIGNMENT', '2001::/23, embedded 8.8.8.8'],
+  ['fe80::5efe:a00:1', 'LINK_LOCAL', 'fe80::/10, the usual link-local ISATAP address'],
+  ['fe80::200:5efe:808:808', 'LINK_LOCAL', 'fe80::/10, embedded 8.8.8.8'],
+  ['fd12:3456::5efe:7f00:1', 'UNIQUE_LOCAL', 'fc00::/7'],
+  ['4000::5efe:808:808', 'RESERVED', 'outside 2000::/3, embedded 8.8.8.8'],
+  // The 2000::/3 gate runs before the ISATAP check: outside it a non-public embedded IPv4
+  // address must not choose the code.
+  ['4000::5efe:a00:1', 'RESERVED', 'outside 2000::/3, embedded 10.0.0.1: not PRIVATE_USE'],
+  ['::5efe:7f00:1', 'RESERVED', 'outside 2000::/3 and outside ::/96, embedded 127.0.0.1: not LOOPBACK'],
+  ['8000::200:5efe:a9fe:a9fe', 'RESERVED', 'outside 2000::/3, embedded 169.254.169.254: not CLOUD_METADATA'],
+]
+for (const [address, code, note] of ISATAP_UNDER_BLOCKED) {
+  t(`${address} blocked as ${code} (ISATAP-shaped under an already-blocked block: ${note})`, () => blocked(address, 6, code))
+}
+
 /** The rows of ip-policy.ts that block nothing (`code: null`), read off its TypeScript
  *  AST: base/prefix of every object literal whose `code` property is the `null` keyword.
  *  Each must be a registry entry marked Globally Reachable = True; this list is the whole

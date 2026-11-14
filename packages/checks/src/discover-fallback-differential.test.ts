@@ -173,7 +173,7 @@ const FROZEN_090_BLOBS: Record<string, string> = {
  *  any lookup). Neither can alter what this differential computes: the files
  *  in this closure reach ssrf-guard only for its error classes and the
  *  ProbeBudget type, and nothing they run calls guardedFetch, classifyIp or
- *  parseGuardedTarget. The IPv6 allow-list change (2000::/3) re-pins
+ *  parseGuardedTarget. The IPv6 allow-list change (2000::/3) and the ISATAP check (TODO 1905) re-pin
  *  ip-policy.ts once more, for the same reason. TODO 1902 (the caller signal; the
  *  deadline checked again before sending) re-pins guarded-fetch.ts and
  *  response-view.ts, for the same reason: nothing they run calls guardedFetch or
@@ -270,7 +270,7 @@ const CLOSURE_090_BLOBS: Record<string, string> = {
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57',
   'packages/ssrf-guard/src/guarded-fetch.ts': '5349d316e3ac68d93f2ee5f1c204cf449a7f4d4e', // TODO 1902 (caller signal; see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755',
-  'packages/ssrf-guard/src/ip-policy.ts': 'e37dc33e27da394c7de7a6c40f277d6ace7eeacb', // IPv6 allow-list change (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
+  'packages/ssrf-guard/src/ip-policy.ts': '4de0a34679f66825645d514469c075309143f97f', // IPv6 allow-list change and ISATAP check (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',
   'packages/ssrf-guard/src/resolve.ts': '8ba7ae7c4a97c0589fbb8da1166de89f36bdb5d0',
   'packages/ssrf-guard/src/response-view.ts': '2c6c8076ac4998e1bb870e113c7c763ce2ac63e2', // TODO 1902 (caller signal; see above) — git hash-object packages/ssrf-guard/src/response-view.ts
