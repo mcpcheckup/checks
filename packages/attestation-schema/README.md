@@ -173,12 +173,7 @@ produced this specific historical conclusion*:
 | `protocol_revision` | Which MCP protocol revision the target was observed speaking |
 | `launch_config_digest` | The stdio launch config's digest — `null` for `remote`, required for `stdio` |
 
-`suite_version`/`suite_digest` version the *code*; `registry_version`
-versions the *check definitions* that code reads. They can change
-independently — a bug fix bumps `suite_version` without touching what a
-check claims to test; a rewritten explanation bumps `registry_version`
-without a code change — so collapsing them into one field would lose which
-one actually changed.
+suite_version and suite_digest identify packages/checks as a whole, code and checks.json together; registry_version identifies the check definitions in checks.json. Any change under packages/checks changes suite_digest. From suite 0.20.0, a change that alters any verdict bumps both versions; a change to check definitions that alters no verdict bumps registry_version alone.
 
 ### `target`
 

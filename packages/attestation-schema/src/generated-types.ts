@@ -40,7 +40,7 @@ export type AttestationPayload = {
    */
   toolset_projection_version: string;
   /**
-   * The MCP protocol revision the tested server was observed speaking, e.g. '2026-07-28'. One of the dates in packages/checks/checks.json's protocol_revision check's revision_matrix. format:"date" additionally rejects calendar-impossible values (month 13, day 40, Feb 30, ...) that the shape-only pattern alone would let through. Always a date under coverage 'full'. Under 'auth_gated' it is a date when a handshake response declared one before the authentication challenge stopped the run, and null when the challenge came first (the cross-field rule is the second `allOf` entry).
+   * The MCP protocol revision the tested server was observed speaking, e.g. '2026-07-28'. A calendar date. It need not be one of the dates in packages/checks/checks.json's protocol_revision check's revision_matrix. Whether the revision is recognised is stated by the protocol_revision assertion in the same payload when that assertion is VERIFIED or FAILED; when it is UNVERIFIED, as in an auth_gated payload, the revision was not compared. format:"date" additionally rejects calendar-impossible values (month 13, day 40, Feb 30, ...) that the shape-only pattern alone would let through. Always a date under coverage 'full'. Under 'auth_gated' it is a date when a handshake response declared one before the authentication challenge stopped the run, and null when the challenge came first (the cross-field rule is the second `allOf` entry).
    */
   protocol_revision: null | string;
   /**

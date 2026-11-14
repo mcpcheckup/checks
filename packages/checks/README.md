@@ -98,7 +98,9 @@ handful of wire calls, and several checks read from the same call:
    the call is sent, its response feeds both `error_taxonomy` (is the error shape
    protocol-conformant) and `auth_metadata` (was there a `WWW-Authenticate` challenge,
    and if so, does its declared `scope` actually match its own linked resource-metadata
-   document's `scopes_supported`). A bare 401/403 is not a taxonomy violation, but no
+   document's `scopes_supported`; a document that is not a JSON object is `OBSERVED_RISK`,
+   and since suite 0.20.0 that includes a JSON array, which suites up to 0.19.3 recorded
+   as `VERIFIED`). A bare 401/403 is not a taxonomy violation, but no
    protocol error came back either, so there is nothing for `error_taxonomy` to
    classify: it is `SKIPPED`/`UNVERIFIED` with `error_shape_not_observed` (suites up to
    0.11.0 recorded `COMPLETED`/`VERIFIED`); it is exactly what `auth_metadata` reads. An

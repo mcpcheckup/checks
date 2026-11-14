@@ -76,8 +76,9 @@ await t('the old side is suite 0.19.2\'s wire.ts: frozen/suite-0.18.0/src/wire.t
   assert.notEqual(blobId(readHere('./wire.ts')), SUITE_0192_WIRE_BLOB)
 })
 
-await t('packages/checks ships this change as suite 0.19.3', () => {
-  assert.equal((JSON.parse(readHere('../package.json')) as { version: string }).version, '0.19.3')
+await t('packages/checks ships this change as suite 0.19.3, and has not gone back below it (suite 0.20.0 is the next bump)', () => {
+  const [major = NaN, minor = NaN, patch = NaN] = (JSON.parse(readHere('../package.json')) as { version: string }).version.split('.').map(Number)
+  assert.ok(major > 0 || minor > 19 || (minor === 19 && patch >= 3), 'this file compares against suite 0.19.2 and is only meaningful from 0.19.3 on')
 })
 
 // ---------------------------------------------------------------------------

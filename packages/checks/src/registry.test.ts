@@ -6,6 +6,7 @@ import frozen0150Checks from './frozen/suite-0.15.0/checks.json' with { type: 'j
 import frozen0160Checks from './frozen/suite-0.16.0/checks.json' with { type: 'json' }
 import frozen0170Checks from './frozen/suite-0.17.0/checks.json' with { type: 'json' }
 import frozen0180Checks from './frozen/suite-0.18.0/checks.json' with { type: 'json' }
+import frozen0193Checks from './frozen/suite-0.19.3/checks.json' with { type: 'json' }
 
 /** Registry 0.13.0, the one suite 0.14.0 shipped with. */
 const FROZEN_0130_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0140Checks
@@ -17,6 +18,8 @@ const FROZEN_0150_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> 
 const FROZEN_0160_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0170Checks
 /** Registry 0.17.0, the one suite 0.18.0 shipped with. */
 const FROZEN_0170_REGISTRY: Pick<ChecksRegistry, 'registry_version' | 'checks'> = frozen0180Checks
+/** Registry 0.18.0, the one suites 0.19.0 to 0.19.3 shipped with (frozen/suite-0.19.3/checks.json). */
+const FROZEN_0180_REGISTRY: ChecksRegistry = frozen0193Checks as ChecksRegistry
 
 let pass = 0, fail = 0
 function t(name: string, fn: () => void) {
@@ -372,14 +375,29 @@ t('redirect_policy.how 不再写「所有请求都跟随」的旧说法，写的
 // (frozen/suite-0.17.0/checks.json).
 // Registry 0.18.0 (suite 0.19.0) moves tool_description_hygiene alone (v0.5.0: length alone no
 // longer counts, unprompted_continuation, the resale form, TODO 1316); every other value is
-// registry 0.17.0's (frozen/suite-0.18.0/checks.json). A later bump of any check updates these
-// tables in the same change, deliberately.
+// registry 0.17.0's (frozen/suite-0.18.0/checks.json).
+// Registry 0.19.0 (suite 0.20.0) moves no check at all: auth.ts now judges a metadata document
+// that is a JSON array as not a JSON object, which is a change to the judgment, not to what any
+// check says it does, so the one field that differs from registry 0.18.0 is registry_version
+// itself (frozen/suite-0.19.3/checks.json). A later bump of any check updates these tables in
+// the same change, deliberately.
+t('registry 0.19.0（suite 0.20.0）与 registry 0.18.0 的 checks.json 只差 registry_version：每项检查的 docs_version、说明文字、预算逐字相同', () => {
+  assert.equal(FROZEN_0180_REGISTRY.registry_version, '0.18.0')
+  assert.equal(CHECKS_REGISTRY.registry_version, '0.19.0')
+  assert.deepStrictEqual(CHECKS_REGISTRY, { ...FROZEN_0180_REGISTRY, registry_version: '0.19.0' })
+  assert.deepStrictEqual(
+    Object.keys(CHECKS_REGISTRY),
+    Object.keys(FROZEN_0180_REGISTRY),
+    'registry_version stays where it was in the file: no key added, dropped or moved',
+  )
+})
+
 t('docs_version：registry 0.18.0 只动 tool_description_hygiene（v0.5.0），其余 14 项与 registry 0.17.0 的 checks.json 逐条相同', () => {
   const previousRegistry = Object.fromEntries(FROZEN_0170_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
   assert.equal(FROZEN_0170_REGISTRY.registry_version, '0.17.0')
-  assert.equal(CHECKS_REGISTRY.registry_version, '0.18.0')
-  const now = Object.fromEntries(CHECKS_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
-  assert.equal(CHECKS_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
+  assert.equal(FROZEN_0180_REGISTRY.registry_version, '0.18.0')
+  const now = Object.fromEntries(FROZEN_0180_REGISTRY.checks.map((c) => [c.check_id, c.docs_version]))
+  assert.equal(FROZEN_0180_REGISTRY.checks.length, Object.keys(now).length, 'check_id 不得重复')
   assert.deepStrictEqual(now, { ...previousRegistry, tool_description_hygiene: 'v0.5.0' })
   assert.equal(previousRegistry.tool_description_hygiene, 'v0.4.0')
 })

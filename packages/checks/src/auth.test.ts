@@ -530,6 +530,73 @@ await t('AC3 覆盖面：七个非 VERIFIED key 都出现；其中五个经门�
   }
 })
 
+console.log('\nsuite 0.20.0：metadata 文档是 JSON 数组 → 与其它非 JSON 对象的值同一支（OBSERVED_RISK auth_metadata_not_json_object）；对象仍按原样判定')
+
+const NOT_A_JSON_OBJECT = { status: 'OBSERVED_RISK', reason: { key: 'auth_metadata_not_json_object' } }
+const META_GET = [`GET ${META_URL}`]
+
+/** Bodies that parse to a JSON array. Through suite 0.19.3 each was VERIFIED: an array is typeof 'object', and
+ *  scopes_supported is not one of its properties, so nothing in it was ever compared with the challenge's scope. */
+const ARRAY_BODIES: [string, string][] = [
+  ['[]', '[]'],
+  ['[{…}]: an object inside an array', '[{"resource":"https://notes-mcp.example.com","scopes_supported":["notes:read","notes:write"]}]'],
+  ['array of scalars', '[1,"a",null,true]'],
+  ['nested empty array', '[[]]'],
+  ['[] with whitespace around it', ' \r\n[ ]\n'],
+]
+
+for (const [name, body] of ARRAY_BODIES) {
+  await t('suite 0.20.0 数组 ' + name + '：judgeAuthMetadata（tools/call 入口）与 judgeAuthMetadataFromGate（门控入口）都是 OBSERVED_RISK auth_metadata_not_json_object，只发一次 GET；冻结 0.7.1 对同一份 body 是 VERIFIED', async () => {
+    const headers = new Headers({ 'www-authenticate': WITH_URL_AND_SCOPE })
+    const callResult = { status: 401, headers, bodyText: '', currentEndpoint: ENDPOINT }
+    const entryCalls: string[] = [], gateCalls: string[] = [], oldCalls: string[] = []
+    const now = await judgeAuthMetadata({ fetchImpl: metadataServer(200, body, entryCalls), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
+    const gate = await judgeAuthMetadataFromGate({
+      fetchImpl: metadataServer(200, body, gateCalls),
+      budget: BUDGET,
+      ctx: createProbeContext(Date.now()),
+      challenge: { scheme: 'bearer', status: 401, wwwAuthenticate: WITH_URL_AND_SCOPE },
+    })
+    const old = await frozen071JudgeAuthMetadata({ fetchImpl: metadataServer(200, body, oldCalls), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
+    assert.deepStrictEqual(now, NOT_A_JSON_OBJECT)
+    assert.deepStrictEqual(gate, NOT_A_JSON_OBJECT)
+    assert.deepStrictEqual(old, { status: 'VERIFIED' }, 'the verdict an array drew before suite 0.20.0')
+    assert.deepStrictEqual(entryCalls, META_GET)
+    assert.deepStrictEqual(gateCalls, META_GET)
+    assert.deepStrictEqual(oldCalls, META_GET, 'the same one request as before: only the verdict on its body changed')
+  })
+}
+
+await t('suite 0.20.0 数组与其它非对象值同一支：42、"s"、true、null 的 verdict 对象与数组的逐字段相同', async () => {
+  const verdictFor = async (body: string) => judgeAuthMetadataFromGate({
+    fetchImpl: metadataServer(200, body, []),
+    budget: BUDGET,
+    ctx: createProbeContext(Date.now()),
+    challenge: { scheme: 'bearer', status: 401, wwwAuthenticate: WITH_URL },
+  })
+  for (const body of ['42', '"s"', 'true', 'null', '[]', '[{}]']) assert.deepStrictEqual(await verdictFor(body), NOT_A_JSON_OBJECT, body)
+})
+
+const OBJECT_BODIES: [string, string, string, string][] = [
+  // [name, body, www-authenticate, the verdict; frozen 0.7.1 gives the same one]
+  ['{}', '{}', WITH_URL, 'VERIFIED'],
+  ['an object whose own values are arrays', '{"resource":"https://notes-mcp.example.com","authorization_servers":["https://notes-mcp.example.com/oauth"],"bearer_methods_supported":[]}', WITH_URL, 'VERIFIED'],
+  ['an object with scopes_supported that covers the challenge scope', '{"scopes_supported":["notes:read","notes:write","extra"]}', WITH_URL_AND_SCOPE, 'VERIFIED'],
+  ['an object with scopes_supported that does not cover it', '{"scopes_supported":["notes:read"]}', WITH_URL_AND_SCOPE, 'OBSERVED_RISK auth_scope_contradiction'],
+]
+
+for (const [name, body, header, want] of OBJECT_BODIES) {
+  await t('suite 0.20.0 对象 ' + name + '：仍是 ' + want + '，两个入口都与冻结 0.7.1 的 verdict 对象逐字段相同', async () => {
+    const callResult = { status: 401, headers: new Headers({ 'www-authenticate': header }), bodyText: '', currentEndpoint: ENDPOINT }
+    const now = await judgeAuthMetadata({ fetchImpl: metadataServer(200, body, []), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
+    const gate = await judgeAuthMetadataFromGate({ fetchImpl: metadataServer(200, body, []), budget: BUDGET, ctx: createProbeContext(Date.now()), challenge: { scheme: 'bearer', status: 401, wwwAuthenticate: header } })
+    const old = await frozen071JudgeAuthMetadata({ fetchImpl: metadataServer(200, body, []), budget: BUDGET, ctx: createProbeContext(Date.now()), callResult })
+    assert.equal(label(now), want)
+    assert.deepStrictEqual(now, old)
+    assert.deepStrictEqual(gate, old)
+  })
+}
+
 await t('T86b 红线：门控入口的 GET 走 sendRequest —— 同一份预算计数，预算用尽时抛 ProbeAborted，而不是自己去取', async () => {
   const calls: string[] = []
   const ctx = createProbeContext(Date.now())

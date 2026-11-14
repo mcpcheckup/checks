@@ -117,11 +117,12 @@ const CLOSURE_0170_BLOBS: Record<string, string> = {
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
   'packages/attestation-schema/schema/attestation-payload-v0.3.json': 'e530a30f249389a72c1370c6d114bc0bd81ad66a',
-  'packages/attestation-schema/schema/attestation.schema.json': 'c8a12527aad29cc7f26b68e8765bd4320cb18d3c',
+  // Re-pinned for TODO 1208 (A3): only protocol_revision.description changed (here and in generated-types.ts); the frozen suites use only assertUnverifiedHasReason
+  'packages/attestation-schema/schema/attestation.schema.json': 'd8d2d203b834a554ffbdc9e2dd3bbe8e968515d6',
   'packages/attestation-schema/src/attestation.ts': '1dff1543b9d4890f17221ac5825dfe4fb9ea50b6',
   'packages/attestation-schema/src/credential-shapes.ts': '4e1957c82d8797c7db68371a9770fac348a1fe8c',
   'packages/attestation-schema/src/dsse.ts': 'abc02f6c5e793b80c06bd825f2da79c72dfb3c08',
-  'packages/attestation-schema/src/generated-types.ts': 'e255d176c73c5c30dd9ac07c0149f204be1b4df8',
+  'packages/attestation-schema/src/generated-types.ts': '39b3eac3a7f620e5cd9bd49b47e66067c68f5b4c', // re-pinned with the schema line above (TODO 1208)
   'packages/attestation-schema/src/index.ts': 'dbe2f24752372c7b49b622474665080aba39754d',
   'packages/attestation-schema/src/invariants.ts': '78c4296f187921cf90b19686fe95fbfc61abba8e',
   'packages/canonicalizer/src/canonicalize.ts': '45e467e746de5fa2ba40cae72af915eafdceb27b',

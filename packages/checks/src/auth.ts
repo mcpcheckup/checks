@@ -559,7 +559,8 @@ async function judgeAuthMetadataFrom(opts: AuthMetadataFetch, judgment: AuthChal
   } catch {
     return { status: 'OBSERVED_RISK', reason: { key: 'auth_metadata_invalid_json' } }
   }
-  if (typeof metadata !== 'object' || metadata === null) {
+  // Suite 0.20.0: a JSON array is not a JSON object (typeof says 'object' for it), so it takes this branch too.
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
     return { status: 'OBSERVED_RISK', reason: { key: 'auth_metadata_not_json_object' } }
   }
 

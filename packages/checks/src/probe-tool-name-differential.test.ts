@@ -264,17 +264,24 @@ const FROZEN_071_BLOBS: Record<string, string> = {
  *  Both parties here run the same live wire.ts. The signal is aborted only after the step has already ended with
  *  ProbeAborted MAX_DURATION, it decides no outcome, and no FetchLike in this file reads the fourth argument, so the
  *  comparison this file makes is unchanged. suite-0193-differential.test.ts proves the change against suite 0.19.2's
- *  wire.ts. */
+ *  wire.ts.
+ *
+ *  Suite 0.20.0 (auth.ts judges a metadata document that is a JSON array as not a JSON object) re-pins checks.json
+ *  (registry 0.19.0: registry_version is the only field that moves, still reached type-only with the registry passed
+ *  in as input). auth.ts is not in this closure (the frozen probe.ts imports its own frozen copy) and no fixture's
+ *  metadata document is an array, so the comparison this file makes is unchanged. suite-0200-differential.test.ts
+ *  proves the change against suite 0.19.3's auth.ts. */
 const CLOSURE_071_BLOBS: Record<string, string> = {
   // Re-pinned for the attestation-schema v0.4 dispatch, and again for suite 0.14.0's v0.4 amendments and credential-shapes.ts; the frozen suites use only assertUnverifiedHasReason and type Assertion, both unchanged.
   'packages/attestation-schema/schema/attestation-payload-v0.1.json': 'afc710ab67f95d2559b87699dab7d46c2a10ed84',
   'packages/attestation-schema/schema/attestation-payload-v0.2.json': '66f835a57afb80ac24f8e9f56ef360fbb45993f4',
   'packages/attestation-schema/schema/attestation-payload-v0.3.json': 'e530a30f249389a72c1370c6d114bc0bd81ad66a',
-  'packages/attestation-schema/schema/attestation.schema.json': 'c8a12527aad29cc7f26b68e8765bd4320cb18d3c',
+  // Re-pinned for TODO 1208 (A3): only protocol_revision.description changed (here and in generated-types.ts); the frozen suites use only assertUnverifiedHasReason
+  'packages/attestation-schema/schema/attestation.schema.json': 'd8d2d203b834a554ffbdc9e2dd3bbe8e968515d6',
   'packages/attestation-schema/src/attestation.ts': '1dff1543b9d4890f17221ac5825dfe4fb9ea50b6',
   'packages/attestation-schema/src/credential-shapes.ts': '4e1957c82d8797c7db68371a9770fac348a1fe8c',
   'packages/attestation-schema/src/dsse.ts': 'abc02f6c5e793b80c06bd825f2da79c72dfb3c08',
-  'packages/attestation-schema/src/generated-types.ts': 'e255d176c73c5c30dd9ac07c0149f204be1b4df8',
+  'packages/attestation-schema/src/generated-types.ts': '39b3eac3a7f620e5cd9bd49b47e66067c68f5b4c', // re-pinned with the schema line above (TODO 1208)
   'packages/attestation-schema/src/index.ts': 'dbe2f24752372c7b49b622474665080aba39754d',
   'packages/attestation-schema/src/invariants.ts': '78c4296f187921cf90b19686fe95fbfc61abba8e',
   'packages/canonicalizer/src/canonicalize.ts': '45e467e746de5fa2ba40cae72af915eafdceb27b',
@@ -282,7 +289,7 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/canonicalizer/src/errors.ts': 'cc3295b8b3e6f8c6c5f694137a418458956926a2',
   'packages/canonicalizer/src/index.ts': 'a5873c1742ec25f74ef3354490b46af9af097fe7',
   'packages/canonicalizer/src/projections.ts': 'd4fa9c9067ace15b893842696300b704980ef0ed',
-  'packages/checks/checks.json': 'a0fe59fd894bf8299d25f47615049e9baa8fd000', // registry 0.18.0 (suite 0.19.0, see above) — git hash-object packages/checks/checks.json
+  'packages/checks/checks.json': 'b91171dbfab6aab5588a30648a5cdd1b7b4758f6', // registry 0.19.0 (suite 0.20.0, see above) — git hash-object packages/checks/checks.json
   'packages/checks/src/fingerprint.ts': 'a523c95151b1bcae036c9c97f6c80d2c69b12470',
   // hygiene.ts is no longer in this closure: the frozen probe.ts imports its own frozen copy (TODO 1301).
   'packages/checks/src/latency.ts': '64947a43c414ded3590e599a7f08569391da6bef', // suite 0.16.0, reached from wire.ts (see above) — git hash-object packages/checks/src/latency.ts
