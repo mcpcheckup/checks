@@ -33,9 +33,12 @@
  * Download the document yourself; this script never touches the network.
  *
  * --pubkey accepts either a raw base64 SPKI string, or a path to a file
- * whose entire contents (trimmed) is that string — whichever is more
- * convenient for whoever is running this by hand. Every signature's keyid
- * must equal the first 16 hex characters of sha256(that key's SPKI bytes).
+ * whose entire contents is that string — whichever is more convenient for
+ * whoever is running this by hand. Whitespace at the start and end of the key
+ * text, whether given directly or read from the file, is removed before the key
+ * is read (so a trailing newline is fine); whitespace inside the key is not
+ * allowed. Every signature's keyid must equal the first 16 hex characters of
+ * sha256(that key's SPKI bytes).
  *
  * Checks performed, in order (exit code 0 only if all pass):
  *   0. envelope.payloadType is one of the types listed in
@@ -44,9 +47,14 @@
  *   1. Every signature names a key (--keys: one in the published set;
  *      --pubkey: the one given). With --keys, that key must not be revoked and
  *      the payload's observed_at must lie within its valid_from .. valid_until.
- *      And at least one signature verifies, under its key, over
+ *      Every signature's sig must also be well-formed: the canonical base64
+ *      spelling of exactly 64 bytes (an Ed25519 signature's length). A
+ *      signature that is not well-formed fails the whole run, like one whose
+ *      key fails the rules above, even when another signature verifies. And at
+ *      least one signature verifies, under its key, over
  *      PAE(envelope.payloadType, base64-decoded payload) — DSSE's own "at least
- *      one signature" semantics.
+ *      one signature" semantics. A well-formed signature that does not verify
+ *      fails only itself.
  *   2. The payload bytes are themselves exactly nfc-jcs/v1's canonical
  *      encoding (via @mcpcheckup/canonicalizer's canonicalBytes) of the
  *      JSON they parse to. A payload that is valid JSON, correctly signed,
@@ -58,7 +66,8 @@
  * Every base64 text read here (the payload, each signature, --pubkey, and each
  * key's spki) must be the canonical standard-alphabet spelling of its bytes:
  * padded, no whitespace, no URL-safe characters, no stray bits. A text that
- * merely decodes to the right bytes by Node's lenient rules is refused.
+ * merely decodes to the right bytes by Node's lenient rules is refused. The one
+ * allowance is the whitespace at either end of --pubkey described above.
  *
  * This script never writes any file — it only reads the envelope (and,
  * optionally, the keys / pubkey file) and prints a summary to stdout/stderr.
@@ -91,6 +100,8 @@ const ALLOWED_PAYLOAD_TYPES = Object.freeze([
 // DER prefix of an Ed25519 SubjectPublicKeyInfo; the 32 key bytes follow it.
 const ED25519_SPKI_HEADER = Uint8Array.from([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
 const ED25519_SPKI_LENGTH = 44
+// An Ed25519 signature is exactly 64 bytes.
+const ED25519_SIGNATURE_LENGTH = 64
 
 // Bounds on the key document: a real one holds a handful of keys.
 const MAX_KEYS_FILE_BYTES = 1024 * 1024
@@ -107,9 +118,11 @@ function printUsageAndExit(code) {
                revoked, and the payload's observed_at must lie within the
                key's valid_from .. valid_until (both ends inclusive).
   --pubkey     an Ed25519 public key, SPKI-encoded, base64 — either given
-               directly as a string, or a path to a file containing it. Every
-               signature's keyid must equal the first 16 hex characters of
-               sha256 over the key's SPKI bytes.
+               directly as a string, or a path to a file containing it.
+               Whitespace at the start and end of the key text, given directly
+               or read from the file, is removed; whitespace inside the key is
+               not allowed. Every signature's keyid must equal the first 16 hex
+               characters of sha256 over the key's SPKI bytes.
   Give exactly one of --keys and --pubkey.
 
 Accepted payloadTypes (any other is refused before any signature work):
@@ -120,7 +133,8 @@ This script imports @mcpcheckup/canonicalizer's .ts source directly and
 relies on Node's unflagged native TypeScript type-stripping support to run
 it, with no build step of its own.
 
-Exit code 0 only if every signature's key passes the rules above, at least
+Exit code 0 only if every signature's key passes the rules above, every
+signature is well-formed (the canonical base64 spelling of 64 bytes), at least
 one signature verifies, AND the payload bytes are exactly
 @mcpcheckup/canonicalizer's canonical (nfc-jcs/v1) encoding of their
 own JSON content.`
@@ -405,8 +419,21 @@ async function main() {
   for (let i = 0; i < envelope.signatures.length; i++) {
     const signature = envelope.signatures[i]
     const keyid = typeof signature?.keyid === 'string' ? signature.keyid : null
-    const result = { index: i, keyid, ok: false, error: null, keyError: null, key: null }
+    const result = { index: i, keyid, ok: false, error: null, keyError: null, formatError: null, key: null }
     sigResults.push(result)
+
+    // Read the signature itself first, for every signature, so a malformed one
+    // is reported whatever its key says.
+    let sigBytes = null
+    try {
+      sigBytes = strictBase64(signature?.sig, 'signature sig')
+      if (sigBytes.length !== ED25519_SIGNATURE_LENGTH) {
+        throw new Error(`signature sig must decode to ${ED25519_SIGNATURE_LENGTH} bytes, got ${sigBytes.length}`)
+      }
+    } catch (e) {
+      sigBytes = null
+      result.formatError = e instanceof Error ? e.message : String(e)
+    }
 
     let cryptoKey = null
     if (keyById !== null) {
@@ -437,8 +464,8 @@ async function main() {
       cryptoKey = singleKey.cryptoKey
     }
 
+    if (sigBytes === null) continue
     try {
-      const sigBytes = strictBase64(signature?.sig, 'signature sig')
       result.ok = await crypto.subtle.verify({ name: 'Ed25519' }, cryptoKey, sigBytes, preAuth)
     } catch (e) {
       result.error = e instanceof Error ? e.message : String(e)
@@ -449,6 +476,9 @@ async function main() {
   // a key whose window does not cover observed_at fails the whole envelope,
   // even when another signature verifies: nothing is skipped silently.
   const keysOk = sigResults.every((r) => r.keyError === null)
+  // A signature that is not well-formed (not canonical base64, not a string,
+  // not 64 bytes) fails the whole envelope in the same way.
+  const formatOk = sigResults.every((r) => r.formatError === null)
 
   let canonicalOk = false
   let canonicalError = null
@@ -473,17 +503,19 @@ async function main() {
   console.log(`signatures (${sigResults.length}):`)
   if (sigResults.length === 0) console.log('  (none)')
   for (const r of sigResults) {
-    console.log(`  [${r.index}] keyid=${r.keyid ?? '(none)'} -> ${r.ok ? 'PASS' : 'FAIL'}${r.keyError ?? r.error ? ` (${r.keyError ?? r.error})` : ''}`)
+    const reasons = [r.keyError, r.formatError, r.error].filter((reason) => reason !== null)
+    console.log(`  [${r.index}] keyid=${r.keyid ?? '(none)'} -> ${r.ok ? 'PASS' : 'FAIL'}${reasons.length > 0 ? ` (${reasons.join('; ')})` : ''}`)
     if (r.key !== null) {
       const show = (v) => (v === null ? '(none)' : v)
       console.log(`      key: key_id=${r.key.keyId} valid_from=${r.key.raw.valid_from} valid_until=${show(r.key.raw.valid_until)} revoked_at=${show(r.key.raw.revoked_at)}`)
     }
   }
   console.log(`key check (every signature's key must be ${keyById !== null ? 'in the published set, unrevoked and valid at observed_at' : 'the given public key'}): ${keysOk ? 'PASS' : 'FAIL'}`)
+  console.log(`signature format check (every signature must be the canonical base64 spelling of ${ED25519_SIGNATURE_LENGTH} bytes): ${formatOk ? 'PASS' : 'FAIL'}`)
   console.log(`signature verification (>=1 of ${sigResults.length} must pass): ${anySignatureOk ? 'PASS' : 'FAIL'}`)
   console.log(`canonical-bytes comparison: ${canonicalOk ? 'PASS' : 'FAIL'}${canonicalError ? ` (${canonicalError})` : ''}`)
 
-  const overallOk = keysOk && anySignatureOk && canonicalOk
+  const overallOk = keysOk && formatOk && anySignatureOk && canonicalOk
   console.log(`\nRESULT: ${overallOk ? 'PASS' : 'FAIL'}`)
 
   if (!overallOk) {

@@ -311,6 +311,85 @@ await t('签名缺失（sig 不是字符串）-> 该签名 FAIL 并点名 signat
   }
 })
 
+await t('多个签名里夹一个格式不规范的签名（另一个签名有效）-> 整体 exit 非 0，不因另一个签名通过而放过；--pubkey 与 --keys 两条路径都一样', async () => {
+  const k = await makeKey()
+  const { envelope } = await buildEnvelope({ key: k })
+  const good = envelope.signatures[0]
+  const modes = [{ pubkey: k.spkiBase64 }, { keys: keyDoc(keyEntry(k)) }]
+  for (const opts of modes) assert.ok(passed(runVerify(envelope, opts)), 'the envelope with only the good signature must pass')
+  const malformedSigs = {
+    ...Object.fromEntries(Object.entries(nonCanonicalSpellings(good.sig)).map(([name, sig]) => [`非规范拼写：${name}`, sig])),
+    'sig 缺失': undefined,
+    'sig 为 null': null,
+    'sig 为数字': 7,
+    '规范 base64，但只有 63 字节': Buffer.alloc(63, 1).toString('base64'),
+    '规范 base64，但有 65 字节': Buffer.alloc(65, 1).toString('base64'),
+  }
+  assert.equal(Object.keys(malformedSigs).length, 9)
+  for (const [name, sig] of Object.entries(malformedSigs)) {
+    // The malformed signature names the same, listed key: nothing but its own text is wrong with it.
+    const bad = { keyid: good.keyid, sig }
+    for (const opts of modes) {
+      const r = runVerify({ ...envelope, signatures: [good, bad] }, opts)
+      assertFails(r, /signature sig (must be standard base64|is not canonical standard base64|must decode to 64 bytes)/, name)
+      assert.ok(/signature format check[^\n]*FAIL/.test(r.stdout), `${name}\n${r.stdout}`)
+      // The good signature still verifies; only the malformed one sinks the run.
+      assert.ok(/signature verification[^\n]*PASS/.test(r.stdout), `${name}\n${r.stdout}`)
+      assert.ok(/\[0\][^\n]*-> PASS/.test(r.stdout) && /\[1\][^\n]*-> FAIL/.test(r.stdout), `${name}\n${r.stdout}`)
+    }
+  }
+  // Position does not matter: the malformed signature first, the good one after it.
+  for (const opts of modes) {
+    const r = runVerify({ ...envelope, signatures: [{ keyid: good.keyid, sig: Buffer.alloc(63, 1).toString('base64') }, good] }, opts)
+    assertFails(r, /signature sig must decode to 64 bytes, got 63/)
+    assert.ok(/signature verification[^\n]*PASS/.test(r.stdout), r.stdout)
+  }
+})
+
+await t('多个签名里有一个格式正确但验不过的签名（另一个签名有效）-> 仍 exit 0（DSSE 的「至少一个通过」；只有格式不规范才连累整份信封）', async () => {
+  const k = await makeKey()
+  const { envelope } = await buildEnvelope({ key: k })
+  const good = envelope.signatures[0]
+  const wrong = { keyid: good.keyid, sig: flipOneByte(good.sig) }
+  assert.equal(Buffer.from(wrong.sig, 'base64').length, 64, 'the wrong signature must still be 64 well-formed bytes')
+  for (const opts of [{ pubkey: k.spkiBase64 }, { keys: keyDoc(keyEntry(k)) }]) {
+    for (const signatures of [[good, wrong], [wrong, good]]) {
+      const r = runVerify({ ...envelope, signatures }, opts)
+      assert.ok(passed(r), `expected PASS\n${r.stdout}\n${r.stderr}`)
+      assert.ok(/signature verification[^\n]*PASS/.test(r.stdout), r.stdout)
+      assert.ok(/-> FAIL/.test(r.stdout), `the wrong signature must still be shown as FAIL\n${r.stdout}`)
+    }
+  }
+})
+
+await t('签名格式不规范且 keyid 也不在文档里 -> 两个原因都打印，两项检查都 FAIL', async () => {
+  const k = await makeKey()
+  const { envelope } = await buildEnvelope({ key: k })
+  const bad = { keyid: 'ffffffffffffffff', sig: envelope.signatures[0].sig.replace(/=+$/, '') }
+  const r = runVerify({ ...envelope, signatures: [envelope.signatures[0], bad] }, { keys: keyDoc(keyEntry(k)) })
+  assertFails(r, /keyid ffffffffffffffff is not in the published key set; signature sig is not canonical standard base64/)
+  assert.ok(/key check[^\n]*FAIL/.test(r.stdout) && /signature format check[^\n]*FAIL/.test(r.stdout), r.stdout)
+})
+
+await t('--pubkey 首尾的空白（参数或文件内容）被去掉，内部的空白不允许', async () => {
+  const { envelope, pubkeyBase64 } = await buildEnvelope()
+  for (const arg of [` ${pubkeyBase64}`, `${pubkeyBase64}\n`, `\t${pubkeyBase64} \r\n`]) {
+    assert.ok(passed(runVerify(envelope, { pubkey: arg })), `argument ${JSON.stringify(arg)} must pass`)
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'verify-attestation-test-'))
+  try {
+    const padded = join(dir, 'padded.pub')
+    writeFileSync(padded, `\n  ${pubkeyBase64}\r\n\n`, 'utf8')
+    assert.ok(passed(runVerify(envelope, { pubkey: padded })), 'a key file with whitespace at both ends must pass')
+    const inner = join(dir, 'inner.pub')
+    writeFileSync(inner, `${pubkeyBase64.slice(0, 8)}\n${pubkeyBase64.slice(8)}\n`, 'utf8')
+    assertFails(runVerify(envelope, { pubkey: inner }), /public key is not canonical standard base64|public key must be standard base64/)
+    assertFails(runVerify(envelope, { pubkey: `${pubkeyBase64.slice(0, 8)} ${pubkeyBase64.slice(8)}` }), /public key (must be standard base64|is not canonical standard base64)/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 await t('--pubkey 的 base64 拼写不规范（字节相同）-> 非 0 退出并点名 public key', async () => {
   const { envelope, pubkeyBase64 } = await buildEnvelope()
   assert.ok(passed(runVerify(envelope, { pubkey: pubkeyBase64 })), 'the canonical spelling must still pass')

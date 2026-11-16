@@ -58,6 +58,14 @@ does not depend on your line endings, your platform or any build step.
 This works only when `suite_commit` is a commit in this repository.
 A payload that carries a `suite_commit` but was signed before the probe began naming commits of this repository names a commit of the private monorepo, which is not available here.
 
+The network address policy is identified by `suite_commit`, not by `suite_digest`.
+`suite_digest` covers `packages/checks` only. The address classification in
+`packages/ssrf-guard`, one of the rules by which the prober refuses network addresses,
+is outside that scope, as are the other public packages besides `packages/checks`.
+Those packages are identified by the signed `suite_commit`: when it is a commit in
+github.com/mcpcheckup/checks, the policy as it stood at that commit can be read with
+`git show <suite_commit>:packages/ssrf-guard/src/ip-policy.ts`.
+
 ## Verifying a signed attestation
 
 The published key document is available from two places:
@@ -82,7 +90,9 @@ This needs Node.js 22.18 or later on the 22 line, or Node.js 24 or later; there 
 `keys.json` is the published key document. The verifier makes no network request itself.
 For every signature it checks that the `keyid` is in the document, that the key is not
 revoked, and that the payload's `observed_at` lies within the key's `valid_from` and
-`valid_until` (both ends inclusive). It also rejects a `payloadType` it does not know.
+`valid_until` (both ends inclusive). It rejects the envelope if any signature is not the
+canonical base64 spelling of 64 bytes, even when another signature verifies. It also
+rejects a `payloadType` it does not know.
 `--pubkey <key>` checks against one Ed25519 public key, SPKI-encoded and base64 (or a
 path to a file containing it), and requires every `keyid` to equal the first 16 hex
 characters of sha256 over that key's SPKI bytes.
