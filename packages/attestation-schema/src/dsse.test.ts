@@ -6,6 +6,8 @@ import {
   signDsseEnvelope,
   verifyDsseEnvelope,
   verifyDsseSignature,
+  type DsseEnvelope,
+  type DsseSignature,
 } from './dsse.ts'
 
 let pass = 0, fail = 0
@@ -137,22 +139,28 @@ await t('用另一把公钥验签 → 失败（反例）', async () => {
   assert.equal(ok, false)
 })
 
-await t('多签名 envelope：只要有一个签名对得上给定公钥就算验签通过', async () => {
+async function sigOver(payloadType: string, body: Uint8Array<ArrayBuffer>, privateKey: CryptoKey): Promise<Uint8Array<ArrayBuffer>> {
+  return new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, privateKey, pae(payloadType, body)))
+}
+
+function flipOneByte(sig: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(sig)
+  out[0] = out[0]! ^ 0xff
+  return out
+}
+
+await t('多签名 envelope：只要有一个签名对得上给定公钥就算验签通过（对不上的那个只让它自己失败）', async () => {
   const signerA = await generateKeyPair()
   const signerB = await generateKeyPair()
   const body = new TextEncoder().encode('multi-sig payload')
   const payloadType = 't'
 
-  const preAuth = pae(payloadType, body)
-  const sigA = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, signerA.privateKey, preAuth))
-  const sigB = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, signerB.privateKey, preAuth))
-
   const envelope = {
     payloadType,
     payload: base64Encode(body),
     signatures: [
-      { keyid: 'a', sig: base64Encode(sigA) },
-      { keyid: 'b', sig: base64Encode(sigB) },
+      { keyid: 'a', sig: base64Encode(await sigOver(payloadType, body, signerA.privateKey)) },
+      { keyid: 'b', sig: base64Encode(await sigOver(payloadType, body, signerB.privateKey)) },
     ],
   }
 
@@ -162,6 +170,130 @@ await t('多签名 envelope：只要有一个签名对得上给定公钥就算�
   assert.equal(await verifyDsseEnvelope(envelope, outsider.publicKey), false)
 })
 
+await t('一个签名验得过、另一个是别的 key 签的（合法 base64、64 字节、但对不上给定公钥）→ true，两种顺序都一样（与命令行一致：格式正确但验不过的签名只让它自己失败）', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const other = await generateKeyPair()
+  const body = new TextEncoder().encode('one good, one from another key')
+  const envelope = await signDsseEnvelope('t', body, privateKey)
+  const good = envelope.signatures[0]!
+  const foreign = { sig: base64Encode(await sigOver('t', body, other.privateKey)) }
+  assert.equal(base64Decode(foreign.sig).length, 64, '另一个签名必须是格式完全正常的 64 字节，只是对不上 publicKey')
+  assert.equal(await verifyDsseSignature('t', body, base64Decode(foreign.sig), publicKey), false, '前提：它单独验确实不过')
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [foreign] }, publicKey), false, '前提：只有它一个时不通过')
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [good, foreign] }, publicKey), true)
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [foreign, good] }, publicKey), true)
+})
+
+await t('一个签名验得过、另一个是同一把 key 的签名被翻转一个字节（64 字节、不过验证）→ true，两种顺序都一样；只剩翻转的那个则 false', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const body = new TextEncoder().encode('one good, one flipped byte')
+  const envelope = await signDsseEnvelope('t', body, privateKey)
+  const good = envelope.signatures[0]!
+  const flipped = { sig: base64Encode(flipOneByte(base64Decode(good.sig))) }
+  assert.equal(base64Decode(flipped.sig).length, 64)
+  assert.equal(await verifyDsseSignature('t', body, base64Decode(flipped.sig), publicKey), false, '前提：它单独验确实不过')
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [good, flipped] }, publicKey), true)
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [flipped, good] }, publicKey), true)
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [flipped] }, publicKey), false)
+})
+
+const B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+await t('一个签名验得过、另一个是规范 base64 但只有 63 或 65 字节 → false，两种顺序都一样；单独一个也 false（命令行同样把长度不是 64 字节的签名算格式不规范）', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const envelope = await signDsseEnvelope('t', new TextEncoder().encode('one good, one wrong length'), privateKey)
+  const good = envelope.signatures[0]!
+  assert.equal(await verifyDsseEnvelope(envelope, publicKey), true, '前提：只有真签名时通过')
+  for (const n of [63, 65]) {
+    const odd = { sig: base64Encode(new Uint8Array(n).fill(1)) }
+    assert.equal(base64Decode(odd.sig).length, n)
+    assert.equal(base64Encode(base64Decode(odd.sig)), odd.sig, '前提：它是规范拼写，唯一的毛病是长度')
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [good, odd] }, publicKey), false, `${n} 字节在后`)
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [odd, good] }, publicKey), false, `${n} 字节在前`)
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [odd] }, publicKey), false, `${n} 字节单独`)
+  }
+})
+
+await t('一个签名验得过、另一个是同一个 64 字节值的非规范 base64 拼写（缺填充 / 最后一个字符的未用低位被置位 / 中间夹换行）→ false，两种顺序都一样；这个拼写单独一个也 false', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const envelope = await signDsseEnvelope('t', new TextEncoder().encode('one good, one non-canonical spelling'), privateKey)
+  const good = envelope.signatures[0]!
+  assert.ok(good.sig.endsWith('=='), '64 字节的规范 base64 是 86 个字符加 "=="')
+  const body = good.sig.replace(/=+$/, '')
+  const spellings: Record<string, string> = {
+    缺填充: body,
+    最后一个字符的未用低位被置位: body.slice(0, -1) + B64_ALPHABET[B64_ALPHABET.indexOf(body.slice(-1)) ^ 1]! + '==',
+    中间夹换行: body.slice(0, 4) + String.fromCharCode(10) + good.sig.slice(4),
+  }
+  const goodBytes = base64Decode(good.sig)
+  for (const [name, sig] of Object.entries(spellings)) {
+    assert.notEqual(sig, good.sig, name)
+    assert.deepEqual(base64Decode(sig), goodBytes, `${name}：前提——宽松解码器仍读出同样的 64 字节`)
+    assert.equal(await verifyDsseSignature('t', new TextEncoder().encode('one good, one non-canonical spelling'), base64Decode(sig), publicKey), true, `${name}：前提——这些字节本身验得过`)
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [good, { sig }] }, publicKey), false, `${name} 在后`)
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [{ sig }, good] }, publicKey), false, `${name} 在前`)
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [{ sig }] }, publicKey), false, `${name} 单独`)
+  }
+})
+
+await t('sig 不是字符串（缺失 / null / 数字），或整个签名条目是 null → false，不抛异常；真签名在前在后都一样', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const envelope = await signDsseEnvelope('t', new TextEncoder().encode('one good, one not a string'), privateKey)
+  const good = envelope.signatures[0]!
+  const entries: unknown[] = [{}, { sig: null }, { sig: 7 }, null]
+  for (const entry of entries) {
+    const bad = entry as DsseSignature
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [good, bad] }, publicKey), false, `${JSON.stringify(entry)} 在后`)
+    assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [bad, good] }, publicKey), false, `${JSON.stringify(entry)} 在前`)
+  }
+})
+
+await t('envelope 形状不对（signatures 不是数组；payloadType 或 payload 不是字符串，含 toString 能还原出真值的对象；整个 envelope 不是对象）→ 一律 false，不抛异常', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const envelope = await signDsseEnvelope('t', new TextEncoder().encode('x'), privateKey)
+  assert.equal(await verifyDsseEnvelope(envelope, publicKey), true, '前提：形状正确时通过')
+  const text = (v: string) => ({ toString: () => v })
+  const bad: Record<string, unknown> = {
+    'signatures: undefined': { ...envelope, signatures: undefined },
+    'signatures: null': { ...envelope, signatures: null },
+    'signatures: 7': { ...envelope, signatures: 7 },
+    'signatures: {}': { ...envelope, signatures: {} },
+    "signatures: 'str'": { ...envelope, signatures: 'str' },
+    'payloadType: undefined': { ...envelope, payloadType: undefined },
+    'payloadType: null': { ...envelope, payloadType: null },
+    'payloadType: 7': { ...envelope, payloadType: 7 },
+    'payloadType: Symbol': { ...envelope, payloadType: Symbol('t') },
+    'payloadType: {}': { ...envelope, payloadType: {} },
+    'payloadType: toString 还原出真值': { ...envelope, payloadType: text('t') },
+    'payload: undefined': { ...envelope, payload: undefined },
+    'payload: null': { ...envelope, payload: null },
+    'payload: 7': { ...envelope, payload: 7 },
+    'payload: Symbol': { ...envelope, payload: Symbol('p') },
+    'payload: {}': { ...envelope, payload: {} },
+    'payload: toString 还原出真值': { ...envelope, payload: text(envelope.payload) },
+    'envelope: null': null,
+    'envelope: undefined': undefined,
+    "envelope: 'str'": 'str',
+    'envelope: 7': 7,
+  }
+  const wrong: string[] = []
+  for (const [name, e] of Object.entries(bad)) {
+    try {
+      const r = await verifyDsseEnvelope(e as DsseEnvelope, publicKey)
+      if (r !== false) wrong.push(`${name} -> ${String(r)}`)
+    } catch (err) {
+      wrong.push(`${name} -> rejected with ${(err as Error).name}: ${(err as Error).message}`)
+    }
+  }
+  assert.deepEqual(wrong, [])
+})
+
+await t('signatures 为空数组 → false（没有任何签名就没有任何东西被验过）', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const envelope = await signDsseEnvelope('t', new TextEncoder().encode('x'), privateKey)
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [] }, publicKey), false)
+})
+
 await t('payload 不是合法 base64 → verifyDsseEnvelope 解析为 false，不是抛异常（反例：保住 Promise<boolean> 的契约）', async () => {
   const { publicKey } = await generateKeyPair()
   const malformed = { payloadType: 't', payload: 'not valid base64!!!', signatures: [{ sig: 'AAAA' }] }
@@ -169,16 +301,21 @@ await t('payload 不是合法 base64 → verifyDsseEnvelope 解析为 false，�
   assert.equal(ok, false)
 })
 
-await t('某个签名的 sig 不是合法 base64 → 不影响验证同一 envelope 里其它合法签名（反例：一条垃圾数据不该拖累别的签名）', async () => {
+await t('某个签名的 sig 不是合法 base64（排在真签名之前）→ 整份 envelope 为 false，不抛异常（反例：一条垃圾数据不能被跳过）', async () => {
   const { privateKey, publicKey } = await generateKeyPair()
   const body = new TextEncoder().encode('multi-sig with one corrupt entry')
   const envelope = await signDsseEnvelope('t', body, privateKey)
-  const withGarbageFirst = {
-    ...envelope,
-    signatures: [{ sig: 'not valid base64!!!' }, ...envelope.signatures],
-  }
-  const ok = await verifyDsseEnvelope(withGarbageFirst, publicKey)
-  assert.equal(ok, true, '第一个签名是垃圾数据，但第二个是真签名，整体应该验签通过')
+  assert.equal(await verifyDsseEnvelope(envelope, publicKey), true, '前提：只有真签名时通过')
+  const garbage = { sig: 'not valid base64!!!' }
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [garbage, ...envelope.signatures] }, publicKey), false)
+})
+
+await t('某个签名的 sig 不是合法 base64（排在真签名之后）→ 整份 envelope 为 false：真签名先验过也不能提前放行', async () => {
+  const { privateKey, publicKey } = await generateKeyPair()
+  const body = new TextEncoder().encode('multi-sig with one corrupt entry, last')
+  const envelope = await signDsseEnvelope('t', body, privateKey)
+  const garbage = { sig: 'not valid base64!!!' }
+  assert.equal(await verifyDsseEnvelope({ ...envelope, signatures: [...envelope.signatures, garbage] }, publicKey), false)
 })
 
 await t('verifyDsseSignature：底层原子操作，直接对 (type, body, signature, key) 验签', async () => {

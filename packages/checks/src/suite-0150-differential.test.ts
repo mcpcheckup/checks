@@ -115,7 +115,8 @@ const CLOSURE_0140_BLOBS: Record<string, string> = {
   'packages/attestation-schema/schema/attestation.schema.json': 'd8d2d203b834a554ffbdc9e2dd3bbe8e968515d6',
   'packages/attestation-schema/src/attestation.ts': '1dff1543b9d4890f17221ac5825dfe4fb9ea50b6',
   'packages/attestation-schema/src/credential-shapes.ts': '4e1957c82d8797c7db68371a9770fac348a1fe8c',
-  'packages/attestation-schema/src/dsse.ts': 'abc02f6c5e793b80c06bd825f2da79c72dfb3c08',
+  // Re-pinned: verifyDsseEnvelope now rejects an envelope with a malformed signature; the frozen suites never reach it (they use only assertUnverifiedHasReason, credentialShapes and the Assertion / AuthObservation types)
+  'packages/attestation-schema/src/dsse.ts': 'eabc711eceea254200bf071d6b339a9fb898b527',
   'packages/attestation-schema/src/generated-types.ts': '39b3eac3a7f620e5cd9bd49b47e66067c68f5b4c', // re-pinned with the schema line above (TODO 1208)
   'packages/attestation-schema/src/index.ts': 'dbe2f24752372c7b49b622474665080aba39754d',
   'packages/attestation-schema/src/invariants.ts': '78c4296f187921cf90b19686fe95fbfc61abba8e',

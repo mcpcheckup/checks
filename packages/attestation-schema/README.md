@@ -401,6 +401,8 @@ const validate = ajv.compile(schema)
 if (!validate(payload)) throw new Error('payload does not match schema: ' + JSON.stringify(validate.errors))
 ```
 
+`verifyDsseEnvelope` checks only the signatures themselves: every signature must be well-formed, and at least one must verify under the key you pass it. The `keyid` and the key's `revoked_at`, `valid_from` and `valid_until` are checked only by the command-line verifier in `packages/verifier`, not by this function.
+
 ### Verifying an archived-version envelope
 
 Three payload shapes predate the current one, and envelopes carrying them are
