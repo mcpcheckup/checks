@@ -371,6 +371,15 @@ await t('签名格式不规范且 keyid 也不在文档里 -> 两个原因都打
   assert.ok(/key check[^\n]*FAIL/.test(r.stdout) && /signature format check[^\n]*FAIL/.test(r.stdout), r.stdout)
 })
 
+await t('--pubkey：签名格式不规范且 keyid 也不等于给定公钥的 keyid -> 两个原因都打印，两项检查都 FAIL', async () => {
+  const k = await makeKey()
+  const { envelope } = await buildEnvelope({ key: k })
+  const bad = { keyid: 'ffffffffffffffff', sig: envelope.signatures[0].sig.replace(/=+$/, '') }
+  const r = runVerify({ ...envelope, signatures: [envelope.signatures[0], bad] }, { pubkey: k.spkiBase64 })
+  assertFails(r, new RegExp(`keyid ffffffffffffffff does not match the given public key \\(its keyid is ${k.keyId}\\); signature sig is not canonical standard base64`))
+  assert.ok(/key check[^\n]*FAIL/.test(r.stdout) && /signature format check[^\n]*FAIL/.test(r.stdout), r.stdout)
+})
+
 await t('--pubkey 首尾的空白（参数或文件内容）被去掉，内部的空白不允许', async () => {
   const { envelope, pubkeyBase64 } = await buildEnvelope()
   for (const arg of [` ${pubkeyBase64}`, `${pubkeyBase64}\n`, `\t${pubkeyBase64} \r\n`]) {
