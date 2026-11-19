@@ -872,5 +872,223 @@ await t('POST 被跨主机重定向截断的路径：onAudit 依然收到一条 
   assert.equal(captured!.redirectCrossHostObserved, true)
 })
 
+console.log('\nguardedFetch: a followed redirect hop\'s body is cancelled, never left open')
+
+/** A 3xx whose body records whether it was cancelled. */
+function trackedRedirect(location: string) {
+  const state = { cancelled: false }
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new TextEncoder().encode('moved')) },
+    cancel() { state.cancelled = true },
+  })
+  return { state, response: () => new Response(body, { status: 302, headers: { location } }) }
+}
+
+await t('GET follows a 302: that hop\'s body is cancelled, and the next hop is still fetched and parsed', async () => {
+  const hop = trackedRedirect('https://example.com/b')
+  const dns = makeValidatingResolver({ 'example.com': [publicV4('93.184.216.34')] })
+  const net = makeFetch({
+    'https://example.com/a': hop.response,
+    'https://example.com/b': () => new Response('final', { status: 200 }),
+  })
+  const r = await guardedFetch('https://example.com/a', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller', parseResponse: textParser,
+    fetchImpl: net.impl, resolveAndValidateHostImpl: dns.impl, resolveHostImpl: dns.impl,
+  })
+  assert.deepEqual(r.result, { status: 200, body: 'final' })
+  assert.deepEqual(net.calls.map((c) => c.url), ['https://example.com/a', 'https://example.com/b'])
+  assert.equal(hop.state.cancelled, true, 'the followed hop\'s body must be cancelled')
+})
+
+await t('GET 302 with maxRedirects 0: MAX_REDIRECTS is thrown, and that hop\'s body is cancelled first', async () => {
+  const hop = trackedRedirect('https://example.com/b')
+  const dns = makeValidatingResolver({ 'example.com': [publicV4('93.184.216.34')] })
+  const net = makeFetch({ 'https://example.com/a': hop.response })
+  await assert.rejects(
+    () => guardedFetch('https://example.com/a', { ...DEFAULT_PROBE_BUDGET, maxRedirects: 0 }, ALLOW, {
+      callerIdentifier: 'test-caller', parseResponse: textParser,
+      fetchImpl: net.impl, resolveAndValidateHostImpl: dns.impl, resolveHostImpl: dns.impl,
+    }),
+    (e: unknown) => e instanceof BudgetExceeded && e.code === 'MAX_REDIRECTS',
+  )
+  assert.equal(net.calls.length, 1)
+  assert.equal(hop.state.cancelled, true, 'the hop that hit the redirect budget must have its body cancelled')
+})
+
+console.log('\nguardedFetch: an onAudit that throws is called once, never changes the outcome, and leaves one warn line')
+
+const WARN_PREFIX = 'ssrf-guard onAudit threw'
+const MARKER = 'audit-marker-7f3c'
+
+/** Runs `fn` with console.warn captured, then always restores it. */
+async function captureWarn<R>(fn: () => Promise<R>): Promise<{ value: R, warns: string[] }> {
+  const saved = console.warn
+  const warns: string[] = []
+  console.warn = (...a: unknown[]) => { warns.push(a.map(String).join(' ')) }
+  try { return { value: await fn(), warns } } finally { console.warn = saved }
+}
+
+/** One audited call to a public host, with the given onAudit. */
+function auditedCall(onAudit: (r: import('./audit.ts').ProbeAuditRecord) => void) {
+  const dns = makeValidatingResolver({ 'audit-host.example.com': [publicV4('93.184.216.34')] })
+  const net = makeFetch({ 'https://audit-host.example.com/mcp': () => new Response('ok', { status: 200 }) })
+  return guardedFetch('https://audit-host.example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller', parseResponse: textParser,
+    fetchImpl: net.impl, resolveAndValidateHostImpl: dns.impl, resolveHostImpl: dns.impl,
+    onAudit,
+  })
+}
+
+await t('success path, onAudit throws: the result is still returned, onAudit ran once, one warn line with only the error\'s name', async () => {
+  let calls = 0
+  const { value, warns } = await captureWarn(() => auditedCall(() => {
+    calls++
+    throw new TypeError(`${MARKER} https://audit-host.example.com/mcp audit-host.example.com`)
+  }))
+  assert.deepEqual(value.result, { status: 200, body: 'ok' })
+  assert.equal(value.status, 200)
+  assert.equal(calls, 1)
+  assert.equal(warns.length, 1, JSON.stringify(warns))
+  assert.ok(warns[0]!.startsWith(WARN_PREFIX), warns[0])
+  assert.equal(warns[0], `${WARN_PREFIX}: TypeError`)
+  for (const leaked of [MARKER, 'https://audit-host.example.com/mcp', 'audit-host.example.com']) {
+    assert.ok(!warns[0]!.includes(leaked), `the warn line must not carry ${leaked}`)
+  }
+})
+
+await t('the warn line never carries the thrown value itself: a thrown string, and an Error whose name is not a native error name', async () => {
+  const thrown: unknown[] = [`${MARKER} audit-host.example.com`, Object.assign(new Error(MARKER), { name: `${MARKER} audit-host.example.com` })]
+  const lines: string[] = []
+  for (const v of thrown) {
+    const { warns } = await captureWarn(() => auditedCall(() => { throw v }))
+    lines.push(...warns)
+  }
+  assert.deepEqual(lines, [`${WARN_PREFIX}: non-Error string`, `${WARN_PREFIX}: Error`])
+})
+
+await t('redirect returned as the result (POST 302), onAudit throws: still returned, onAudit ran once, one warn line', async () => {
+  const dns = makeValidatingResolver({ 'audit-host.example.com': [publicV4('93.184.216.34')] })
+  const net = makeFetch({ 'https://audit-host.example.com/mcp': () => new Response('moved', { status: 302, headers: { location: 'https://other.example.com/x' } }) })
+  let calls = 0
+  const { value, warns } = await captureWarn(() => guardedFetch('https://audit-host.example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller', parseResponse: textParser, method: 'POST',
+    fetchImpl: net.impl, resolveAndValidateHostImpl: dns.impl, resolveHostImpl: dns.impl,
+    onAudit: () => { calls++; throw new RangeError(MARKER) },
+  }))
+  assert.equal(value.status, 302)
+  assert.equal(calls, 1)
+  assert.deepEqual(warns, [`${WARN_PREFIX}: RangeError`])
+})
+
+await t('blocked call (loopback IP literal), onAudit throws: the original SsrfBlocked is rethrown, onAudit ran once, one warn line', async () => {
+  let calls = 0
+  let outcome: string | undefined
+  const { value: error, warns } = await captureWarn(async () => {
+    try {
+      await guardedFetch('https://127.0.0.1/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+        callerIdentifier: 'test-caller', parseResponse: textParser,
+        fetchImpl: async () => { throw new Error('test bug: a blocked target must never be fetched') },
+        onAudit: (r) => { calls++; outcome = r.outcome; throw new Error(MARKER) },
+      })
+    } catch (e) { return e }
+    return undefined
+  })
+  assert.ok(error instanceof SsrfBlocked, `expected the original SsrfBlocked, got ${String(error)}`)
+  assert.equal(error.code, 'LOOPBACK')
+  assert.ok(!error.message.includes(MARKER))
+  assert.equal(calls, 1)
+  assert.equal(outcome, 'blocked')
+  assert.deepEqual(warns, [`${WARN_PREFIX}: Error`])
+})
+
+const LEAK_URL = 'https://leak.example.com/secret-path'
+/** An Error whose `name` getter throws (carrying the URL in its own message). */
+const nameGetterThrows = () => Object.defineProperty(new Error(MARKER), 'name', { get() { throw new Error(`${MARKER} ${LEAK_URL}`) } })
+/** An Error-backed Proxy whose getPrototypeOf trap throws, so even `instanceof` throws. */
+const prototypeTrapThrows = () => new Proxy(new Error(MARKER), { getPrototypeOf() { throw new Error(`${MARKER} ${LEAK_URL}`) } })
+
+await t('success path, the thrown value\'s name getter (or a Proxy trap) throws: still returned, onAudit ran once, one `Error` line', async () => {
+  for (const make of [nameGetterThrows, prototypeTrapThrows]) {
+    let calls = 0
+    const { value, warns } = await captureWarn(() => auditedCall(() => { calls++; throw make() }))
+    assert.deepEqual(value.result, { status: 200, body: 'ok' })
+    assert.equal(calls, 1)
+    assert.deepEqual(warns, [`${WARN_PREFIX}: Error`])
+  }
+})
+
+await t('blocked call, the thrown value\'s name getter throws: the original SsrfBlocked LOOPBACK is rethrown, onAudit ran once, one `Error` line', async () => {
+  let calls = 0
+  const { value: error, warns } = await captureWarn(() => guardedFetch('https://127.0.0.1/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller', parseResponse: textParser,
+    onAudit: () => { calls++; throw nameGetterThrows() },
+  }).then(() => undefined, (e: unknown) => e))
+  assert.ok(error instanceof SsrfBlocked, `expected the original SsrfBlocked, got ${String(error)}`)
+  assert.equal(error.code, 'LOOPBACK')
+  assert.equal(calls, 1)
+  assert.deepEqual(warns, [`${WARN_PREFIX}: Error`])
+})
+
+await t('a name getter that answers differently on each read: the line prints the value it checked, never a later URL', async () => {
+  let reads = 0
+  const shifty = Object.defineProperty(new Error(MARKER), 'name', { get() { reads++; return reads <= 2 ? 'TypeError' : LEAK_URL } })
+  const { value, warns } = await captureWarn(() => auditedCall(() => { throw shifty }))
+  assert.equal(value.status, 200)
+  assert.equal(warns.length, 1, JSON.stringify(warns))
+  for (const leaked of [LEAK_URL, 'leak.example.com']) assert.ok(!warns[0]!.includes(leaked), `the warn line must not carry ${leaked}`)
+  assert.equal(warns[0], `${WARN_PREFIX}: TypeError`)
+})
+
+await t('only a native ECMAScript error name is printed: `localhost` and `SsrfBlocked` give `Error`, a TypeError stays `TypeError`', async () => {
+  const thrown = [
+    Object.assign(new Error(MARKER), { name: 'localhost' }),
+    Object.assign(new Error(MARKER), { name: 'SsrfBlocked' }),
+    new SsrfBlocked('LOOPBACK', MARKER),
+    new TypeError(MARKER),
+  ]
+  const lines: string[] = []
+  for (const v of thrown) {
+    const { value, warns } = await captureWarn(() => auditedCall(() => { throw v }))
+    assert.equal(value.status, 200)
+    lines.push(...warns)
+  }
+  assert.deepEqual(lines, [`${WARN_PREFIX}: Error`, `${WARN_PREFIX}: Error`, `${WARN_PREFIX}: Error`, `${WARN_PREFIX}: TypeError`])
+})
+
+await t('console.warn itself throws: a success still returns and a blocked call still rethrows its own SsrfBlocked, onAudit once each', async () => {
+  const saved = console.warn
+  let warnCalls = 0
+  console.warn = () => { warnCalls++; throw new Error(`${MARKER} console broke`) }
+  try {
+    let calls = 0
+    const ok = await auditedCall(() => { calls++; throw new TypeError(MARKER) })
+    assert.deepEqual(ok.result, { status: 200, body: 'ok' })
+    assert.equal(calls, 1)
+    let blockedCalls = 0
+    const error = await guardedFetch('https://127.0.0.1/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+      callerIdentifier: 'test-caller', parseResponse: textParser,
+      onAudit: () => { blockedCalls++; throw new TypeError(MARKER) },
+    }).then(() => undefined, (e: unknown) => e)
+    assert.ok(error instanceof SsrfBlocked, `expected the original SsrfBlocked, got ${String(error)}`)
+    assert.equal(error.code, 'LOOPBACK')
+    assert.equal(blockedCalls, 1)
+    assert.equal(warnCalls, 2)
+  } finally {
+    console.warn = saved
+  }
+})
+
+await t('sanity: an onAudit that does not throw leaves no warn line, success or failure', async () => {
+  let calls = 0
+  const ok = await captureWarn(() => auditedCall(() => { calls++ }))
+  const blocked = await captureWarn(() => guardedFetch('https://127.0.0.1/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller', parseResponse: textParser, onAudit: () => { calls++ },
+  }).catch((e: unknown) => e))
+  assert.equal(ok.value.status, 200)
+  assert.ok(blocked.value instanceof SsrfBlocked)
+  assert.equal(calls, 2)
+  assert.deepEqual([...ok.warns, ...blocked.warns], [])
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

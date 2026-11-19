@@ -301,7 +301,7 @@ const CLOSURE_071_BLOBS: Record<string, string> = {
   'packages/ssrf-guard/src/budget.ts': 'c920ff71d6e0477fd22ef79c0077973227cbb74f',
   'packages/ssrf-guard/src/dns-wire.ts': '04357f1c08ee2d649a382d2640580903323af222',
   'packages/ssrf-guard/src/errors.ts': '958b4f9b63d9a5901b2097a2d564ef2afff79e57', // T85 re-pin, round 2 (hop field) — git rev-parse 962fdc6:packages/ssrf-guard/src/errors.ts
-  'packages/ssrf-guard/src/guarded-fetch.ts': '5349d316e3ac68d93f2ee5f1c204cf449a7f4d4e', // TODO 1902 (caller signal; see above) — git hash-object packages/ssrf-guard/src/guarded-fetch.ts
+  'packages/ssrf-guard/src/guarded-fetch.ts': '18f41b8c5586199c05c207b77aa8a71f02262a12', // TODO 594/598 (a followed redirect hop's body is discarded; onAudit's own exception is swallowed): re-pinned to git hash-object packages/ssrf-guard/src/guarded-fetch.ts; the frozen copy reaches ssrf-guard only for its error classes and the ProbeBudget type, and never calls guardedFetch, createSafeResponseHandle or onAudit
   'packages/ssrf-guard/src/index.ts': '9d301879dc35ac0a85a2cd5005d70f2e75406755', // T85 re-pin: git rev-parse 3696518:packages/ssrf-guard/src/index.ts
   'packages/ssrf-guard/src/ip-policy.ts': '4de0a34679f66825645d514469c075309143f97f', // IPv6 allow-list change and ISATAP check (see above) — git hash-object packages/ssrf-guard/src/ip-policy.ts
   'packages/ssrf-guard/src/rate-limit.ts': '20f0e9e542de6708411456c0a46d7fdad77e0773',

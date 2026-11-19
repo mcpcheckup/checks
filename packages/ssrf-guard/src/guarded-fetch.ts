@@ -176,6 +176,46 @@ function discardBody(response: Response): void {
   }
 }
 
+/** The fixed start of the one line logged when the caller's onAudit throws. */
+const ON_AUDIT_THREW_PREFIX = 'ssrf-guard onAudit threw'
+
+/** The only names that line ever prints: the native ECMAScript error constructors.
+ *  Fixed, so a name can never carry a host, a URL or any other caller-chosen text. */
+const NATIVE_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'EvalError', 'URIError', 'AggregateError',
+])
+
+/** What that line says about the thrown value: for an Error, its name when that name is
+ *  in NATIVE_ERROR_NAMES, else 'Error'; for anything else, `non-Error <typeof>`. Never
+ *  its message. Total: `name` is read once, and the value checked is the value printed;
+ *  a throwing getter or Proxy trap gives the constant 'Error' instead of escaping. */
+function thrownName(value: unknown): string {
+  try {
+    if (!(value instanceof Error)) return `non-Error ${typeof value}`
+    const name: unknown = value.name
+    return typeof name === 'string' && NATIVE_ERROR_NAMES.has(name) ? name : 'Error'
+  } catch {
+    return 'Error'
+  }
+}
+
+/** Hands the record to the caller's onAudit, exactly once per call. Only the callback's
+ *  own exception is swallowed. The warn line cannot throw either: thrownName is total,
+ *  and an exception from console.warn itself is dropped (the line is then lost). So a
+ *  throwing callback can neither fail a call that succeeded nor replace the error a
+ *  failed call is about to throw; the one warn line keeps it from going unseen. */
+function deliverAudit(onAudit: ((record: ProbeAuditRecord) => void) | undefined, record: ProbeAuditRecord): void {
+  try {
+    onAudit?.(record)
+  } catch (error) {
+    try {
+      console.warn(`${ON_AUDIT_THREW_PREFIX}: ${thrownName(error)}`)
+    } catch {
+      // Dropped on purpose — see above.
+    }
+  }
+}
+
 function classifyOutcome(error: unknown): ProbeOutcome {
   if (error instanceof SsrfBlocked) return 'blocked'
   if (error instanceof BudgetExceeded) return 'budget_exceeded'
@@ -346,7 +386,7 @@ export async function guardedFetch<T>(
         record.blockedReason = null
         record.dnsAnswerChangedDuringProbe = dnsAnswerChanged
         record.redirectCrossHostObserved = redirectCrossHostObserved
-        opts.onAudit?.(record)
+        deliverAudit(opts.onAudit, record)
 
         return {
           result: parsed,
@@ -359,6 +399,9 @@ export async function guardedFetch<T>(
       }
 
       if (isRedirect) {
+        // A followed hop's body is never read, whether the next hop is fetched or the
+        // redirect budget ends the call here: let it go first. Only the headers are used.
+        discardBody(response)
         if (redirectsFollowed >= budget.maxRedirects) {
           throw new BudgetExceeded('MAX_REDIRECTS', `probe exceeded its ${budget.maxRedirects}-redirect budget`)
         }
@@ -384,7 +427,7 @@ export async function guardedFetch<T>(
       record.blockedReason = null
       record.dnsAnswerChangedDuringProbe = dnsAnswerChanged
       record.redirectCrossHostObserved = redirectCrossHostObserved
-      opts.onAudit?.(record)
+      deliverAudit(opts.onAudit, record)
 
       return {
         result: parsed,
@@ -403,7 +446,7 @@ export async function guardedFetch<T>(
     record.blockedReason = error instanceof Error ? error.message : String(error)
     record.dnsAnswerChangedDuringProbe = dnsAnswerChanged
     record.redirectCrossHostObserved = redirectCrossHostObserved
-    opts.onAudit?.(record)
+    deliverAudit(opts.onAudit, record)
     // Which request of this call failed, as a field: a caller never has to read the message.
     if ((error instanceof SsrfGuardError || error instanceof UpstreamFetchFailed) && error.hop === undefined) error.hop = redirectsFollowed
     throw error
