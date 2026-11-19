@@ -106,6 +106,18 @@ export function createSafeResponseHandle(response: Response, maxBodyBytes: numbe
       return b.buffer as ArrayBuffer
     },
     text: async () => new TextDecoder().decode(await readBytes()),
-    json: async () => JSON.parse(new TextDecoder().decode(await readBytes())),
+    json: async () => {
+      // Read outside the try: readBytes's own errors (UpstreamFetchFailed, BudgetExceeded)
+      // come out unchanged.
+      const text = new TextDecoder().decode(await readBytes())
+      try {
+        return JSON.parse(text) as unknown
+      } catch (error) {
+        // JSON.parse of a string throws SyntaxError, and the engine's text for it quotes
+        // the body: replaced by fixed text, with no cause. Anything else is rethrown as is.
+        if (error instanceof SyntaxError) throw new SyntaxError('the response body is not valid JSON')
+        throw error
+      }
+    },
   }
 }

@@ -16,7 +16,9 @@ export function encodeQuery(hostname: string, qtype: number, id: number): Uint8A
   const encoder = new TextEncoder()
   const labelBytes = labels.map((l) => encoder.encode(l))
   for (const lb of labelBytes) {
-    if (lb.length > 63) throw new Error(`DNS label too long (max 63 bytes): ${JSON.stringify(hostname)}`)
+    // Fixed text, no host name: on a followed redirect the name is the target's
+    // Location, and this plain Error is not SsrfBlocked (see errors.ts).
+    if (lb.length > 63) throw new Error('DNS label too long (max 63 bytes)')
   }
 
   const qnameLength = labelBytes.reduce((sum, lb) => sum + 1 + lb.length, 0) + 1 // + root terminator

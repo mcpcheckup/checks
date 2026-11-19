@@ -73,7 +73,7 @@ await t('fetch() rejecting (workerd "Network connection lost.") -> UpstreamFetch
 
 await t('the message is fixed: the runtime error\'s own text is only on cause, never in message', async () => {
   const { error } = await run(() => Promise.reject(new Error('internal error; reference = abc123')))
-  assert.equal((error as Error).message, 'the request to the target failed before a complete response arrived')
+  assert.equal((error as Error).message, 'the request to the target failed, or the target\'s response could not be read or followed')
   assert.equal((error as Error).name, 'UpstreamFetchFailed')
 })
 
@@ -209,7 +209,7 @@ await t('a redirect Location that does not parse -> UpstreamFetchFailed (fixed m
   assert.ok(error instanceof UpstreamFetchFailed, String(error))
   assert.ok(!(error instanceof SsrfGuardError))
   assert.ok(error.cause instanceof TypeError, String(error.cause))
-  assert.equal(error.message, 'the request to the target failed before a complete response arrived')
+  assert.equal(error.message, 'the request to the target failed, or the target\'s response could not be read or followed')
   assert.equal(audit?.outcome, 'network_error')
   assert.equal(audit?.blockedReason, error.message)
   assert.equal(audit?.hopCount, 1)

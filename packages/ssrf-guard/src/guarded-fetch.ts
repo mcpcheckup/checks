@@ -176,7 +176,8 @@ function discardBody(response: Response): void {
   }
 }
 
-/** The fixed start of the one line logged when the caller's onAudit throws. */
+/** The fixed start of the one line logged when the caller's onAudit throws, or the
+ *  promise it returns rejects. */
 const ON_AUDIT_THREW_PREFIX = 'ssrf-guard onAudit threw'
 
 /** The only names that line ever prints: the native ECMAScript error constructors.
@@ -213,11 +214,21 @@ function warnOnAuditThrew(error: unknown): void {
  *  own failure is swallowed: a synchronous throw, or — when it returns a thenable, as an
  *  async callback does — that thenable rejecting. Either gives the same one warn line.
  *  The thenable is never awaited: the call returns or throws without waiting for it, and
- *  its rejection is handled whenever it comes, so it is never left unhandled. Reading or
- *  calling `then` may itself throw (a getter, a Proxy); that is swallowed silently, as
- *  nothing the callback did has been observed to fail. So a failing callback can neither
- *  fail a call that succeeded nor replace the error a failed call is about to throw; the
- *  one warn line keeps it from going unseen. */
+ *  its rejection is handled whenever it comes. A value that is `instanceof Promise` gets
+ *  the handler through the built-in Promise.prototype.then, so an own `then` it was given
+ *  instead is ignored; if that check or the built-in then throws (a Proxy, or a value that
+ *  only inherits from Promise.prototype), it falls back to the value's own `then`, as any
+ *  other thenable does. Reading or calling `then` may itself throw (a getter, a Proxy);
+ *  that is swallowed silently, as nothing the callback did has been observed to fail.
+ *  Limit: a promise shaped to resist this gets no line, and a rejection it carries is left
+ *  unhandled. That is one whose species lookup throws (its `constructor` getter, a
+ *  `constructor` that is not an object, its Symbol.species getter, or a species that is
+ *  not a constructor or throws), when its own `then` is the built-in one and throws the
+ *  same way; or a Proxy around a promise that does not forward `then` to it, whose `then`
+ *  is the built-in one called on the Proxy, which is not a promise. A Proxy that does
+ *  forward `then` to the promise gets the line, and its rejection is handled.
+ *  So a failing callback can neither fail a call that succeeded nor replace the error a
+ *  failed call is about to throw; the one warn line keeps it from going unseen. */
 function deliverAudit(onAudit: ((record: ProbeAuditRecord) => void) | undefined, record: ProbeAuditRecord): void {
   let returned: unknown
   try {
@@ -228,7 +239,6 @@ function deliverAudit(onAudit: ((record: ProbeAuditRecord) => void) | undefined,
   }
   if ((typeof returned !== 'object' || returned === null) && typeof returned !== 'function') return
   try {
-    const then: unknown = (returned as { then?: unknown }).then
     // At most one line, even from a thenable that calls its rejection handler twice.
     let warned = false
     const onRejected = (error: unknown): void => {
@@ -236,6 +246,18 @@ function deliverAudit(onAudit: ((record: ProbeAuditRecord) => void) | undefined,
       warned = true
       warnOnAuditThrew(error)
     }
+    // A Proxy's getPrototypeOf trap may throw: then it is treated as any other thenable.
+    let native = false
+    try { native = returned instanceof Promise } catch {}
+    if (native) {
+      try {
+        Promise.prototype.then.call(returned, undefined, onRejected)
+        return
+      } catch {
+        // The built-in then refused it: fall through to its own `then`, as below.
+      }
+    }
+    const then: unknown = (returned as { then?: unknown }).then
     if (typeof then === 'function') then.call(returned, undefined, onRejected)
   } catch {
     // Dropped on purpose — see above.

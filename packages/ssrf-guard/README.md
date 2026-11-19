@@ -182,8 +182,13 @@ the code you write**, not the path of least resistance the way "just call `.text
 whatever `fetch()` handed you" would be. If MCP Checkup's report pages ever show raw
 target output verbatim, that should be traceable to one specific parser function, not
 an accident of API design. Error messages follow the same rule — nothing this package
-throws ever includes bytes the target sent us; see the code comments on `SsrfBlocked`
-and the `maxBodyBytes` rejection in `response-view.ts` for where that's enforced.
+throws ever includes bytes the target sent us, with two bounded exceptions: when
+`guardedFetch` follows a redirect, an `SsrfBlocked` from a later hop (`hop` > 0) names
+the host, scheme or port of the target's `Location` as the URL parser read them; and an
+`UpstreamFetchFailed` keeps the runtime's own error as its `cause`, whose text is not
+ours and may quote what the target sent, such as a `Location` that did not parse. See
+the code comments on `SsrfBlocked` and the `maxBodyBytes` rejection in
+`response-view.ts` for where that's enforced.
 
 ### 2. Detecting a DNS answer that changed mid-probe
 
@@ -237,7 +242,10 @@ promise that rejects, the error is not propagated: `guardedFetch` writes one
 exactly as it would have; `<name>` is the error's `name` when that is one of `Error`,
 `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` or
 `AggregateError`, `Error` for any other `Error`, and `non-Error <typeof>` for a value
-that is not an `Error` — never the error's message. This package only defines the shape and
+that is not an `Error` — never the error's message. The one exception is a promise the
+callback's own code shaped to resist this — one whose species lookup throws, or a proxy
+around a promise that does not forward `then` to it: no line is written, and a rejection
+it carries is left unhandled. This package only defines the shape and
 guarantees delivery regardless of how the call ends; persisting it is the caller's job.
 
 ## Non-standard ports

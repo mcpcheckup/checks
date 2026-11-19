@@ -1184,5 +1184,166 @@ await t('a thenable that calls its rejection handler twice still gives exactly o
   assert.deepEqual(ok.warns, [`${WARN_PREFIX}: TypeError`])
 })
 
+console.log('\nguardedFetch: a native promise is handled through the built-in then, whatever own `then` it carries')
+
+/** A rejected native promise, made inside onAudit, whose own `then` is replaced by `then`. */
+const rejectedWithOwnThen = (then: unknown) => () => {
+  const p = Promise.reject(new RangeError(`${MARKER} ${LEAK_URL}`))
+  Object.defineProperty(p, 'then', { value: then })
+  return p
+}
+
+for (const [label, then] of [
+  ['a non-function (42)', 42],
+  ['a function that does nothing', () => {}],
+] as const) {
+  await t(`a rejecting native promise whose own then is ${label}: called once, the result unchanged, one warn line "RangeError", nothing unhandled`, async () => {
+    let calls = 0
+    const make = rejectedWithOwnThen(then)
+    const ok = await captureSettled(() => auditedCall((() => { calls++; return make() }) as () => void))
+    assert.deepEqual(ok.value.result, { status: 200, body: 'ok' })
+    assert.deepEqual(ok.warns, [`${WARN_PREFIX}: RangeError`])
+    assert.deepEqual(ok.unhandled, [])
+    const blocked = await captureSettled(() => blockedAuditedCall((() => { calls++; return make() }) as () => void))
+    assert.ok(blocked.value instanceof SsrfBlocked && blocked.value.code === 'LOOPBACK', String(blocked.value))
+    assert.deepEqual(blocked.warns, [`${WARN_PREFIX}: RangeError`])
+    assert.deepEqual(blocked.unhandled, [])
+    assert.equal(calls, 2)
+  })
+}
+
+await t('the documented limit: a rejecting Promise subclass whose Symbol.species getter throws gets no handler, writes no line, and its rejection is left unhandled', async () => {
+  class SpeciesThrows extends Promise<void> {}
+  Object.defineProperty(SpeciesThrows, Symbol.species, { get() { throw new Error(`${MARKER} ${LEAK_URL}`) } })
+  const reason = new RangeError(MARKER)
+  let calls = 0
+  const ok = await captureSettled(() => auditedCall((() => { calls++; return new SpeciesThrows((_resolve, reject) => reject(reason)) }) as () => void))
+  assert.deepEqual(ok.value.result, { status: 200, body: 'ok' })
+  assert.equal(calls, 1)
+  assert.deepEqual(ok.warns, [])
+  assert.deepEqual(ok.unhandled, [reason])
+})
+
+await t('an object that only inherits from Promise.prototype: the built-in then refuses it, its own then is used instead, and its rejection gives one warn line "TypeError"', async () => {
+  const fake = () => Object.assign(Object.create(Promise.prototype) as object, {
+    then(_onFulfilled: unknown, onRejected: (e: unknown) => void) { onRejected(new TypeError(`${MARKER} ${LEAK_URL}`)) },
+  })
+  assert.ok(fake() instanceof Promise, 'the case under test: it passes instanceof Promise')
+  let calls = 0
+  const ok = await captureSettled(() => auditedCall((() => { calls++; return fake() }) as () => void))
+  assert.deepEqual(ok.value.result, { status: 200, body: 'ok' })
+  assert.deepEqual(ok.warns, [`${WARN_PREFIX}: TypeError`])
+  const blocked = await captureSettled(() => blockedAuditedCall((() => { calls++; return fake() }) as () => void))
+  assert.ok(blocked.value instanceof SsrfBlocked && blocked.value.code === 'LOOPBACK', String(blocked.value))
+  assert.deepEqual(blocked.warns, [`${WARN_PREFIX}: TypeError`])
+  assert.equal(calls, 2)
+  assert.deepEqual([...ok.unhandled, ...blocked.unhandled], [])
+})
+
+await t('the documented limit: a Proxy around a rejecting promise: the built-in then refuses the Proxy, its own then (the built-in one, called on the Proxy) throws too: no line, the rejection left unhandled', async () => {
+  const reason = new RangeError(MARKER)
+  let calls = 0
+  const ok = await captureSettled(() => auditedCall((() => { calls++; return new Proxy(Promise.reject(reason), {}) }) as () => void))
+  assert.deepEqual(ok.value.result, { status: 200, body: 'ok' })
+  assert.equal(calls, 1)
+  assert.deepEqual(ok.warns, [])
+  assert.deepEqual(ok.unhandled, [reason])
+})
+
+console.log('\nguardedFetch: promise shapes, each pinned to what it actually does')
+
+type ThenArgs = Parameters<Promise<unknown>['then']>
+const rejecting = () => Promise.reject(new RangeError(`${MARKER} ${LEAK_URL}`))
+const hostileTrap = () => { throw new Error(`${MARKER} ${LEAK_URL}`) }
+/** A get trap that forwards `then` to the target promise, bound to it. */
+const forwardThen = (target: Promise<unknown>, key: string | symbol) => (key === 'then' ? target.then.bind(target) : Reflect.get(target, key))
+const rejectTwice = (onRejected: (e: unknown) => void) => { onRejected(new TypeError(MARKER)); onRejected(new RangeError(MARKER)) }
+
+/** Every shape measured; the keys are the rows of the comparison table below. */
+const SHAPES: Record<string, () => unknown> = {
+  P1: () => new Proxy(rejecting(), {}),
+  P2: () => new Proxy(rejecting(), { get: (t, k) => (k === 'then' ? (...a: ThenArgs) => t.then(...a) : Reflect.get(t, k)) }),
+  P3: () => new Proxy(rejecting(), { get: forwardThen }),
+  P4: () => new Proxy(rejecting(), { get: forwardThen, getPrototypeOf: hostileTrap }),
+  P5: () => new Proxy(rejecting(), { get: forwardThen, getPrototypeOf: () => Object.prototype }),
+  P6: () => new Proxy(rejecting(), { get: (t, k, receiver) => Reflect.get(t, k, receiver) }),
+  P7: () => new Proxy(rejecting(), { get: (t, k) => (k === 'then' ? (...a: ThenArgs) => Promise.prototype.then.apply(t, a) : Reflect.get(t, k)) }),
+  P8: () => new Proxy({ then: (_f: unknown, onRejected: (e: unknown) => void) => onRejected(new TypeError(MARKER)) }, { getPrototypeOf: hostileTrap }),
+  S1: () => {
+    class SpeciesThrows extends Promise<void> {}
+    Object.defineProperty(SpeciesThrows, Symbol.species, { get: hostileTrap })
+    return new SpeciesThrows((_resolve, reject) => reject(new RangeError(MARKER)))
+  },
+  S2: () => Object.defineProperty(rejecting(), 'constructor', { get: hostileTrap }),
+  S3a: () => Object.assign(rejecting(), { constructor: 5 }),
+  S3b: () => Object.assign(rejecting(), { constructor: { [Symbol.species]: 5 } }),
+  N0: () => rejecting(),
+  F: () => Object.assign(Object.create(Promise.prototype) as object, { then: (_f: unknown, onRejected: (e: unknown) => void) => onRejected(new TypeError(MARKER)) }),
+  D: () => ({ then: (_f: unknown, onRejected: (e: unknown) => void) => rejectTwice(onRejected) }),
+}
+
+for (const [label, shape] of [
+  ['S2, a native promise whose own `constructor` getter throws', 'S2'],
+  ['S3a, a native promise whose `constructor` is 5 (not an object)', 'S3a'],
+] as const) {
+  await t(`species lookup throws: ${label}: no line, the rejection left unhandled`, async () => {
+    const r = await captureSettled(() => auditedCall(SHAPES[shape] as () => void))
+    assert.deepEqual(r.value.result, { status: 200, body: 'ok' })
+    assert.deepEqual(r.warns, [])
+    assert.equal(r.unhandled.length, 1)
+    assert.ok(r.unhandled[0] instanceof RangeError)
+  })
+}
+
+for (const [label, shape, name] of [
+  ['P2, a Proxy whose get trap forwards `then` to the promise', 'P2', 'RangeError'],
+  ['P4, a Proxy that forwards `then` and whose getPrototypeOf trap throws', 'P4', 'RangeError'],
+  ['P8, a Proxy around a plain thenable whose getPrototypeOf trap throws', 'P8', 'TypeError'],
+] as const) {
+  await t(`${label}: one warn line "${name}", nothing unhandled`, async () => {
+    let calls = 0
+    const r = await captureSettled(() => auditedCall((() => { calls++; return SHAPES[shape]!() }) as () => void))
+    assert.deepEqual(r.value.result, { status: 200, body: 'ok' })
+    assert.equal(calls, 1)
+    assert.deepEqual(r.warns, [`${WARN_PREFIX}: ${name}`])
+    assert.deepEqual(r.unhandled, [])
+  })
+}
+
+/**
+ * [shape, warn lines on 0badc66f, warn lines now, unhandled rejections now]. The 0badc66f
+ * column is that commit's guarded-fetch.ts, which reads `then` directly with no
+ * instanceof check. It was measured once, by running each SHAPES factory through one
+ * successful guardedFetch call against that commit, with console.warn counted and an
+ * unhandledRejection listener; it is fixed here because that code is not importable.
+ */
+const COMPARED: [string, number, number, number][] = [
+  ['P1', 0, 0, 1], // measured on 0badc66f: 0
+  ['P2', 1, 1, 0], // measured on 0badc66f: 1
+  ['P3', 1, 1, 0], // measured on 0badc66f: 1
+  ['P4', 1, 1, 0], // measured on 0badc66f: 1
+  ['P5', 1, 1, 0], // measured on 0badc66f: 1
+  ['P6', 0, 0, 1], // measured on 0badc66f: 0
+  ['P7', 1, 1, 0], // measured on 0badc66f: 1
+  ['P8', 1, 1, 0], // measured on 0badc66f: 1
+  ['S1', 0, 0, 1], // measured on 0badc66f: 0
+  ['S2', 0, 0, 1], // measured on 0badc66f: 0
+  ['S3a', 0, 0, 1], // measured on 0badc66f: 0
+  ['S3b', 0, 0, 1], // measured on 0badc66f: 0
+  ['N0', 1, 1, 0], // measured on 0badc66f: 1
+  ['F', 1, 1, 0], // measured on 0badc66f: 1
+  ['D', 1, 1, 0], // measured on 0badc66f: 1
+]
+
+await t('no shape gets fewer warn lines than on 0badc66f, and each shape\'s current counts are pinned', async () => {
+  assert.deepEqual(COMPARED.map(([shape]) => shape).sort(), Object.keys(SHAPES).sort(), 'every shape has a row')
+  for (const [shape, before, warns, unhandled] of COMPARED) {
+    const r = await captureSettled(() => auditedCall(SHAPES[shape] as () => void))
+    assert.ok(r.warns.length >= before, `${shape}: ${r.warns.length} warn lines, fewer than the ${before} on 0badc66f`)
+    assert.equal(r.warns.length, warns, `${shape}: warn lines`)
+    assert.equal(r.unhandled.length, unhandled, `${shape}: unhandled rejections`)
+  }
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

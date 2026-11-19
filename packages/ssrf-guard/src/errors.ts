@@ -12,9 +12,14 @@ export class SsrfGuardError extends Error {
 
 /**
  * The target itself was rejected — its scheme, credentials, port, or a resolved IP
- * failed policy. `detail` is always built from data we already control (the URL we were
- * given, or an IP a trusted DoH resolver returned) — never from bytes the target sent
- * back, so this is safe to surface in logs and error messages verbatim.
+ * failed policy. `detail` is built from the URL being requested, the caller's options,
+ * and what our own DoH resolver returned or failed with. One bounded exception: when
+ * guardedFetch follows a redirect, the URL of a later hop (`hop` > 0) is the target's
+ * `Location`, so a host name, scheme or port that `detail` names there is the target's,
+ * as the URL parser read it (url-target.ts's scheme, port and host-name rules,
+ * guarded-fetch.ts's IP-literal check, resolve.ts's "no A or AAAA records"). It never
+ * carries raw header or body bytes. The only other exception in this package is
+ * UpstreamFetchFailed's `cause`.
  */
 export class SsrfBlocked extends SsrfGuardError {
   detail: string
@@ -40,13 +45,15 @@ export class RateLimited extends SsrfGuardError {}
  * redirect's Location, response-view.ts's body reader), so an error thrown by
  * our own code before or around them never becomes one.
  * Deliberately NOT an SsrfGuardError: nothing was refused by policy. The message
- * is fixed; the runtime's own error, whose text is not ours, stays on `cause`.
+ * is fixed. The runtime's own error stays on `cause`: its text is not ours and may
+ * quote what the target sent, such as a `Location` that did not parse. No other
+ * error this package throws carries a runtime `cause`.
  */
 export class UpstreamFetchFailed extends Error {
   /** As on SsrfGuardError. */
   hop?: number
   constructor(cause: unknown) {
-    super('the request to the target failed before a complete response arrived', { cause })
+    super('the request to the target failed, or the target\'s response could not be read or followed', { cause })
     this.name = new.target.name
   }
 }
