@@ -34,9 +34,11 @@ export class RateLimited extends SsrfGuardError {}
 /**
  * The request to the target itself failed: the runtime's fetch() rejected, or
  * reading the response body rejected, for a reason other than a timeout / abort
- * (those become BudgetExceeded('MAX_DURATION')). Only those two sites wrap into
- * it (guarded-fetch.ts's fetch call, response-view.ts's body reader), so an
- * error thrown by our own code before or around them never becomes one.
+ * (those become BudgetExceeded('MAX_DURATION')), or the target answered a
+ * followed GET with a redirect whose Location does not parse. Only those three
+ * sites wrap into it (guarded-fetch.ts's fetch call and its parse of a followed
+ * redirect's Location, response-view.ts's body reader), so an error thrown by
+ * our own code before or around them never becomes one.
  * Deliberately NOT an SsrfGuardError: nothing was refused by policy. The message
  * is fixed; the runtime's own error, whose text is not ours, stays on `cause`.
  */

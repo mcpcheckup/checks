@@ -1090,5 +1090,99 @@ await t('sanity: an onAudit that does not throw leaves no warn line, success or 
   assert.deepEqual([...ok.warns, ...blocked.warns], [])
 })
 
+console.log('\nguardedFetch: an onAudit that returns a promise which rejects gets the same one warn line, and is never left unhandled')
+
+/** Long enough for a rejection, and Node's unhandled-rejection check, to have run. */
+const settle = () => new Promise((r) => setTimeout(r, 20))
+
+/** Runs `fn` with console.warn captured and unhandled rejections recorded, until things settle. */
+async function captureSettled<R>(fn: () => Promise<R>): Promise<{ value: R, warns: string[], unhandled: unknown[] }> {
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const { value, warns } = await captureWarn(async () => { const v = await fn(); await settle(); return v })
+    return { value, warns, unhandled }
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+}
+
+/** A blocked call (loopback IP literal) with the given onAudit; resolves to what it threw. */
+function blockedAuditedCall(onAudit: (r: import('./audit.ts').ProbeAuditRecord) => void) {
+  return guardedFetch('https://127.0.0.1/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
+    callerIdentifier: 'test-caller', parseResponse: textParser,
+    fetchImpl: async () => { throw new Error('test bug: a blocked target must never be fetched') },
+    onAudit,
+  }).then(() => undefined, (e: unknown) => e)
+}
+
+const hostileName = () => Object.defineProperty(new Error(MARKER), 'name', { get() { throw new Error(`${MARKER} ${LEAK_URL}`) } })
+
+for (const [label, make, expected] of [
+  ['an Error (RangeError)', () => new RangeError(`${MARKER} ${LEAK_URL}`), 'RangeError'],
+  ['a non-Error (a string)', () => `${MARKER} ${LEAK_URL}`, 'non-Error string'],
+  ['an Error whose name getter throws', hostileName, 'Error'],
+  ['an Error named after a host', () => Object.assign(new Error(MARKER), { name: 'audit-host.example.com' }), 'Error'],
+] as const) {
+  await t(`async onAudit rejecting with ${label}: called once, the result unchanged, exactly one warn line "${expected}", nothing unhandled`, async () => {
+    let calls = 0
+    const ok = await captureSettled(() => auditedCall(async () => { calls++; throw make() }))
+    assert.deepEqual(ok.value.result, { status: 200, body: 'ok' })
+    assert.equal(ok.value.status, 200)
+    assert.deepEqual(ok.warns, [`${WARN_PREFIX}: ${expected}`])
+    assert.deepEqual(ok.unhandled, [])
+    const blocked = await captureSettled(() => blockedAuditedCall(async () => { calls++; await tick(); throw make() }))
+    assert.ok(blocked.value instanceof SsrfBlocked, `expected the original SsrfBlocked, got ${String(blocked.value)}`)
+    assert.equal(blocked.value.code, 'LOOPBACK')
+    assert.ok(!blocked.value.message.includes(MARKER))
+    assert.deepEqual(blocked.warns, [`${WARN_PREFIX}: ${expected}`])
+    assert.deepEqual(blocked.unhandled, [])
+    assert.equal(calls, 2)
+    for (const line of [...ok.warns, ...blocked.warns]) assert.ok(!line.includes(MARKER) && !line.includes(LEAK_URL), line)
+  })
+}
+
+await t('async onAudit that resolves: called once, no warn line, nothing unhandled', async () => {
+  let calls = 0
+  const ok = await captureSettled(() => auditedCall(async () => { calls++; await tick() }))
+  const blocked = await captureSettled(() => blockedAuditedCall(async () => { calls++ }))
+  assert.equal(ok.value.status, 200)
+  assert.ok(blocked.value instanceof SsrfBlocked)
+  assert.equal(calls, 2)
+  assert.deepEqual([...ok.warns, ...blocked.warns, ...ok.unhandled, ...blocked.unhandled], [])
+})
+
+await t('the returned promise is never awaited: an onAudit whose promise never settles does not hold up a success or a rejection', async () => {
+  const never = () => new Promise<void>(() => {})
+  const ok = await captureSettled(() => auditedCall(never as () => void))
+  const blocked = await captureSettled(() => blockedAuditedCall(never as () => void))
+  assert.equal(ok.value.status, 200)
+  assert.ok(blocked.value instanceof SsrfBlocked)
+  assert.deepEqual([...ok.warns, ...blocked.warns], [])
+})
+
+await t('a hostile return value: a `then` getter that throws, a `then` that throws, or a throwing Proxy escapes nowhere and writes no line', async () => {
+  const getterThrows = Object.defineProperty({}, 'then', { get() { throw new Error(`${MARKER} ${LEAK_URL}`) } })
+  const thenThrows = { then() { throw new Error(`${MARKER} ${LEAK_URL}`) } }
+  const proxyTrap = new Proxy({}, { get() { throw new Error(`${MARKER} ${LEAK_URL}`) } })
+  for (const hostile of [getterThrows, thenThrows, proxyTrap]) {
+    let calls = 0
+    const ok = await captureSettled(() => auditedCall((() => { calls++; return hostile }) as () => void))
+    const blocked = await captureSettled(() => blockedAuditedCall((() => { calls++; return hostile }) as () => void))
+    assert.deepEqual(ok.value.result, { status: 200, body: 'ok' })
+    assert.ok(blocked.value instanceof SsrfBlocked && blocked.value.code === 'LOOPBACK', String(blocked.value))
+    assert.equal(calls, 2)
+    assert.deepEqual([...ok.warns, ...blocked.warns, ...ok.unhandled, ...blocked.unhandled], [])
+  }
+})
+
+await t('a thenable that calls its rejection handler twice still gives exactly one warn line', async () => {
+  const twice = { then(_onFulfilled: unknown, onRejected: (e: unknown) => void) { onRejected(new TypeError(MARKER)); onRejected(new RangeError(MARKER)) } }
+  const ok = await captureSettled(() => auditedCall((() => twice) as () => void))
+  assert.equal(ok.value.status, 200)
+  assert.deepEqual(ok.warns, [`${WARN_PREFIX}: TypeError`])
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exitCode = fail ? 1 : 0

@@ -199,20 +199,46 @@ function thrownName(value: unknown): string {
   }
 }
 
-/** Hands the record to the caller's onAudit, exactly once per call. Only the callback's
- *  own exception is swallowed. The warn line cannot throw either: thrownName is total,
- *  and an exception from console.warn itself is dropped (the line is then lost). So a
- *  throwing callback can neither fail a call that succeeded nor replace the error a
- *  failed call is about to throw; the one warn line keeps it from going unseen. */
-function deliverAudit(onAudit: ((record: ProbeAuditRecord) => void) | undefined, record: ProbeAuditRecord): void {
+/** The one line for a callback failure. It cannot throw: thrownName is total, and an
+ *  exception from console.warn itself is dropped (the line is then lost). */
+function warnOnAuditThrew(error: unknown): void {
   try {
-    onAudit?.(record)
+    console.warn(`${ON_AUDIT_THREW_PREFIX}: ${thrownName(error)}`)
+  } catch {
+    // Dropped on purpose — see above.
+  }
+}
+
+/** Hands the record to the caller's onAudit, exactly once per call. Only the callback's
+ *  own failure is swallowed: a synchronous throw, or — when it returns a thenable, as an
+ *  async callback does — that thenable rejecting. Either gives the same one warn line.
+ *  The thenable is never awaited: the call returns or throws without waiting for it, and
+ *  its rejection is handled whenever it comes, so it is never left unhandled. Reading or
+ *  calling `then` may itself throw (a getter, a Proxy); that is swallowed silently, as
+ *  nothing the callback did has been observed to fail. So a failing callback can neither
+ *  fail a call that succeeded nor replace the error a failed call is about to throw; the
+ *  one warn line keeps it from going unseen. */
+function deliverAudit(onAudit: ((record: ProbeAuditRecord) => void) | undefined, record: ProbeAuditRecord): void {
+  let returned: unknown
+  try {
+    returned = onAudit?.(record)
   } catch (error) {
-    try {
-      console.warn(`${ON_AUDIT_THREW_PREFIX}: ${thrownName(error)}`)
-    } catch {
-      // Dropped on purpose — see above.
+    warnOnAuditThrew(error)
+    return
+  }
+  if ((typeof returned !== 'object' || returned === null) && typeof returned !== 'function') return
+  try {
+    const then: unknown = (returned as { then?: unknown }).then
+    // At most one line, even from a thenable that calls its rejection handler twice.
+    let warned = false
+    const onRejected = (error: unknown): void => {
+      if (warned) return
+      warned = true
+      warnOnAuditThrew(error)
     }
+    if (typeof then === 'function') then.call(returned, undefined, onRejected)
+  } catch {
+    // Dropped on purpose — see above.
   }
 }
 
@@ -405,7 +431,6 @@ export async function guardedFetch<T>(
         if (redirectsFollowed >= budget.maxRedirects) {
           throw new BudgetExceeded('MAX_REDIRECTS', `probe exceeded its ${budget.maxRedirects}-redirect budget`)
         }
-        redirectsFollowed++
         const location = response.headers.get('location')!
         if (isCrossHostRedirect(location, target.url, target.hostname)) {
           redirectCrossHostObserved = true
@@ -413,7 +438,21 @@ export async function guardedFetch<T>(
           // allowlisted headers travel on to the next hop unchanged.
           currentHeaders = stripAuthorization(currentHeaders)
         }
-        currentUrl = new URL(location, target.url).href
+        let nextUrl: string
+        try {
+          nextUrl = new URL(location, target.url).href
+        } catch (cause) {
+          // Only the parse's own TypeError is wrapped; anything else is rethrown as it is.
+          if (!(cause instanceof TypeError)) throw cause
+          // The target sent a Location that does not parse: a failure of the target's
+          // answer, not a policy refusal. Thrown before redirectsFollowed is counted up,
+          // so the catch below records `hop` as this hop's index — the request whose
+          // response carried that Location. The fixed message keeps the Location's text
+          // out of the error and out of the audit record's blockedReason.
+          throw new UpstreamFetchFailed(cause)
+        }
+        redirectsFollowed++
+        currentUrl = nextUrl
         continue
       }
 

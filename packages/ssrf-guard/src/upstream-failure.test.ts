@@ -2,9 +2,10 @@
  * T85 (R13 ①, R4 b): what ssrf-guard raises when the request to the target
  * fails, and which resolver failures are ours.
  *
- *   - UpstreamFetchFailed wraps exactly two things: the runtime's fetch() call
- *     rejecting, and a body read rejecting. A TimeoutError / AbortError at
- *     either is BudgetExceeded('MAX_DURATION') instead. Nothing our own code
+ *   - UpstreamFetchFailed wraps exactly three things: the runtime's fetch() call
+ *     rejecting, a body read rejecting, and a followed redirect's Location that
+ *     does not parse. A TimeoutError / AbortError at either of the first two
+ *     is BudgetExceeded('MAX_DURATION') instead. Nothing our own code
  *     throws becomes one — shown both by behaviour and by where
  *     `new UpstreamFetchFailed` may appear in the source (AST, not text).
  *   - RESOLVER_UNAVAILABLE is raised at exactly six throw sites where our own
@@ -197,6 +198,85 @@ await t('a body read failing at hop 0, and at hop 1', async () => {
   assert.ok(error instanceof BudgetExceeded && error.code === 'MAX_DURATION')
   assert.equal(hopOf(error), 1)
 })
+
+/** A GET 302 whose Location does not parse (an unterminated IPv6 literal carrying `marker`), after `before` good redirects. */
+const BAD_LOCATION_MARKER = 'bad-location-marker-51c9'
+function badLocationAfter(before: number, onCancel: () => void = () => {}): () => Promise<Response> {
+  return redirecting(before, async () => new Response(new ReadableStream({ cancel: onCancel }), { status: 302, headers: { location: `https://[${BAD_LOCATION_MARKER}/` } }))
+}
+await t('a redirect Location that does not parse -> UpstreamFetchFailed (fixed message, the TypeError on cause), audit network_error, the Location text nowhere', async () => {
+  const { error, audit } = await run(badLocationAfter(0))
+  assert.ok(error instanceof UpstreamFetchFailed, String(error))
+  assert.ok(!(error instanceof SsrfGuardError))
+  assert.ok(error.cause instanceof TypeError, String(error.cause))
+  assert.equal(error.message, 'the request to the target failed before a complete response arrived')
+  assert.equal(audit?.outcome, 'network_error')
+  assert.equal(audit?.blockedReason, error.message)
+  assert.equal(audit?.hopCount, 1)
+  for (const text of [error.message, audit!.blockedReason!, JSON.stringify(audit)]) assert.ok(!text.includes(BAD_LOCATION_MARKER), text)
+})
+await t('an unparseable Location: hop is the index of the request whose response carried it (0 on the first response, 2 after two good redirects)', async () => {
+  assert.equal(hopOf((await run(badLocationAfter(0))).error), 0)
+  const { error, audit } = await run(badLocationAfter(2))
+  assert.ok(error instanceof UpstreamFetchFailed)
+  assert.equal(hopOf(error), 2)
+  assert.equal(audit?.hopCount, 3)
+})
+await t('an unparseable Location: that hop\'s body is discarded, and nothing more is fetched', async () => {
+  let cancelled = false
+  let calls = 0
+  const inner = badLocationAfter(1, () => { cancelled = true })
+  const { error } = await run(async () => { calls++; return inner() })
+  assert.ok(error instanceof UpstreamFetchFailed)
+  assert.equal(cancelled, true)
+  assert.equal(calls, 2)
+})
+{
+  // A URL constructor that throws a value other than TypeError, only for the given input.
+  const SENTINEL_LOCATION = 'https://hop-sentinel.example.com/next'
+  class SentinelError extends Error {}
+  const cases: [string, () => Error, string][] = [
+    ['a sentinel Error subclass', () => new SentinelError('sentinel'), 'network_error'],
+    ['BudgetExceeded MAX_DURATION', () => new BudgetExceeded('MAX_DURATION', 'sentinel'), 'budget_exceeded'],
+  ]
+  for (const [label, make, outcome] of cases) {
+    await t(`the Location parse throwing ${label} (not a TypeError): that same object is rethrown, not wrapped; onAudit once; outcome ${outcome}`, async () => {
+      const thrown = make()
+      const RealURL = globalThis.URL
+      class ThrowingURL extends RealURL {
+        constructor(input: string | URL, base?: string | URL) {
+          if (String(input) === SENTINEL_LOCATION) throw thrown
+          super(input, base)
+        }
+      }
+      let calls = 0
+      let audit: ProbeAuditRecord | undefined
+      let error: unknown
+      globalThis.URL = ThrowingURL as typeof URL
+      try {
+        ({ error } = await run(async () => new Response(null, { status: 302, headers: { location: SENTINEL_LOCATION } }), undefined, {
+          onAudit: (r: ProbeAuditRecord) => { calls++; audit = r },
+        }))
+      } finally {
+        globalThis.URL = RealURL
+      }
+      assert.strictEqual(error, thrown)
+      assert.ok(!(error instanceof UpstreamFetchFailed))
+      assert.equal(calls, 1)
+      assert.equal(audit?.outcome, outcome)
+    })
+  }
+}
+await t('an unparseable Location with no redirect budget left is still BudgetExceeded MAX_REDIRECTS (checked first, as before)', async () => {
+  let budgetError: unknown
+  try {
+    await guardedFetch('https://example.com/mcp', { ...DEFAULT_PROBE_BUDGET, maxRedirects: 0 }, ALLOW, {
+      callerIdentifier: 't', fetchImpl: badLocationAfter(0) as typeof fetch,
+      resolveAndValidateHostImpl: resolvePublic, resolveHostImpl: resolvePublic, parseResponse: (h) => h.status,
+    })
+  } catch (e) { budgetError = e }
+  assert.ok(budgetError instanceof BudgetExceeded && budgetError.code === 'MAX_REDIRECTS', String(budgetError))
+})
 await t('a POST is never past hop 0: its 302 is returned as the result, not followed', async () => {
   let calls = 0
   const r = await guardedFetch('https://example.com/mcp', DEFAULT_PROBE_BUDGET, ALLOW, {
@@ -243,14 +323,50 @@ function soleAwaitedCall(block: ts.Block): string | undefined {
   const call = s.expression.right.expression
   return ts.isCallExpression(call) ? call.expression.getText() : undefined
 }
+/** Whether a try block is exactly the one statement `nextUrl = new URL(location, target.url).href`. */
+function isSoleLocationParse(block: ts.Block): boolean {
+  if (block.statements.length !== 1) return false
+  const s = block.statements[0]!
+  if (!ts.isExpressionStatement(s) || !ts.isBinaryExpression(s.expression)) return false
+  const { left, operatorToken, right } = s.expression
+  if (operatorToken.kind !== ts.SyntaxKind.EqualsToken || !ts.isIdentifier(left) || left.text !== 'nextUrl') return false
+  if (!ts.isPropertyAccessExpression(right) || right.name.text !== 'href') return false
+  const parse = right.expression
+  return ts.isNewExpression(parse) && ts.isIdentifier(parse.expression) && parse.expression.text === 'URL'
+    && (parse.arguments ?? []).map((a) => a.getText()).join(', ') === 'location, target.url'
+}
+/** Whether a catch block is exactly `if (!(<caught> instanceof TypeError)) throw <caught>` followed by `throw <wrap>`. */
+function isTypeErrorGateThenWrap(block: ts.Block, caught: string, wrap: ts.Node): boolean {
+  if (block.statements.length !== 2) return false
+  const [gate, last] = block.statements as unknown as [ts.Statement, ts.Statement]
+  if (!ts.isIfStatement(gate) || gate.elseStatement !== undefined) return false
+  const cond = gate.expression
+  if (!ts.isPrefixUnaryExpression(cond) || cond.operator !== ts.SyntaxKind.ExclamationToken || !ts.isParenthesizedExpression(cond.operand)) return false
+  const test = cond.operand.expression
+  if (!ts.isBinaryExpression(test) || test.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword) return false
+  if (!ts.isIdentifier(test.left) || test.left.text !== caught || !ts.isIdentifier(test.right) || test.right.text !== 'TypeError') return false
+  const rethrow = ts.isBlock(gate.thenStatement) && gate.thenStatement.statements.length === 1 ? gate.thenStatement.statements[0]! : gate.thenStatement
+  if (!ts.isThrowStatement(rethrow) || !ts.isIdentifier(rethrow.expression) || rethrow.expression.text !== caught) return false
+  return ts.isThrowStatement(last) && last.expression === wrap
+}
 const newOf = (cls: string) => (n: ts.Node) => ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === cls
 const blockedWith = (code: string) => (n: ts.Node) => newOf('SsrfBlocked')(n) && (() => { const a = (n as ts.NewExpression).arguments?.[0]; return a !== undefined && ts.isStringLiteral(a) && a.text === code })()
 
-await t('new UpstreamFetchFailed appears exactly twice: in guarded-fetch.ts\'s catch around `await fetchImpl(…)` alone, and in response-view.ts\'s bodyReadFailure', () => {
+await t('new UpstreamFetchFailed appears exactly three times: in guardedFetch\'s catch around `await fetchImpl(…)` alone, in its catch around the Location parse alone, and in response-view.ts\'s bodyReadFailure', () => {
   const sites = findAll(newOf('UpstreamFetchFailed'))
-  assert.deepEqual(sites.map((n) => n.getSourceFile().fileName).sort(), ['guarded-fetch.ts', 'response-view.ts'])
-  const gf = sites.find((n) => n.getSourceFile().fileName === 'guarded-fetch.ts')!
-  assert.equal(soleAwaitedCall(tryOf(gf)!.tryBlock), 'fetchImpl')
+  assert.deepEqual(sites.map((n) => n.getSourceFile().fileName).sort(), ['guarded-fetch.ts', 'guarded-fetch.ts', 'response-view.ts'])
+  const gf = sites.filter((n) => n.getSourceFile().fileName === 'guarded-fetch.ts')
+  assert.ok(gf.every((n) => fnName(n) === 'guardedFetch'))
+  const fetchSites = gf.filter((n) => soleAwaitedCall(tryOf(n)!.tryBlock) === 'fetchImpl')
+  const locationSites = gf.filter((n) => isSoleLocationParse(tryOf(n)!.tryBlock))
+  assert.equal(fetchSites.length, 1, 'one site wraps `await fetchImpl(…)` alone')
+  assert.equal(locationSites.length, 1, 'one site wraps `nextUrl = new URL(location, target.url).href` alone')
+  // The Location site wraps the parse's own error, the catch variable, and nothing else.
+  const loc = locationSites[0] as ts.NewExpression
+  const caught = tryOf(loc)!.catchClause!.variableDeclaration!.name.getText()
+  assert.deepEqual((loc.arguments ?? []).map((a) => a.getText()), [caught])
+  // And only when it is a TypeError: the catch is exactly the gate, then that throw.
+  assert.ok(isTypeErrorGateThenWrap(tryOf(loc)!.catchClause!.block, caught, loc), 'the Location catch is `if (!(e instanceof TypeError)) throw e` then `throw new UpstreamFetchFailed(e)`')
   const rv = sites.find((n) => n.getSourceFile().fileName === 'response-view.ts')!
   assert.equal(fnName(rv), 'bodyReadFailure')
 })

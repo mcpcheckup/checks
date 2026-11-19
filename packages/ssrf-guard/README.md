@@ -231,7 +231,13 @@ call — on success *and* on every rejection (blocked target, budget exceeded, r
 limited, network failure) — with a [`ProbeAuditRecord`](./src/audit.ts): when, who
 (`callerIdentifier`, defined and supplied by the caller — an IP hash, a session id,
 whatever your deployment uses), what host, every hop's resolved addresses, how many
-hops, the outcome, and the DNS-rebind flag. This package only defines the shape and
+hops, the outcome, and the DNS-rebind flag. If the callback throws, or returns a
+promise that rejects, the error is not propagated: `guardedFetch` writes one
+`console.warn` line, `ssrf-guard onAudit threw: <name>`, and otherwise returns or throws
+exactly as it would have; `<name>` is the error's `name` when that is one of `Error`,
+`TypeError`, `RangeError`, `SyntaxError`, `ReferenceError`, `EvalError`, `URIError` or
+`AggregateError`, `Error` for any other `Error`, and `non-Error <typeof>` for a value
+that is not an `Error` — never the error's message. This package only defines the shape and
 guarantees delivery regardless of how the call ends; persisting it is the caller's job.
 
 ## Non-standard ports
@@ -417,9 +423,10 @@ A failure of the request to the target itself — e.g. connection refused, a TLS
 no longer propagates as whatever error `fetch()` throws. It is thrown as
 `UpstreamFetchFailed`, which is not an `SsrfBlocked`: it carries a fixed message and the
 original error as its `cause`, so a caller can tell it apart by class alone and never
-has to read a message. It is raised at exactly two places: around the call to `fetch()`
-for each hop, and around each read of the response body inside `parseResponse`'s handle.
-At both places a `TimeoutError` or `AbortError` — the wall-clock budget running out —
+has to read a message. It is raised at exactly three places: around the call to `fetch()`
+for each hop, around each read of the response body inside `parseResponse`'s handle,
+and when a GET it is following is redirected to a `Location` that does not parse.
+At the first two, a `TimeoutError` or `AbortError` — the wall-clock budget running out —
 is thrown as `BudgetExceeded('MAX_DURATION')` instead. That is a legitimate observation
 for the caller's own assertion logic to interpret (see `CLAUDE.md`'s
 `execution_status`), not a guard rejection: nothing about the target's address or the
