@@ -1310,6 +1310,40 @@ for (const [label, shape, name] of [
   })
 }
 
+// TODO 2397: two shapes the README's "no line is written" exception does not reach, because each one's own `then` calls the
+// rejection handler: deliverAudit falls through to it once the built-in then refuses the value. Pinned as they behave: one
+// warn line each, and the promise's own rejection is still left unhandled (nothing ever attached a handler to it).
+await t('TODO 2397: a Proxy that does not forward `then` but whose get trap returns its own `then`, which calls onRejected: one warn line "TypeError", the proxied promise\'s own rejection left unhandled', async () => {
+  const reason = new RangeError(MARKER)
+  const ownThen = (_f: unknown, onRejected: (e: unknown) => void) => { onRejected(new TypeError(`${MARKER} ${LEAK_URL}`)) }
+  let calls = 0
+  const r = await captureSettled(() => auditedCall((() => {
+    calls++
+    return new Proxy(Promise.reject(reason), { get: (t, k) => (k === 'then' ? ownThen : Reflect.get(t, k)) })
+  }) as () => void))
+  assert.deepEqual(r.value.result, { status: 200, body: 'ok' })
+  assert.equal(calls, 1)
+  assert.deepEqual(r.warns, [`${WARN_PREFIX}: TypeError`])
+  assert.deepEqual(r.unhandled, [reason])
+})
+
+await t('TODO 2397: a Promise subclass whose Symbol.species getter throws but whose own `then` calls onRejected without species: one warn line "TypeError", the instance\'s own rejection left unhandled', async () => {
+  class SpeciesThrowsOwnThen extends Promise<void> {
+    override then<R1 = void, R2 = never>(_f?: ((value: void) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null): Promise<R1 | R2> {
+      onRejected?.(new TypeError(`${MARKER} ${LEAK_URL}`))
+      return new Promise<R1 | R2>(() => {})
+    }
+  }
+  Object.defineProperty(SpeciesThrowsOwnThen, Symbol.species, { get() { throw new Error(`${MARKER} ${LEAK_URL}`) } })
+  const reason = new RangeError(MARKER)
+  let calls = 0
+  const r = await captureSettled(() => auditedCall((() => { calls++; return new SpeciesThrowsOwnThen((_resolve, reject) => reject(reason)) }) as () => void))
+  assert.deepEqual(r.value.result, { status: 200, body: 'ok' })
+  assert.equal(calls, 1)
+  assert.deepEqual(r.warns, [`${WARN_PREFIX}: TypeError`])
+  assert.deepEqual(r.unhandled, [reason])
+})
+
 /**
  * [shape, warn lines on 0badc66f, warn lines now, unhandled rejections now]. The 0badc66f
  * column is that commit's guarded-fetch.ts, which reads `then` directly with no
